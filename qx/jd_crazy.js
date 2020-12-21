@@ -255,7 +255,7 @@ function trade(joyLevel) {
           if (data.success) {
             console.log(`购买${joyLevel}级joy成功， 花费${data.data.coins}，下次购买费用 --> ${data.data.nextBuyPrice}， 剩余joy币 --> ${data.data.totalCoins}`)
           } else {
-            console.warn(data.message)
+            console.log(data.message)
           }
         }
       } catch (e) {
