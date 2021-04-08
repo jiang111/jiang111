@@ -9,8 +9,15 @@
 
 <p>
 <img align="right" src="https://github-readme-stats.vercel.app/api?username=jiang111&show_icons=true&theme=material-palenight&hide_title=true" />
- <img align="left" src="https://raw.githubusercontent.com/Semporia/Semporia/master/Pikachu.gif" width="240px" align="center">
+ <img align="left" src="https://raw.githubusercontent.com/Semporia/Semporia/master/Pikachu.gif" width="240px">
 </p>
 
-# Thank you for the visit.
-![](http://profile-counter.glitch.me/jiang111/count.svg)
+<p>
+<br/>
+ 
+ # Thank you for the visit.
+ 
+<p>
+<img  src="http://profile-counter.glitch.me/jiang111/count.svg" align="center">
+</p>
+ 
