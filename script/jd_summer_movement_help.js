@@ -37,9 +37,6 @@ $.inviteList = [];
 $.secretpInfo = {};
 $.ShInviteList = [];
 $.innerShInviteList = [
-  'H8mphLbwLgz3e4GeFdc0g9GS9KyvaS3S',
-  'H8mphLbwLn_LHtvAULB0thOUapqKwhU',
-  'H8mphLbwLnPnJ8L9XqdUv7O1wfsqrXQ'
 ];
 if ($.isNode()) {
   Object.keys(jdCookieNode).forEach((item) => {
@@ -60,13 +57,36 @@ const UA = $.isNode() ? (process.env.JD_USER_AGENT ? process.env.JD_USER_AGENT :
     return;
   }
   console.log('活动入口：京东APP-》 首页-》 右边小窗口（点我赢千元）\n' +
-      'SH互助：内部账号自行互助(排名靠前账号得到的机会多),多余的助力次数会默认助力作者内置助力码\n'
+      '邀请好友助力：内部账号自行互助(排名靠前账号得到的机会多)\n' +
+      'SH互助：内部账号自行互助(排名靠前账号得到的机会多),多余的助力次数会默认助力作者内置助力码\n' +
+      '店铺任务 已添加\n' +
+      '新增 入会环境变量 默认不入会\n' +
+      '活动时间：2021-07-08至2021-08-8\n' +
+      '脚本更新时间：2021年7月8日 21点00分\n'
       );
       if(`${summer_movement_joinjoinjoinhui}` === "true") console.log('您设置了入会')
       if(`${ShHelpFlag}` === "true") console.log('您设置了执行【百元守卫站SH】互助')
       console.log('\n\n该脚本启用了[正道的光]模式\n执行 做任务、做店铺任务、助力 会有几率不执行\n本脚本不让任务一次全部做完\n您可以多跑几次\n北京时间18时后是正常模式\n\n🐸\n')
+  for (let i = 0; i < cookiesArr.length; i++) {
+    if (cookiesArr[i]) {
+      $.cookie = cookiesArr[i];
+      $.UserName = decodeURIComponent($.cookie.match(/pt_pin=([^; ]+)(?=;?)/) && $.cookie.match(/pt_pin=([^; ]+)(?=;?)/)[1]);
+      $.index = i + 1;
+      $.isLogin = true;
+      $.nickName = $.UserName;
+      $.hotFlag = false; //是否火爆
+      console.log(`\n*****开始【京东账号${$.index}】${$.nickName || $.UserName}*****\n`);
+      console.log(`\n如有未完成的任务，请多执行几次\n`);
+      await movement()
+      if($.hotFlag)$.secretpInfo[$.UserName] = false;//火爆账号不执行助力
+    }
+  }
   // 助力
   let res = [];
+  if (ShHelpAuthorFlag) {
+    $.innerShInviteList = getRandomArrayElements([...$.innerShInviteList, ...res], [...$.innerShInviteList, ...res].length);
+    $.ShInviteList.push(...$.innerShInviteList);
+  }
   for (let i = 0; i < cookiesArr.length; i++) {
     $.cookie = cookiesArr[i];
     $.canHelp = true;
@@ -149,174 +169,6 @@ async function movement() {
           await $.wait(1000);
         }
       }
-    }
-
-    if(aabbiill()){
-      console.log('\n运动\n')
-      $.speedTraining = true;
-      await takePostRequest('olympicgames_startTraining');
-      await $.wait(1000);
-      for(let i=0;i<=3;i++){
-        if($.speedTraining){
-          await takePostRequest('olympicgames_speedTraining');
-          await $.wait(1000);
-        }else{
-          break;
-        }
-      }
-    }
-    
-    console.log(`\n做任务\n`);
-    await takePostRequest('olympicgames_getTaskDetail');
-    await $.wait(1000);
-    //做任务
-    for (let i = 0; i < $.taskList.length && !$.hotFlag; i++) {
-      $.oneTask = $.taskList[i];
-      if(!aabbiill()) continue;
-      if ([1, 3, 5, 7, 9, 21, 26].includes($.oneTask.taskType) && $.oneTask.status === 1) {
-        $.activityInfoList = $.oneTask.shoppingActivityVos || $.oneTask.brandMemberVos || $.oneTask.followShopVo || $.oneTask.browseShopVo;
-        for (let j = 0; j < $.activityInfoList.length; j++) {
-          $.oneActivityInfo = $.activityInfoList[j];
-          if ($.oneActivityInfo.status !== 1 || !$.oneActivityInfo.taskToken) {
-            continue;
-          }
-          $.callbackInfo = {};
-          console.log(`做任务：${$.oneActivityInfo.title || $.oneActivityInfo.taskName || $.oneActivityInfo.shopName};等待完成`);
-          if ($.oneTask.taskType === 21 && `${summer_movement_joinjoinjoinhui}` === "true"){
-            let channel = $.oneActivityInfo.memberUrl.match(/channel=(\d+)/) ? $.oneActivityInfo.memberUrl.match(/channel=(\d+)/)[1] : '';
-            const jiarubody = {
-              venderId: $.oneActivityInfo.vendorIds,
-              shopId: $.oneActivityInfo.ext.shopId,
-              bindByVerifyCodeFlag: 1,
-              registerExtend: {},
-              writeChildFlag: 0,
-              channel: channel
-            }
-            let url = `https://api.m.jd.com/client.action?appid=jd_shop_member&functionId=bindWithVender&body=${encodeURIComponent(JSON.stringify(jiarubody))}&client=H5&clientVersion=9.2.0&uuid=88888`
-            await joinjoinjoinhui(url,$.oneActivityInfo.memberUrl)
-            await $.wait(1000);
-          }
-          await takePostRequest('olympicgames_doTaskDetail');
-          if ($.callbackInfo.code === 0 && $.callbackInfo.data && $.callbackInfo.data.result && $.callbackInfo.data.result.taskToken) {
-            await $.wait(getRndInteger(7000, 8000));
-            let sendInfo = encodeURIComponent(`{"dataSource":"newshortAward","method":"getTaskAward","reqParams":"{\\"taskToken\\":\\"${$.callbackInfo.data.result.taskToken}\\"}","sdkVersion":"1.0.0","clientLanguage":"zh"}`)
-            await callbackResult(sendInfo)
-          } else if ($.oneTask.taskType === 5 || $.oneTask.taskType === 3 || $.oneTask.taskType === 26) {
-            await $.wait(getRndInteger(7000, 1500));
-            console.log(`任务完成`);
-          } else if ($.oneTask.taskType === 21) {
-            let data = $.callbackInfo
-            if(data.data && data.data.bizCode === 0){
-              console.log(`获得：${data.data.result.score}`);
-            }else if(data.data && data.data.bizMsg){
-              console.log(data.data.bizMsg);
-            }else{
-            console.log(JSON.stringify($.callbackInfo));
-            }
-            await $.wait(getRndInteger(500, 1000));
-          } else {
-            console.log($.callbackInfo);
-            console.log(`任务失败`);
-            await $.wait(getRndInteger(2000, 3000));
-          }
-        }
-      } else if ($.oneTask.taskType === 2 && $.oneTask.status === 1 && $.oneTask.scoreRuleVos[0].scoreRuleType === 2){
-        console.log(`做任务：${$.oneTask.taskName};等待完成 (实际不会添加到购物车)`);
-        $.taskId = $.oneTask.taskId;
-        $.feedDetailInfo = {};
-        await takePostRequest('olympicgames_getFeedDetail');
-        let productList = $.feedDetailInfo.productInfoVos;
-        let needTime = Number($.feedDetailInfo.maxTimes) - Number($.feedDetailInfo.times);
-        for (let j = 0; j < productList.length && needTime > 0; j++) {
-          if(productList[j].status !== 1){
-            continue;
-          }
-          $.taskToken = productList[j].taskToken;
-          console.log(`加购：${productList[j].skuName}`);
-          await takePostRequest('add_car');
-          await $.wait(getRndInteger(700, 1500));
-          needTime --;
-        }
-      }else if ($.oneTask.taskType === 2 && $.oneTask.status === 1 && $.oneTask.scoreRuleVos[0].scoreRuleType === 0){
-        $.activityInfoList = $.oneTask.productInfoVos ;
-        for (let j = 0; j < $.activityInfoList.length; j++) {
-          $.oneActivityInfo = $.activityInfoList[j];
-          if ($.oneActivityInfo.status !== 1 || !$.oneActivityInfo.taskToken) {
-            continue;
-          }
-          $.callbackInfo = {};
-          console.log(`做任务：浏览${$.oneActivityInfo.skuName};等待完成`);
-          await takePostRequest('olympicgames_doTaskDetail');
-          if ($.oneTask.taskType === 2) {
-            await $.wait(getRndInteger(1000, 2000));
-            console.log(`任务完成`);
-          } else {
-            console.log($.callbackInfo);
-            console.log(`任务失败`);
-            await $.wait(getRndInteger(2000, 3000));
-          }
-        }
-      }
-    }
-    // 店铺
-    console.log(`\n去做店铺任务\n`);
-    $.shopInfoList = [];
-    await takePostRequest('qryCompositeMaterials');
-    for (let i = 0; i < $.shopInfoList.length; i++) {
-      let taskbool = false
-      if(!aabbiill()) continue;
-      $.shopSign = $.shopInfoList[i].extension.shopId;
-      console.log(`执行第${i+1}个店铺任务：${$.shopInfoList[i].name} ID:${$.shopSign}`);
-      $.shopResult = {};
-      await takePostRequest('olympicgames_shopLotteryInfo');
-      await $.wait(1000);
-      if(JSON.stringify($.shopResult) === `{}`) continue;
-      $.shopTask = $.shopResult.taskVos || [];
-      for (let i = 0; i < $.shopTask.length; i++) {
-        $.oneTask = $.shopTask[i];
-        if($.oneTask.taskType === 21 || $.oneTask.taskType === 14 || $.oneTask.status !== 1){continue;}  //不做入会//不做邀请
-        taskbool = true
-        $.activityInfoList = $.oneTask.brandMemberVos || $.oneTask.followShopVo || $.oneTask.shoppingActivityVos || $.oneTask.browseShopVo || $.oneTask.simpleRecordInfoVo;
-        if($.oneTask.taskType === 12){//签到
-          $.oneActivityInfo =  $.activityInfoList;
-          console.log(`店铺签到`);
-          await takePostRequest('olympicgames_bdDoTask');
-          continue;
-        }
-        for (let j = 0; j < $.activityInfoList.length; j++) {
-          $.oneActivityInfo = $.activityInfoList[j];
-          if ($.oneActivityInfo.status !== 1 || !$.oneActivityInfo.taskToken) {
-            continue;
-          }
-          $.callbackInfo = {};
-          console.log(`做任务：${$.oneActivityInfo.subtitle || $.oneActivityInfo.title || $.oneActivityInfo.taskName || $.oneActivityInfo.shopName};等待完成`);
-          await takePostRequest('olympicgames_doTaskDetail');
-          if ($.callbackInfo.code === 0 && $.callbackInfo.data && $.callbackInfo.data.result && $.callbackInfo.data.result.taskToken) {
-            await $.wait(8000);
-            let sendInfo = encodeURIComponent(`{"dataSource":"newshortAward","method":"getTaskAward","reqParams":"{\\"taskToken\\":\\"${$.callbackInfo.data.result.taskToken}\\"}","sdkVersion":"1.0.0","clientLanguage":"zh"}`)
-            await callbackResult(sendInfo)
-          } else  {
-            await $.wait(2000);
-            console.log(`任务完成`);
-          }
-        }
-      }
-      if(taskbool) await $.wait(1000);
-      let boxLotteryNum = $.shopResult.boxLotteryNum;
-      for (let j = 0; j < boxLotteryNum; j++) {
-        console.log(`开始第${j+1}次拆盒`)
-        //抽奖
-        await takePostRequest('olympicgames_boxShopLottery');
-        await $.wait(3000);
-      }
-      // let wishLotteryNum = $.shopResult.wishLotteryNum;
-      // for (let j = 0; j < wishLotteryNum; j++) {
-      //   console.log(`开始第${j+1}次能量抽奖`)
-      //   //抽奖
-      //   await takePostRequest('zoo_wishShopLottery');
-      //   await $.wait(3000);
-      // }
-      if(taskbool) await $.wait(3000);
     }
 
     $.Shend = false
