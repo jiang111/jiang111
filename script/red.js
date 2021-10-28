@@ -1,3 +1,451 @@
+/*
+双十一无门槛红包
+cron 0,30 0,12,19,22 * * * jd_red1.js
+添加环境变量FLCODE 如需自己吃返利，请填写该变量（https://u.jd.com/后面的英文）
+* */
+const $ = new Env('抢双11无门槛红包');
+const jdCookieNode = $.isNode() ? require('./jdCookie.js') : '';
+let cookiesArr = [];
+if ($.isNode()) {
+    Object.keys(jdCookieNode).forEach((item) => {
+        cookiesArr.push(jdCookieNode[item])
+    })
+    if (process.env.JD_DEBUG && process.env.JD_DEBUG === 'false') console.log = () => {
+    };
+} else {
+    cookiesArr = [
+        $.getdata("CookieJD"),
+        $.getdata("CookieJD2"),
+        ...$.toObj($.getdata("CookiesJD") || "[]").map((item) => item.cookie)].filter((item) => !!item);
+}
+let cookie = '';
+$.shareCode = '';
+!(async () => {
+    if (!cookiesArr[0]) {
+        $.msg($.name, '【提示】请先获取京东账号一cookie\n直接使用NobyDa的京东签到获取', 'https://bean.m.jd.com/bean/signIndex.action', {"open-url": "https://bean.m.jd.com/bean/signIndex.action"});
+        return;
+    }
+    for (let i = 0; i < cookiesArr.length; i++) {
+        if (cookiesArr[i]) {
+            cookie = cookiesArr[i];
+            $.UserName = decodeURIComponent(cookie.match(/pt_pin=([^; ]+)(?=;?)/) && cookie.match(/pt_pin=([^; ]+)(?=;?)/)[1])
+            $.index = i + 1;
+            $.isLogin = true;
+            $.nickName = '';
+            //await TotalBean();
+            console.log(`\n******开始【京东账号${$.index}】${$.nickName || $.UserName}*********\n`);
+            if (!$.isLogin) {
+                $.msg($.name, `【提示】cookie已失效`, `京东账号${$.index} ${$.nickName || $.UserName}\n请重新登录获取\nhttps://bean.m.jd.com/bean/signIndex.action`, {"open-url": "https://bean.m.jd.com/bean/signIndex.action"});
+                if ($.isNode()) {
+                    await notify.sendNotify(`${$.name}cookie已失效 - ${$.UserName}`, `京东账号${$.index} ${$.UserName}\n请重新登录获取cookie`);
+                }
+                continue
+            }
+            await main()
+        }
+    }
+})().catch((e) => {
+    $.log('', `❌ ${$.name}, 失败! 原因: ${e}!`, '')
+}).finally(() => {
+    $.done();
+});
+
+async function main() {
+    let userName = decodeURIComponent(cookie.match(/pt_pin=(.+?);/) && cookie.match(/pt_pin=(.+?);/)[1]);
+    $.UA = `jdapp;iPhone;10.2.0;13.1.2;${randomString(40)};M/5.0;network/wifi;ADID/;model/iPhone8,1;addressid/2308460622;appBuild/167853;jdSupportDarkMode/0;Mozilla/5.0 (iPhone; CPU iPhone OS 13_1_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148;supportJDSHWK/1;`
+    $.max = false;
+    $.hotFlag = false;
+    const flCodeArr = ['3K9D5Kc', '3IVMKm8', '3I9UVcJ', '3IXbyRK', '3wVdViu'];
+    const flCode = $.isNode() ? (process.env.FLCODE ? process.env.FLCODE : flCodeArr[Math.floor((Math.random() * flCodeArr.length))]) : flCodeArr[Math.floor((Math.random() * flCodeArr.length))];
+    $.code = flCode;
+    for (let i = 0; i < 10 && !$.max; i++) {
+        $.newCookie = '';
+        $.url1 = '';
+        $.url2 = '';
+        $.eid = '';
+        await getInfo1();
+        if (!$.url1) {
+            console.log(`${userName},初始化1失败,可能黑号`);
+            $.hotFlag = true;
+            break;
+        }
+        await getInfo2();
+        if (!$.url2) {
+            console.log(`${userName},初始化2失败,可能黑号`);
+            $.hotFlag = true;
+            break;
+        }
+        $.actId = $.url2.match(/mall\/active\/([^/]+)\/index\.html/) && $.url2.match(/mall\/active\/([^/]+)\/index\.html/)[1] || '2GdKXzvywVytLvcJTk2K3pLtDEHq';
+        let arr = await getBody($.UA, $.url2);
+        await getEid(arr)
+        console.log(`$.actId:` + $.actId)
+        if ($.eid) {
+            if (i === 0 && $.shareCode) {
+                await getCoupons($.shareCode);
+            } else {
+                await getCoupons("");
+            }
+        }
+        await $.wait(5000)
+    }
+    if ($.index === 1 && !$.hotFlag) {
+        await $.wait(2000)
+        await mainInfo()
+    }
+}
+
+function mainInfo() {
+    return new Promise(resolve => {
+        let opts = {
+            url: `https://api.m.jd.com/api?functionId=shareUnionCoupon&appid=u&_=${Date.now()}&loginType=2&body={%22unionActId%22:%2231134%22,%22actId%22:%22${$.actId}%22,%22platform%22:4,%22unionShareId%22:%22${$.shareCode}%22,%22d%22:%22${$.code}%22,%22supportPic%22:2,%22supportLuckyCode%22:0,%22eid%22:%22${$.eid}%22}&client=apple&clientVersion=8.3.6`,
+            headers: {
+                "Accept-Language": "zh-cn",
+                "Accept-Encoding": "gzip, deflate, br",
+                'Cookie': `${cookie} ${$.newCookie}`,
+                "User-Agent": $.UA,
+            }
+        }
+        $.get(opts, async (err, resp, data) => {
+            try {
+                if (err) {
+                    console.log(`${$.toStr(err)}`)
+                } else {
+                    let res = $.toObj(data, data);
+                    if (typeof res == 'object') {
+                        if (res.code == 0 && res.data && res.data.shareUrl) {
+                            $.shareCode = res.data.shareUrl.match(/$.code\?s=([^&]+)/) && res.data.shareUrl.match(/$.code\?s=([^&]+)/)[1] || ''
+                            console.log('助力码:' + $.shareCode)
+                        }
+                    } else {
+                        console.log(data)
+                    }
+                }
+            } catch (e) {
+                $.logErr(e, resp)
+            } finally {
+                resolve();
+            }
+        })
+    })
+}
+
+function getEid(arr) {
+    return new Promise(resolve => {
+        const options = {
+            url: `https://gia.jd.com/fcf.html?a=${arr.a}`,
+            body: `d=${arr.d}`,
+            headers: {
+                "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+                "User-Agent": $.UA
+            }
+        }
+        $.post(options, async (err, resp, data) => {
+            try {
+                if (err) {
+                    throw new Error(err);
+                } else {
+                    if (data.indexOf("*_*") > 0) {
+                        data = data.split("*_*", 2);
+                        data = JSON.parse(data[1]);
+                        $.eid = data.eid
+                    } else {
+                        console.log(`京豆api返回数据为空，请检查自身原因`)
+                    }
+                }
+            } catch (e) {
+                $.logErr(e, resp);
+            } finally {
+                resolve(data);
+            }
+        })
+    })
+}
+
+function randomString(e) {
+    e = e || 32;
+    let t = "abcdef0123456789", a = t.length, n = "";
+    for (i = 0; i < e; i++)
+        n += t.charAt(Math.floor(Math.random() * a));
+    return n
+}
+
+async function getCoupons(shareCode) {
+    return new Promise(resolve => {
+        let opts = {
+            url: `https://api.m.jd.com/api?functionId=getCoupons&appid=u&_=${Date.now()}&loginType=2&body={%22platform%22:4,%22unionActId%22:%2231134%22,%22actId%22:%22${$.actId}%22,%22d%22:%22${$.code}%22,%22unionShareId%22:%22${shareCode}%22,%22type%22:1,%22eid%22:%22${$.eid}%22}&client=apple&clientVersion=8.3.6&h5st=undefined`,
+            headers: {
+                "Accept-Language": "zh-cn",
+                "Accept-Encoding": "gzip, deflate, br",
+                'Cookie': `${cookie} ${$.newCookie}`,
+                'user-agent': $.UA
+            }
+        }
+        $.get(opts, async (err, resp, data) => {
+            try {
+                if (err) {
+                    console.log(`${$.toStr(err)}`)
+                    console.log(`${$.name} API请求失败，请检查网路重试`)
+                } else {
+                    let res = $.toObj(data, data);
+                    if (typeof res == 'object') {
+                        if (res.msg) {
+                            console.log('异常：' + res.msg)
+                        }
+                        if (res.msg.indexOf('上限') !== -1 || res.msg.indexOf('未登录') !== -1) {
+                            $.max = true;
+                        }
+                        if ($.shareId && typeof res.data !== 'undefined' && typeof res.data.joinNum !== 'undefined') {
+                            console.log(`当前${res.data.joinSuffix}:${res.data.joinNum}`)
+                        }
+                        if (res.code == 0 && res.data) {
+                            if (res.data.type == 1) {
+                                console.log(`获得红包：${res.data.discount}元`)
+                            } else if (res.data.type == 3) {
+                                console.log(`获得优惠券：️满${res.data.quota}减${res.data.discount}`)
+                            } else if (res.data.type == 6) {
+                                console.log(`获得打折券：满${res.data.quota}打${res.data.discount * 10}折`)
+                            } else {
+                                console.log(`获得未知${res.data.quota || ''} ${res.data.discount}`)
+                                console.log(data)
+                            }
+                        }
+                    } else {
+                        console.log(data)
+                    }
+                }
+            } catch (e) {
+                $.logErr(e, resp)
+            } finally {
+                resolve();
+            }
+        })
+    })
+}
+
+async function getInfo2() {
+    return new Promise(resolve => {
+        const options = {
+            url: $.url1,
+            followRedirect: false,
+            headers: {
+                'Cookie': `${cookie} ${$.newCookie}`,
+                'user-agent': $.UA
+            }
+        }
+        $.get(options, async (err, resp, data) => {
+            try {
+                let setcookies = resp && resp['headers'] && (resp['headers']['set-cookie'] || resp['headers']['Set-Cookie'] || '') || ''
+                let setcookie = ''
+                if (setcookies) {
+                    if (typeof setcookies != 'object') {
+                        setcookie = setcookies.split(',')
+                    } else setcookie = setcookies
+                    for (let ck of setcookie) {
+                        let name = ck.split(";")[0].trim()
+                        if (name.split("=")[1]) {
+                            if ($.newCookie.indexOf(name.split("=")[1]) == -1) $.newCookie += name.replace(/ /g, '') + '; '
+                        }
+                    }
+                }
+                $.url2 = resp && resp['headers'] && (resp['headers']['location'] || resp['headers']['Location'] || '') || ''
+                $.url2 = decodeURIComponent($.url2)
+                $.url2 = $.url2.match(/(https:\/\/prodev\.m\.jd\.com\/mall[^'"]+)/) && $.url2.match(/(https:\/\/prodev\.m\.jd\.com\/mall[^'"]+)/)[1] || ''
+            } catch (e) {
+                $.logErr(e, resp);
+            } finally {
+                resolve(data);
+            }
+        })
+    })
+}
+
+async function getInfo1(cookie) {
+    return new Promise(resolve => {
+        const options = {
+            url: `https://u.jd.com/${$.code}?s=${$.shareCode}`,
+            followRedirect: false,
+            headers: {
+                'Cookie': cookie,
+                'user-agent': $.UA
+            }
+        }
+        $.get(options, async (err, resp, data) => {
+            try {
+                let setcookies = resp && resp['headers'] && (resp['headers']['set-cookie'] || resp['headers']['Set-Cookie'] || '') || '';
+                let setcookie = ''
+                if (setcookies) {
+                    if (typeof setcookies != 'object') {
+                        setcookie = setcookies.split(',')
+                    } else setcookie = setcookies
+                    for (let ck of setcookie) {
+                        let name = ck.split(";")[0].trim()
+                        if (name.split("=")[1]) {
+                            if ($.newCookie.indexOf(name.split("=")[1]) == -1) $.newCookie += name.replace(/ /g, '') + '; '
+                        }
+                    }
+                }
+                $.url1 = data.match(/(https:\/\/u\.jd\.com\/jda[^']+)/) && data.match(/(https:\/\/u\.jd\.com\/jda[^']+)/)[1] || ''
+            } catch (e) {
+                $.logErr(e, resp);
+            } finally {
+                resolve(data);
+            }
+        })
+    })
+}
+
+const navigator = {
+    userAgent: require('./USER_AGENTS').USER_AGENT,
+    plugins: {length: 0},
+    language: "zh-CN",
+};
+const screen = {
+    availHeight: 812,
+    availWidth: 375,
+    colorDepth: 24,
+    height: 812,
+    width: 375,
+    pixelDepth: 24,
+
+}
+const window = {}
+const document = {
+    location: {
+        "ancestorOrigins": {},
+        "href": "https://prodev.m.jd.com/mall/active/3BbAVGQPDd6vTyHYjmAutXrKAos6/index.html",
+        "origin": "https://prodev.m.jd.com",
+        "protocol": "https:",
+        "host": "prodev.m.jd.com",
+        "hostname": "prodev.m.jd.com",
+        "port": "",
+        "pathname": "/mall/active/3BbAVGQPDd6vTyHYjmAutXrKAos6/index.html",
+        "search": "",
+        "hash": ""
+    }
+};
+var start_time = (new Date).getTime(),
+    _jdfp_canvas_md5 = "",
+    _jdfp_webgl_md5 = "",
+    _fingerprint_step = 1,
+    _JdEid = "",
+    _eidFlag = !1,
+    risk_jd_local_fingerprint = "",
+    _jd_e_joint_;
+
+function t(a) {
+    if (null == a || void 0 == a || "" == a) return "NA";
+    if (null == a || void 0 == a || "" == a) var b = "";
+    else {
+        b = [];
+        for (var c = 0; c < 8 * a.length; c += 8) b[c >> 5] |= (a.charCodeAt(c / 8) & 255) << c % 32
+    }
+    a = 8 * a.length;
+    b[a >> 5] |= 128 << a % 32;
+    b[(a + 64 >>> 9 << 4) + 14] = a;
+    a = 1732584193;
+    c = -271733879;
+    for (var l = -1732584194, h = 271733878, q = 0; q < b.length; q += 16) {
+        var z = a,
+            C = c,
+            D = l,
+            B = h;
+        a = v(a, c, l, h, b[q + 0], 7, -680876936);
+        h = v(h, a, c, l, b[q + 1], 12, -389564586);
+        l = v(l, h, a, c, b[q + 2], 17, 606105819);
+        c = v(c, l, h, a, b[q + 3], 22, -1044525330);
+        a = v(a, c, l, h, b[q + 4], 7, -176418897);
+        h = v(h, a, c, l, b[q + 5], 12, 1200080426);
+        l = v(l, h, a, c, b[q + 6], 17, -1473231341);
+        c = v(c, l, h, a, b[q + 7], 22, -45705983);
+        a = v(a, c, l, h, b[q + 8], 7, 1770035416);
+        h = v(h, a, c, l, b[q + 9], 12, -1958414417);
+        l = v(l, h, a, c, b[q + 10], 17, -42063);
+        c = v(c, l, h, a, b[q + 11], 22, -1990404162);
+        a = v(a, c, l, h, b[q + 12], 7, 1804603682);
+        h = v(h, a, c, l, b[q + 13], 12, -40341101);
+        l = v(l, h, a, c, b[q + 14], 17, -1502002290);
+        c = v(c, l, h, a, b[q + 15], 22, 1236535329);
+        a = x(a, c, l, h, b[q + 1], 5, -165796510);
+        h = x(h, a, c, l, b[q + 6], 9, -1069501632);
+        l = x(l, h, a, c, b[q + 11], 14, 643717713);
+        c = x(c, l, h, a, b[q + 0], 20, -373897302);
+        a = x(a, c, l, h, b[q + 5], 5, -701558691);
+        h = x(h, a, c, l, b[q + 10], 9, 38016083);
+        l = x(l, h, a, c, b[q + 15], 14, -660478335);
+        c = x(c, l, h, a, b[q + 4], 20, -405537848);
+        a = x(a, c, l, h, b[q + 9], 5, 568446438);
+        h = x(h, a, c, l, b[q + 14], 9, -1019803690);
+        l = x(l, h, a, c, b[q + 3], 14, -187363961);
+        c = x(c, l, h, a, b[q + 8], 20, 1163531501);
+        a = x(a, c, l, h, b[q + 13], 5, -1444681467);
+        h = x(h, a, c, l, b[q + 2], 9, -51403784);
+        l = x(l, h, a, c, b[q + 7], 14, 1735328473);
+        c = x(c, l, h, a, b[q + 12], 20, -1926607734);
+        a = u(c ^ l ^ h, a, c, b[q + 5], 4, -378558);
+        h = u(a ^ c ^ l, h, a, b[q + 8], 11, -2022574463);
+        l = u(h ^ a ^ c, l, h, b[q + 11], 16, 1839030562);
+        c = u(l ^ h ^ a, c, l, b[q + 14], 23, -35309556);
+        a = u(c ^ l ^ h, a, c, b[q + 1], 4, -1530992060);
+        h = u(a ^ c ^ l, h, a, b[q + 4], 11, 1272893353);
+        l = u(h ^ a ^ c, l, h, b[q + 7], 16, -155497632);
+        c = u(l ^ h ^ a, c, l, b[q + 10], 23, -1094730640);
+        a = u(c ^ l ^ h, a, c, b[q + 13], 4, 681279174);
+        h = u(a ^ c ^ l, h, a, b[q + 0], 11, -358537222);
+        l = u(h ^ a ^ c, l, h, b[q + 3], 16, -722521979);
+        c = u(l ^ h ^ a, c, l, b[q + 6], 23, 76029189);
+        a = u(c ^ l ^ h, a, c, b[q + 9], 4, -640364487);
+        h = u(a ^ c ^ l, h, a, b[q + 12], 11, -421815835);
+        l = u(h ^ a ^ c, l, h, b[q + 15], 16, 530742520);
+        c = u(l ^ h ^ a, c, l, b[q + 2], 23, -995338651);
+        a = w(a, c, l, h, b[q + 0], 6, -198630844);
+        h = w(h, a, c, l, b[q + 7], 10, 1126891415);
+        l = w(l, h, a, c, b[q + 14], 15, -1416354905);
+        c = w(c, l, h, a, b[q + 5], 21, -57434055);
+        a = w(a, c, l, h, b[q + 12], 6, 1700485571);
+        h = w(h, a, c, l, b[q + 3], 10, -1894986606);
+        l = w(l, h, a, c, b[q + 10], 15, -1051523);
+        c = w(c, l, h, a, b[q + 1], 21, -2054922799);
+        a = w(a, c, l, h, b[q + 8], 6, 1873313359);
+        h = w(h, a, c, l, b[q + 15], 10, -30611744);
+        l = w(l, h, a, c, b[q + 6], 15, -1560198380);
+        c = w(c, l, h, a, b[q + 13], 21, 1309151649);
+        a = w(a, c, l, h, b[q + 4], 6, -145523070);
+        h = w(h, a, c, l, b[q + 11], 10, -1120210379);
+        l = w(l, h, a, c, b[q + 2], 15, 718787259);
+        c = w(c, l, h, a, b[q + 9], 21, -343485551);
+        a = A(a, z);
+        c = A(c, C);
+        l = A(l, D);
+        h = A(h, B)
+    }
+    b = [a, c, l, h];
+    a = "";
+    for (c = 0; c < 4 * b.length; c++) a += "0123456789abcdef".charAt(b[c >> 2] >> c % 4 * 8 + 4 & 15) +
+        "0123456789abcdef".charAt(b[c >> 2] >> c % 4 * 8 & 15);
+    return a
+}
+
+function u(a, b, c, l, h, q) {
+    a = A(A(b, a), A(l, q));
+    return A(a << h | a >>> 32 - h, c)
+}
+
+function v(a, b, c, l, h, q, z) {
+    return u(b & c | ~b & l, a, b, h, q, z)
+}
+
+function x(a, b, c, l, h, q, z) {
+    return u(b & l | c & ~l, a, b, h, q, z)
+}
+
+function w(a, b, c, l, h, q, z) {
+    return u(c ^ (b | ~l), a, b, h, q, z)
+}
+
+function A(a, b) {
+    var c = (a & 65535) + (b & 65535);
+    return (a >> 16) + (b >> 16) + (c >> 16) << 16 | c & 65535
+}
 
 _fingerprint_step = 2;
 var y = "",
