@@ -10,3 +10,5 @@
 <br />
 
 [![Gravifer's github activity graph](https://activity-graph.herokuapp.com/graph?username=jiang111&bg_color=ffffff0a&color=3080ed&line=5094f0&point=4d72f2&hide_border=true)](https://github.com/jiang111/jiang111)
+
+![](https://github.com/jiang111/jiang111/raw/master/Pikachu.gif)
