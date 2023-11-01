@@ -9,7 +9,7 @@ echo flutter.sdk=$(pwd) > emas_config.local.properties
 cat emas_config.local.properties > ../android/local.properties
 cd ..
 echo "开始构建2套环境的 web:"
-flutter build web --release --target ./lib/main_dev2.dart
+flutter build web --release --web-renderer canvaskit --target ./lib/main_dev2.dart
 echo "构建完成"
 dart ./bin/patch.dart http://mapptest2.feifan.art
 cd build
