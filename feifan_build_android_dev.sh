@@ -4,6 +4,7 @@ chmod 774 flutter
 chmod 774 dart
 ./flutter doctor
 export PATH=PATH=$PATH:$(pwd)
+export ANDROID_SDK_ROOT=/usr/lib/android-sdk
 cd ..
 echo flutter.sdk=$(pwd) > emas_config.local.properties
 cat emas_config.local.properties > ../android/local.properties
