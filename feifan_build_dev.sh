@@ -12,8 +12,4 @@ echo "开始构建1套环境的 web:"
 flutter build web --release --web-renderer canvaskit --target ./lib/main_dev.dart
 echo "构建完成"
 dart ./bin/patch.dart http://mapptest.feifan.art
-cd build
-echo "开始打包 web.tar.gz"
-tar -zcf web.tar.gz ./web/
-echo 'web.tar.gz 打包完成,文件路径:'
-echo $(pwd)/web.tar.gz
+echo "----------- 完成 --------------"
