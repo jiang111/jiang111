@@ -20,7 +20,7 @@ fi
 source /etc/profile  
 export PATH="/root/workspace/NewFeiFanApp_7iSy/android-sdk-linux/tools:$PATH"
 export PATH="/root/workspace/NewFeiFanApp_7iSy/android-sdk-linux/platform-tools:$PATH"
-android update sdk -f --no-ui --all --filter platform-tools,android-33
+echo "y" | android update sdk -f --no-ui --all --filter platform-tools,android-33
 
 git clone https://github.com/flutter/flutter.git -b stable
 cd ./flutter/bin
