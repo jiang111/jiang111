@@ -35,7 +35,6 @@ wget https://dl.google.com/android/android-sdk_r24.4.1-linux.tgz
 
 tar -zxf  android-sdk_r24.4.1-linux.tgz
 
-export ANDROID_SDK_ROOT="/root/workspace/NewFeiFanApp_7iSy/android-sdk-linux"
 
 export ANDROID_HOME="/root/workspace/NewFeiFanApp_7iSy/android-sdk-linux"
 if ! grep "ANDROID_HOME=/root/workspace/NewFeiFanApp_7iSy/android-sdk-linux" /etc/profile 
@@ -52,7 +51,7 @@ export PATH="/root/workspace/NewFeiFanApp_7iSy/android-sdk-linux/tools:$PATH"
 export PATH="/root/workspace/NewFeiFanApp_7iSy/android-sdk-linux/platform-tools:$PATH"
 
 while true; do
-    echo "y" | android update sdk --force --no-ui --all --filter platform-tools,android-33,cmdline-tools
+    echo "y" | android update sdk --force --no-ui --all
     if [ $? -eq 0 ]; then
         echo "命令执行成功。"
         break
@@ -60,6 +59,7 @@ while true; do
         echo "命令执行失败。继续尝试。"
     fi
 done
+export ANDROID_SDK_ROOT="/root/workspace/NewFeiFanApp_7iSy/android-sdk-linux"
 
 
 git clone https://github.com/flutter/flutter.git -b stable
