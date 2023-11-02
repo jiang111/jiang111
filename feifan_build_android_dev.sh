@@ -1,6 +1,34 @@
-apt-get install -y software-properties-common
+
+while true; do
+    echo "y" | apt-get install software-properties-common
+    if [ $? -eq 0 ]; then
+        echo "命令执行成功。"
+        break
+    else
+        echo "命令执行失败。继续尝试。"
+    fi
+done
+
 add-apt-repository ppa:openjdk-r/ppa
-apt-get install -y openjdk-11-jdk
+
+while true; do
+    echo "y" | apt-get update
+    if [ $? -eq 0 ]; then
+        echo "命令执行成功。"
+        break
+    else
+        echo "命令执行失败。继续尝试。"
+    fi
+done
+while true; do
+    echo "y" | apt install -y openjdk-11-jdk
+    if [ $? -eq 0 ]; then
+        echo "命令执行成功。"
+        break
+    else
+        echo "命令执行失败。继续尝试。"
+    fi
+done
 java -version
 
 wget https://dl.google.com/android/android-sdk_r24.4.1-linux.tgz
