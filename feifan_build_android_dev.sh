@@ -1,7 +1,7 @@
 apt install -y openjdk-8-jdk
 java -version
 
-wget https://dl.google.com/android/android-sdk_r34.0.5-linux.tgz
+wget https://dl.google.com/android/android-sdk_r24.4.1-linux.tgz
 
 tar -zxf  android-sdk_r24.4.1-linux.tgz
 
