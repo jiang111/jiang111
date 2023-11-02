@@ -1,4 +1,6 @@
-apt install -y openjdk-8-jdk
+apt-get install -y software-properties-common
+add-apt-repository ppa:openjdk-r/ppa
+apt-get install -y openjdk-11-jdk
 java -version
 
 wget https://dl.google.com/android/android-sdk_r24.4.1-linux.tgz
@@ -22,7 +24,7 @@ export PATH="/root/workspace/NewFeiFanApp_7iSy/android-sdk-linux/tools:$PATH"
 export PATH="/root/workspace/NewFeiFanApp_7iSy/android-sdk-linux/platform-tools:$PATH"
 
 while true; do
-    echo "y" | android update sdk --force --no-ui --all --filter platform-tools,android-33
+    echo "y" | android update sdk --force --no-ui --all --filter platform-tools,android-33,cmdline-tools
     if [ $? -eq 0 ]; then
         echo "命令执行成功。"
         break
