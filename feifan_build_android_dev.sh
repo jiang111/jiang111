@@ -1,10 +1,30 @@
+apt install -y openjdk-8-jdk
+java -version
+
+wget https://dl.google.com/android/android-sdk_r34.0.5-linux.tgz
+
+tar -zxf  android-sdk_r24.4.1-linux.tgz
+
+export ANDROID_HOME="/root/workspace/NewFeiFanApp_7iSy/android-sdk-linux"
+if ! grep "ANDROID_HOME=/root/workspace/NewFeiFanApp_7iSy/android-sdk-linux" /etc/profile 
+then
+echo "ANDROID_HOME=/root/workspace/NewFeiFanApp_7iSy/android-sdk-linux" | sudo tee -a /etc/profile
+echo "export ANDROID_HOME" | sudo tee -a /etc/profile
+
+echo "PATH=${ANDROID_HOME}/tools:${ANDROID_HOME}/platform-tools:$PATH" | sudo tee -a /etc/profile
+echo "export PATH" | sudo tee -a /etc/profile
+fi
+
+source /etc/profile  
+
+android update sdk -f --no-ui --all --filter platform-tools,android-33
+
 git clone https://github.com/flutter/flutter.git -b stable
 cd ./flutter/bin
 chmod 774 flutter
 chmod 774 dart
 ./flutter doctor
 export PATH=PATH=$PATH:$(pwd)
-export ANDROID_SDK_ROOT=/usr/lib/android-sdk
 cd ..
 echo flutter.sdk=$(pwd) > emas_config.local.properties
 cat emas_config.local.properties > ../android/local.properties
