@@ -5,6 +5,8 @@ wget https://dl.google.com/android/android-sdk_r24.4.1-linux.tgz
 
 tar -zxf  android-sdk_r24.4.1-linux.tgz
 
+export ANDROID_SDK_ROOT="/root/workspace/NewFeiFanApp_7iSy/android-sdk-linux"
+
 export ANDROID_HOME="/root/workspace/NewFeiFanApp_7iSy/android-sdk-linux"
 if ! grep "ANDROID_HOME=/root/workspace/NewFeiFanApp_7iSy/android-sdk-linux" /etc/profile 
 then
@@ -16,7 +18,8 @@ echo "export PATH" | sudo tee -a /etc/profile
 fi
 
 source /etc/profile  
-
+export PATH="/root/workspace/NewFeiFanApp_7iSy/android-sdk-linux/tools:$PATH"
+export PATH="/root/workspace/NewFeiFanApp_7iSy/android-sdk-linux/platform-tools:$PATH"
 android update sdk -f --no-ui --all --filter platform-tools,android-33
 
 git clone https://github.com/flutter/flutter.git -b stable
