@@ -20,7 +20,17 @@ fi
 source /etc/profile  
 export PATH="/root/workspace/NewFeiFanApp_7iSy/android-sdk-linux/tools:$PATH"
 export PATH="/root/workspace/NewFeiFanApp_7iSy/android-sdk-linux/platform-tools:$PATH"
-echo "y" | android update sdk -f --no-ui --all --filter platform-tools,android-33
+
+while true; do
+    echo "y" | android update sdk --force --no-ui --all --filter platform-tools,android-33
+    if [ $? -eq 0 ]; then
+        echo "命令执行成功。"
+        break
+    else
+        echo "命令执行失败。继续尝试。"
+    fi
+done
+
 
 git clone https://github.com/flutter/flutter.git -b stable
 cd ./flutter/bin
