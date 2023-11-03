@@ -51,7 +51,7 @@ export PATH="/root/workspace/NewFeiFanApp_7iSy/android-sdk-linux/tools:$PATH"
 export PATH="/root/workspace/NewFeiFanApp_7iSy/android-sdk-linux/platform-tools:$PATH"
 
 while true; do
-    echo "y" | update sdk -u -s -a -t platform-tools,android-33,cmdline-tools
+    echo "y" | android update sdk -u -s -a -t platform-tools,android-33,cmdline-tools
     if [ $? -eq 0 ]; then
         echo "命令执行成功。"
         break
