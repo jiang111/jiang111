@@ -56,6 +56,9 @@ while true; do
     fi
 done
 
+echo "y" | /root/workspace/NewFeiFanApp_7iSy/android-sdk-linux/tools/bin/sdkmanager --install "cmdline-tools;latest"
+yes | /root/workspace/NewFeiFanApp_7iSy/android-sdk-linux/tools/bin/sdkmanager --licenses
+
 
 export ANDROID_SDK_ROOT="/root/workspace/NewFeiFanApp_7iSy/android-sdk-linux"
 
