@@ -46,7 +46,7 @@ export PATH="/root/workspace/NewFeiFanApp_7iSy/android-sdk-linux/platform-tools:
 
 
 while true; do
-    echo "y" | android update sdk -u -s -a -t platform-tool,android-34,sysimg-34,build-tools-34.0.0
+    echo "y" | android update sdk -u -s -a -t platform-tool,android-34,sysimg-34,build-tools-34.0.0,cmdline-tools
     # 检查命令的退出状态
     if [ $? -eq 0 ]; then
         echo "命令执行成功。"
@@ -55,9 +55,6 @@ while true; do
         echo "命令执行失败。继续尝试。"
     fi
 done
-
-echo "y" | /root/workspace/NewFeiFanApp_7iSy/android-sdk-linux/tools/bin/sdkmanager --install "cmdline-tools;latest"
-yes | /root/workspace/NewFeiFanApp_7iSy/android-sdk-linux/tools/bin/sdkmanager --licenses
 
 
 export ANDROID_SDK_ROOT="/root/workspace/NewFeiFanApp_7iSy/android-sdk-linux"
@@ -77,6 +74,22 @@ echo flutter.sdk=$(pwd) > emas_config.local.properties
 echo sdk.dir="/root/workspace/NewFeiFanApp_7iSy/android-sdk-linux" > emas_config.local.properties
 cat emas_config.local.properties > ../android/local.properties
 cd ..
+
+
+
+while true; do
+    echo "y" | flutter doctor --android-licenses
+    # 检查命令的退出状态
+    if [ $? -eq 0 ]; then
+        echo "命令执行成功。"
+        break
+    else
+        echo "命令执行失败。继续尝试。"
+    fi
+done
+
+
+
 echo "====================================================================="
 echo "Start to 构建一套环境:"
 echo "====================================================================="
