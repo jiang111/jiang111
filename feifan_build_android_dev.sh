@@ -45,7 +45,7 @@ yes | sdkmanager  --licenses
 echo "y" | sdkmanager --update
 
 
-echo "y" | sdkmanager "platform-tools" "platforms;android–34" "build-tools;34.0.0"
+echo "y" | sdkmanager "platform-tools" "build-tools;34.0.0"
 yes | sdkmanager  --licenses
 
 export ANDROID_SDK_ROOT="/usr/lib/android-sdk"
