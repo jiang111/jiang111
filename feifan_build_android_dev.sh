@@ -50,6 +50,8 @@ yes | sdkmanager  --licenses
 
 export ANDROID_SDK_ROOT="/usr/lib/android-sdk"
 
+
+cd /root/workspace/NewFeiFanApp_7iSy
 echo "====================================================================="
 echo "Start to install flutter sdk"
 echo "====================================================================="
