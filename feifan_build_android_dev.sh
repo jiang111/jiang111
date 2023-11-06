@@ -1,52 +1,12 @@
-echo "====================================================================="
-echo "Start to install jdk 11"
-echo "====================================================================="
- 
 
-mkdir java11
-cd java11
-wget https://raw.githubusercontent.com/jiang111/jiang111/master/jdk-11/Archive.zip
-wget https://raw.githubusercontent.com/jiang111/jiang111/master/jdk-11/Archive2.zip
-wget https://raw.githubusercontent.com/jiang111/jiang111/master/jdk-11/Archive3.zip
-
-unzip Archive.zip
-unzip Archive2.zip
-unzip Archive3.zip
-
-cd ..
-
-export JAVA_HOME=/root/workspace/NewFeiFanApp_7iSy/java11
-export JRE_HOME=${JAVA_HOME}/jre
-export CLASSPATH=.:${JAVA_HOME}/lib:${JRE_HOME}/lib
-export PATH=${JAVA_HOME}/bin:$PATH
-java -version
 
 echo "====================================================================="
 echo "Start to install android sdk"
 echo "====================================================================="
  
-wget https://dl.google.com/android/android-sdk_r24.4.1-linux.tgz
-
-tar -zxf  android-sdk_r24.4.1-linux.tgz
-
-
-export ANDROID_HOME="/root/workspace/NewFeiFanApp_7iSy/android-sdk-linux"
-if ! grep "ANDROID_HOME=/root/workspace/NewFeiFanApp_7iSy/android-sdk-linux" /etc/profile 
-then
-echo "ANDROID_HOME=/root/workspace/NewFeiFanApp_7iSy/android-sdk-linux" | sudo tee -a /etc/profile
-echo "export ANDROID_HOME" | sudo tee -a /etc/profile
-
-echo "PATH=${ANDROID_HOME}/tools:${ANDROID_HOME}/platform-tools:$PATH" | sudo tee -a /etc/profile
-echo "export PATH" | sudo tee -a /etc/profile
-fi
-
-source /etc/profile  
-export PATH="/root/workspace/NewFeiFanApp_7iSy/android-sdk-linux/tools:$PATH"
-export PATH="/root/workspace/NewFeiFanApp_7iSy/android-sdk-linux/platform-tools:$PATH"
-
-
+echo "y" |  apt update
 while true; do
-    echo "y" | android update sdk -u -s -a -t platform-tool,android-34,sysimg-34,build-tools-34.0.0,cmdline-tools
+    echo "y" | apt install android-sdk
     # 检查命令的退出状态
     if [ $? -eq 0 ]; then
         echo "命令执行成功。"
@@ -56,8 +16,39 @@ while true; do
     fi
 done
 
+export ANDROID_HOME="/usr/lib/android-sdk"
+if ! grep "ANDROID_HOME=/usr/lib/android-sdk" /etc/profile 
+then
+echo "ANDROID_HOME=/usr/lib/android-sdk" | sudo tee -a /etc/profile
+echo "export ANDROID_HOME" | sudo tee -a /etc/profile
 
-export ANDROID_SDK_ROOT="/root/workspace/NewFeiFanApp_7iSy/android-sdk-linux"
+echo "PATH=${ANDROID_HOME}/tools:${ANDROID_HOME}/platform-tools:$PATH" | sudo tee -a /etc/profile
+echo "export PATH" | sudo tee -a /etc/profile
+fi
+
+source /etc/profile  
+export PATH="/usr/lib/android-sdk/tools:$PATH"
+export PATH="/usr/lib/android-sdk/platform-tools:$PATH"
+
+
+cd /usr/lib/android-sdk
+
+wget https://dl.google.com/android/repository/commandlinetools-linux-6609375_latest.zip
+
+
+unzip commandlinetools-linux-6609375_latest.zip -d cmdline-tools
+
+export PATH=$ANDROID_HOME/cmdline-tools/tools/bin:$PATH
+
+yes | sdkmanager  --licenses
+
+echo "y" | sdkmanager --update
+
+
+echo "y" | sdkmanager "platform-tools" "platforms;android–34" "build-tools;34.0.0"
+yes | sdkmanager  --licenses
+
+export ANDROID_SDK_ROOT="/usr/lib/android-sdk"
 
 echo "====================================================================="
 echo "Start to install flutter sdk"
@@ -71,7 +62,7 @@ chmod 774 dart
 export PATH=PATH=$PATH:$(pwd)
 cd ..
 echo flutter.sdk=$(pwd) > emas_config.local.properties
-echo sdk.dir="/root/workspace/NewFeiFanApp_7iSy/android-sdk-linux" > emas_config.local.properties
+echo sdk.dir="/usr/lib/android-sdk" > emas_config.local.properties
 cat emas_config.local.properties > ../android/local.properties
 cd ..
 
