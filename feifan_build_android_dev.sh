@@ -67,8 +67,7 @@ while true; do
     fi
 done
 
-export ANDROID_SDK_ROOT="/usr/lib/android-sdk"
-
+#export ANDROID_SDK_ROOT="/usr/lib/android-sdk"
 
 cd /root/workspace/NewFeiFanApp_7iSy
 echo "====================================================================="
