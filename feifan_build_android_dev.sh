@@ -45,30 +45,15 @@ export PATH="/root/workspace/NewFeiFanApp_7iSy/android-sdk-linux/tools:$PATH"
 export PATH="/root/workspace/NewFeiFanApp_7iSy/android-sdk-linux/platform-tools:$PATH"
 
 
-function install_sdk {
-  android update sdk -u -s -a -t "$1"
-}
-
-function fetch_non_obsoled_package_indices {
-  # Fetch the sdk list using non-https connections
-  android list sdk -u -s -a |\
-    # Filter obsoleted packages
-    sed '/\(Obsolete\)/d' |\
-    # Filter to take only the index number of package
-    sed 's/^[ ]*\([0-9]*\).*/\1/' |\
-    # Remove the empty lines
-    sed -n 's/^[^ $]/\0/p'
-}
-
-for package_index in  $(fetch_non_obsoled_package_indices)
-do
-  echo "====================================================================="
-  echo "Start to install package:  ${package_index}"
-  echo "====================================================================="
-  # Auto accept license
-  echo -e "y" | install_sdk "${package_index}"
-  echo
-  echo
+while true; do
+    echo "y" | android update sdk -u -s -a -t platform-tool,android-34,sysimg-34,build-tools-34.0.0
+    # 检查命令的退出状态
+    if [ $? -eq 0 ]; then
+        echo "命令执行成功。"
+        break
+    else
+        echo "命令执行失败。继续尝试。"
+    fi
 done
 
 
