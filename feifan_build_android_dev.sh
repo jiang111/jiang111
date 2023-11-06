@@ -40,13 +40,32 @@ unzip commandlinetools-linux-6609375_latest.zip -d cmdline-tools
 
 export PATH=$ANDROID_HOME/cmdline-tools/tools/bin:$PATH
 
-yes | sdkmanager  --licenses
+while true; do
+    echo "y" | sdkmanager  --licenses
+    # 检查命令的退出状态
+    if [ $? -eq 0 ]; then
+        echo "命令执行成功。"
+        break
+    else
+        echo "命令执行失败。继续尝试。"
+    fi
+done
 
 echo "y" | sdkmanager --update
 
 
 echo "y" | sdkmanager "platform-tools" "system-images;android-34;default;arm64-v8a" "build-tools;34.0.0"
-yes | sdkmanager  --licenses
+
+while true; do
+    echo "y" | sdkmanager  --licenses
+    # 检查命令的退出状态
+    if [ $? -eq 0 ]; then
+        echo "命令执行成功。"
+        break
+    else
+        echo "命令执行失败。继续尝试。"
+    fi
+done
 
 export ANDROID_SDK_ROOT="/usr/lib/android-sdk"
 
