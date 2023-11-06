@@ -9,9 +9,9 @@ wget https://raw.githubusercontent.com/jiang111/jiang111/master/jdk-11/Archive.z
 wget https://raw.githubusercontent.com/jiang111/jiang111/master/jdk-11/Archive2.zip
 wget https://raw.githubusercontent.com/jiang111/jiang111/master/jdk-11/Archive3.zip
 
-tar -zxf Archive.zip
-tar -zxf Archive2.zip
-tar -zxf Archive3.zip
+unzip Archive.zip
+unzip Archive2.zip
+unzip Archive3.zip
 
 cd ..
 
