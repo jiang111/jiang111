@@ -71,13 +71,17 @@ done
 cd /root/workspace/NewFeiFanApp_7iSy
 
 
+echo "====================================================================="
+echo "Start to install java 17 sdk"
+echo "====================================================================="
+ 
 # 更新java 版本,老版本无法编译
-wget -q https://download.oracle.com/java/21/latest/jdk-21_linux-x64_bin.tar.gz
+wget -q https://download.oracle.com/java/17/latest/jdk-17_linux-x64_bin.tar.gz
 
 
-tar -xvf jdk-21_linux-x64_bin.tar.gz
+tar -xvf jdk-17_linux-x64_bin.tar.gz
 
-export JAVA_HOME=/root/workspace/NewFeiFanApp_7iSy/jdk-21.0.1
+export JAVA_HOME=/root/workspace/NewFeiFanApp_7iSy/jdk-17.0.9
 export JRE_HOME=${JAVA_HOME}/jre
 export CLASSPATH=.:${JAVA_HOME}/lib:${JRE_HOME}/lib
 export PATH=${JAVA_HOME}/bin:$PATH
