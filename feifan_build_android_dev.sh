@@ -31,7 +31,16 @@ export PATH="/usr/lib/android-sdk/platform-tools:$PATH"
 
 # 下载sdk 相关的配置
 
+
+
 cd /usr/lib/android-sdk
+
+
+
+echo "====================================================================="
+echo "Start to download Android commandlinetools"
+echo "====================================================================="
+ 
 
 wget -q https://dl.google.com/android/repository/commandlinetools-linux-6609375_latest.zip
 
@@ -39,6 +48,12 @@ wget -q https://dl.google.com/android/repository/commandlinetools-linux-6609375_
 unzip commandlinetools-linux-6609375_latest.zip -d cmdline-tools
 
 export PATH=$ANDROID_HOME/cmdline-tools/tools/bin:$PATH
+
+
+echo "====================================================================="
+echo "Start to use sdkmanager"
+echo "====================================================================="
+ 
 
 while true; do
     echo "y" | sdkmanager  --licenses
@@ -68,7 +83,7 @@ while true; do
     fi
 done
 
-cd /root/workspace/NewFeiFanApp_7iSy
+cd /root/workspace/NewFeiFanApp_android_dev
 
 
 echo "====================================================================="
@@ -81,7 +96,7 @@ wget -q https://download.oracle.com/java/17/latest/jdk-17_linux-x64_bin.tar.gz
 
 tar -xvf jdk-17_linux-x64_bin.tar.gz
 
-export JAVA_HOME=/root/workspace/NewFeiFanApp_7iSy/jdk-17.0.9
+export JAVA_HOME=/root/workspace/NewFeiFanApp_android_dev/jdk-17.0.9
 export JRE_HOME=${JAVA_HOME}/jre
 export CLASSPATH=.:${JAVA_HOME}/lib:${JRE_HOME}/lib
 export PATH=${JAVA_HOME}/bin:$PATH
@@ -98,7 +113,7 @@ echo "====================================================================="
  
 git clone https://github.com/flutter/flutter.git -b stable
 export PATH="$PATH:`pwd`/flutter/bin"
-echo flutter.sdk="/root/workspace/NewFeiFanApp_7iSy/flutter" > emas_config.local.properties
+echo flutter.sdk="/root/workspace/NewFeiFanApp_android_dev/flutter" > emas_config.local.properties
 echo sdk.dir="/usr/lib/android-sdk" > emas_config.local.properties
 cat emas_config.local.properties > ./android/local.properties
 
