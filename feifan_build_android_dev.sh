@@ -83,6 +83,8 @@ export CLASSPATH=.:${JAVA_HOME}/lib:${JRE_HOME}/lib
 export PATH=${JAVA_HOME}/bin:$PATH
 
 
+java --version
+
 export ANDROID_SDK_ROOT="/usr/lib/android-sdk"
 
 
