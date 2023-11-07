@@ -94,11 +94,11 @@ git clone https://github.com/flutter/flutter.git -b stable
 export PATH="$PATH:`pwd`/flutter/bin"
 echo flutter.sdk="/root/workspace/NewFeiFanApp_7iSy/flutter" > emas_config.local.properties
 echo sdk.dir="/usr/lib/android-sdk" > emas_config.local.properties
-cat emas_config.local.properties > ../android/local.properties
+cat emas_config.local.properties > ./android/local.properties
 
 
 while true; do
-    echo "y" | flutter doctor --android-licenses
+    echo "y" | flutter doctor
     # 检查命令的退出状态
     if [ $? -eq 0 ]; then
         echo "命令执行成功。"
