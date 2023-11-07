@@ -1,5 +1,4 @@
 
-
 echo "====================================================================="
 echo "Start to install android sdk"
 echo "====================================================================="
@@ -30,10 +29,11 @@ source /etc/profile
 export PATH="/usr/lib/android-sdk/tools:$PATH"
 export PATH="/usr/lib/android-sdk/platform-tools:$PATH"
 
+# 下载sdk 相关的配置
 
 cd /usr/lib/android-sdk
 
-wget https://dl.google.com/android/repository/commandlinetools-linux-6609375_latest.zip
+wget -q https://dl.google.com/android/repository/commandlinetools-linux-6609375_latest.zip
 
 
 unzip commandlinetools-linux-6609375_latest.zip -d cmdline-tools
@@ -53,8 +53,9 @@ done
 
 echo "y" | sdkmanager --update
 
-
 echo "y" | sdkmanager "platform-tools" "system-images;android-34;default;arm64-v8a" "build-tools;34.0.0"
+
+echo "y" | sdkmanager --install "cmdline-tools;latest"
 
 while true; do
     echo "y" | sdkmanager  --licenses
@@ -67,25 +68,33 @@ while true; do
     fi
 done
 
-#export ANDROID_SDK_ROOT="/usr/lib/android-sdk"
-
 cd /root/workspace/NewFeiFanApp_7iSy
+
+
+# 更新java 版本,老版本无法编译
+wget -q https://download.oracle.com/java/21/latest/jdk-21_linux-x64_bin.tar.gz
+
+
+tar -xvf jdk-21_linux-x64_bin.tar.gz
+
+export JAVA_HOME=/root/workspace/NewFeiFanApp_7iSy/jdk-21.0.1
+export JRE_HOME=${JAVA_HOME}/jre
+export CLASSPATH=.:${JAVA_HOME}/lib:${JRE_HOME}/lib
+export PATH=${JAVA_HOME}/bin:$PATH
+
+
+export ANDROID_SDK_ROOT="/usr/lib/android-sdk"
+
+
 echo "====================================================================="
 echo "Start to install flutter sdk"
 echo "====================================================================="
  
 git clone https://github.com/flutter/flutter.git -b stable
-cd ./flutter/bin
-chmod 774 flutter
-chmod 774 dart
-./flutter doctor
-export PATH=PATH=$PATH:$(pwd)
-cd ..
-echo flutter.sdk=$(pwd) > emas_config.local.properties
+export PATH="$PATH:`pwd`/flutter/bin"
+echo flutter.sdk="/root/workspace/NewFeiFanApp_7iSy/flutter" > emas_config.local.properties
 echo sdk.dir="/usr/lib/android-sdk" > emas_config.local.properties
 cat emas_config.local.properties > ../android/local.properties
-cd ..
-
 
 
 while true; do
