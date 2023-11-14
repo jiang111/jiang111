@@ -1,4 +1,4 @@
-git clone https://github.com/flutter/flutter.git -b stable
+git clone https://github.com/flutter/flutter.git -b 3.13.9
 cd ./flutter/bin
 chmod 774 flutter
 chmod 774 dart
