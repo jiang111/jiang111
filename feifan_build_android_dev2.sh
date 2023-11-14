@@ -111,7 +111,7 @@ echo "====================================================================="
 echo "Start to install flutter sdk"
 echo "====================================================================="
  
-git clone https://github.com/flutter/flutter.git -b stable
+git clone https://github.com/flutter/flutter.git -b 3.13.9
 export PATH="$PATH:`pwd`/flutter/bin"
 echo flutter.sdk="/root/workspace/NewFeiFanApp_android_dev2/flutter" > emas_config.local.properties
 echo sdk.dir="/usr/lib/android-sdk" > emas_config.local.properties
