@@ -1,4 +1,5 @@
-git clone https://github.com/flutter/flutter.git -b 3.13.9
+flutter_version=$(curl -s https://raw.githubusercontent.com/jiang111/jiang111/master/flutter.version)
+git clone https://github.com/flutter/flutter.git -b $flutter_version
 cd ./flutter/bin
 chmod 774 flutter
 chmod 774 dart
