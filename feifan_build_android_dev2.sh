@@ -4,16 +4,9 @@ echo "Start to install android sdk"
 echo "====================================================================="
  
 echo "y" |  apt update
-while true; do
-    echo "y" | apt install android-sdk
-    # 检查命令的退出状态
-    if [ $? -eq 0 ]; then
-        echo "命令执行成功。"
-        break
-    else
-        echo "命令执行失败。继续尝试。"
-    fi
-done
+
+echo "y" | apt install android-sdk
+
 
 export ANDROID_HOME="/usr/lib/android-sdk"
 if ! grep "ANDROID_HOME=/usr/lib/android-sdk" /etc/profile 
@@ -53,18 +46,8 @@ export PATH=$ANDROID_HOME/cmdline-tools/tools/bin:$PATH
 echo "====================================================================="
 echo "Start to use sdkmanager"
 echo "====================================================================="
- 
 
-while true; do
-    echo "y" | sdkmanager  --licenses
-    # 检查命令的退出状态
-    if [ $? -eq 0 ]; then
-        echo "命令执行成功。"
-        break
-    else
-        echo "命令执行失败。继续尝试。"
-    fi
-done
+echo "y" | sdkmanager  --licenses
 
 echo "y" | sdkmanager --update
 
@@ -72,16 +55,8 @@ echo "y" | sdkmanager "platform-tools" "system-images;android-34;default;arm64-v
 
 echo "y" | sdkmanager --install "cmdline-tools;latest"
 
-while true; do
-    echo "y" | sdkmanager  --licenses
-    # 检查命令的退出状态
-    if [ $? -eq 0 ]; then
-        echo "命令执行成功。"
-        break
-    else
-        echo "命令执行失败。继续尝试。"
-    fi
-done
+echo "y" | sdkmanager  --licenses
+
 
 cd /root/workspace/NewFeiFanApp_android_dev2
 
@@ -91,15 +66,15 @@ echo "Start to install java 17 sdk"
 echo "====================================================================="
  
 # 更新java 版本,老版本无法编译
-wget -q https://download.oracle.com/java/17/latest/jdk-17_linux-x64_bin.tar.gz
+# wget -q https://download.oracle.com/java/17/latest/jdk-17_linux-x64_bin.tar.gz
 
 
-tar -xvf jdk-17_linux-x64_bin.tar.gz
+# tar -xvf jdk-17_linux-x64_bin.tar.gz
 
-export JAVA_HOME=/root/workspace/NewFeiFanApp_android_dev2/jdk-17.0.9
-export JRE_HOME=${JAVA_HOME}/jre
-export CLASSPATH=.:${JAVA_HOME}/lib:${JRE_HOME}/lib
-export PATH=${JAVA_HOME}/bin:$PATH
+# export JAVA_HOME=/root/workspace/NewFeiFanApp_android_dev2/jdk-17.0.9
+# export JRE_HOME=${JAVA_HOME}/jre
+# export CLASSPATH=.:${JAVA_HOME}/lib:${JRE_HOME}/lib
+# export PATH=${JAVA_HOME}/bin:$PATH
 
 
 java --version
