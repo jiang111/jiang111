@@ -21,7 +21,7 @@ echo "====================================================================="
 
 wget -q https://dl.google.com/android/repository/commandlinetools-linux-10406996_latest.zip
 
-unzip commandlinetools-linux-10406996_latest.zip -d cmdline-tools
+unzip commandlinetools-linux-10406996_latest.zip
 
 mv cmdline-tools latest
 mkdir sdk
@@ -34,7 +34,7 @@ export PATH=$ANDROID_HOME/cmdline-tools/latest/bin:$PATH
 
 echo "y" | sdkmanager "platform-tools" "system-images;android-34;default;arm64-v8a" "build-tools;34.0.0"
 
-echo "y" | sdkmanager --install "cmdline-tools;latest"
+#echo "y" | sdkmanager --install "cmdline-tools;latest"
 
 echo "y" | sdkmanager  --licenses
 
@@ -50,7 +50,7 @@ echo "====================================================================="
 git clone https://github.com/flutter/flutter.git -b 3.13.9
 export PATH="$PATH:`pwd`/flutter/bin"
 echo flutter.sdk="/root/workspace/NewFeiFanApp_android_dev2/flutter" > emas_config.local.properties
-echo sdk.dir="/usr/lib/android-sdk" > emas_config.local.properties
+echo sdk.dir="/root/workspace/NewFeiFanApp_android_dev2/sdk" > emas_config.local.properties
 cat emas_config.local.properties > ./android/local.properties
 
 
