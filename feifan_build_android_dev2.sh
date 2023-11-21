@@ -21,7 +21,7 @@ echo "====================================================================="
 
 wget -q https://dl.google.com/android/repository/commandlinetools-linux-10406996_latest.zip
 
-unzip commandlinetools-linux-6609375_latest.zip -d cmdline-tools
+unzip commandlinetools-linux-10406996_latest.zip -d cmdline-tools
 
 mv cmdline-tools latest
 mkdir sdk
