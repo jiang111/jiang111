@@ -43,6 +43,14 @@ export PATH="$ANDROID_HOME/platform-tools:$PATH"
 export ANDROID_SDK_ROOT="$ANDROID_HOME"
 
 
+# 重新配jdk 保证环境是新版的
+export JAVA_HOME=/root/workspace/NewFeiFanApp_android_dev2/jdk-17.0.9
+export JRE_HOME=${JAVA_HOME}/jre
+export CLASSPATH=.:${JAVA_HOME}/lib:${JRE_HOME}/lib
+export PATH=${JAVA_HOME}/bin:$PATH
+java --version
+
+
 echo "====================================================================="
 echo "Start to install flutter sdk"
 echo "====================================================================="
@@ -53,6 +61,7 @@ echo flutter.sdk="/root/workspace/NewFeiFanApp_android_dev2/flutter" > emas_conf
 echo sdk.dir="/root/workspace/NewFeiFanApp_android_dev2/sdk" > emas_config.local.properties
 cat emas_config.local.properties > ./android/local.properties
 
+flutter config --android-sdk /root/workspace/NewFeiFanApp_android_dev2/sdk
 
 echo "y" | flutter doctor
 
