@@ -42,6 +42,12 @@ export PATH="$ANDROID_HOME/tools:$PATH"
 export PATH="$ANDROID_HOME/platform-tools:$PATH"
 export ANDROID_SDK_ROOT="$ANDROID_HOME"
 
+# 重新配jdk 保证环境是新版的 java
+export JAVA_HOME=/root/workspace/NewFeiFanApp_android_dev/jdk-17.0.9
+export JRE_HOME=${JAVA_HOME}/jre
+export CLASSPATH=.:${JAVA_HOME}/lib:${JRE_HOME}/lib
+export PATH=${JAVA_HOME}/bin:$PATH
+java --version
 
 echo "====================================================================="
 echo "Start to install flutter sdk"
