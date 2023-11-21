@@ -30,7 +30,7 @@ mv latest sdk/cmdline-tools
 
 export ANDROID_HOME=/root/workspace/NewFeiFanApp_android_dev2/sdk
 
-export PATH=$ANDROID_HOME/cmdline-tools/tools/bin:$PATH
+export PATH=$ANDROID_HOME/cmdline-tools/latest/bin:$PATH
 
 echo "y" | sdkmanager "platform-tools" "system-images;android-34;default;arm64-v8a" "build-tools;34.0.0"
 
