@@ -56,7 +56,7 @@ echo "Start to install flutter sdk"
 echo "====================================================================="
 
 flutter_version=$(curl -s https://raw.githubusercontent.com/jiang111/jiang111/master/flutter.version)
-git clone https://github.com/flutter/flutter.git -b $flutter_version
+git clone -b $flutter_version https://github.com/flutter/flutter.git
 
 export PATH="$PATH:`pwd`/flutter/bin"
 echo flutter.sdk="$(pwd)/flutter" > emas_config.local.properties
