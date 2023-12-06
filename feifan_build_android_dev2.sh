@@ -71,7 +71,24 @@ echo "====================================================================="
 echo "Start to 构建二套环境:"
 echo "====================================================================="
  
-flutter build apk --release --target ./lib/main_dev2.dart
-echo "构建完成"
-echo 'Android 包文件路径:'
-echo $(pwd)/build/app/outputs/flutter-apk/app-release.apk
+MAX_RETRIES=2
+BUILD_COMMAND="flutter build apk --release --target ./lib/main_dev2.dart"
+attempt=1
+while [ $attempt -le $MAX_RETRIES ]; do
+    echo "开始第 $attempt 次构建尝试"
+    $BUILD_COMMAND
+
+    # 检查构建是否成功
+    if [ $? -eq 0 ]; then
+        echo "Build successful."
+        echo "构建完成"
+        echo 'Android 包文件路径:'
+        echo $(pwd)/build/app/outputs/flutter-apk/app-release.apk
+        exit 0
+    else
+        echo "Build failed."
+        attempt=$((attempt + 1))
+    fi
+    sleep 1
+done
+exit 1
