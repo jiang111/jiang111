@@ -70,7 +70,9 @@ echo "y" | flutter doctor
 echo "====================================================================="
 echo "Start to 构建二套环境:"
 echo "====================================================================="
- 
+
+flutter pub get
+
 MAX_RETRIES=2
 BUILD_COMMAND="flutter build apk --release --target ./lib/main_dev2.dart"
 attempt=1
