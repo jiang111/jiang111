@@ -1,4 +1,4 @@
-apt install gnutls-bin
+echo "y" | apt install gnutls-bin
 git config --global http.sslVerify false
 git config --global http.postBuffer 1048576000
 
