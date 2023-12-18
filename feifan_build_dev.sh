@@ -1,3 +1,7 @@
+apt install gnutls-bin
+git config --global http.sslVerify false
+git config --global http.postBuffer 1048576000
+
 flutter_version=$(curl -s https://raw.githubusercontent.com/jiang111/jiang111/master/flutter.version)
 git clone https://github.com/flutter/flutter.git -b $flutter_version
 cd ./flutter/bin
