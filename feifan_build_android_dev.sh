@@ -2,7 +2,6 @@ git config --global http.sslVerify false
 git config --global http.postBuffer 1048576000
 git config --global https.postBuffer 1048576000
 
-
 echo "====================================================================="
 echo "Start to install java 17 sdk"
 echo "====================================================================="
@@ -40,6 +39,8 @@ echo "y" | sdkmanager "platform-tools" "system-images;android-34;default;arm64-v
 #echo "y" | sdkmanager --install "cmdline-tools;latest"
 
 echo "y" | sdkmanager  --licenses
+
+
 
 export PATH="$ANDROID_HOME/tools:$PATH"
 export PATH="$ANDROID_HOME/platform-tools:$PATH"
@@ -90,6 +91,8 @@ while [ $attempt -le $MAX_RETRIES ]; do
         echo "构建完成"
         echo 'Android 包文件路径:'
         echo $(pwd)/build/app/outputs/flutter-apk/app-release.apk
+        echo "y" | apt install qrencode
+        qrencode -o $(pwd)/build/app/outputs/flutter-apk/qrcode.png -s 6 "http://mapptest.feifan.art/apk/app-release.apk"
         exit 0
     else
         echo "Build failed."
