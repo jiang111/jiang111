@@ -89,6 +89,8 @@ while [ $attempt -le $MAX_RETRIES ]; do
         echo "构建完成"
         echo 'Android 包文件路径:'
         echo $(pwd)/build/app/outputs/flutter-apk/app-release.apk
+        echo "y" | apt install qrencode
+        qrencode -o $(pwd)/build/app/outputs/flutter-apk/qrcode.png -s 6 "http://mapptest2.feifan.art/apk/app-release.apk"
         exit 0
     else
         echo "Build failed."
