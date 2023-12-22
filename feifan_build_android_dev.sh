@@ -61,8 +61,10 @@ echo "====================================================================="
 
 flutter_version=$(curl -s https://raw.githubusercontent.com/jiang111/jiang111/master/flutter.version)
 
-git clone https://github.com/flutter/flutter.git -b $flutter_version
-
+git clone https://github.com/flutter/flutter.git -b $flutter_version --depth 1
+cd flutter
+git fetch --unshallow
+cd ..
 export PATH="$PATH:`pwd`/flutter/bin"
 echo flutter.sdk="$(pwd)/flutter" > emas_config.local.properties
 echo sdk.dir="$(pwd)/sdk" > emas_config.local.properties
