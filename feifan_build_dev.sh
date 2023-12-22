@@ -3,13 +3,14 @@ git config --global http.postBuffer 1048576000
 git config --global https.postBuffer 1048576000
 
 flutter_version=$(curl -s https://raw.githubusercontent.com/jiang111/jiang111/master/flutter.version)
-git clone https://github.com/flutter/flutter.git -b $flutter_version
+git clone https://github.com/flutter/flutter.git -b $flutter_version --depth 1
 cd ./flutter/bin
 chmod 774 flutter
 chmod 774 dart
 ./flutter doctor
 export PATH=PATH=$PATH:$(pwd)
 cd ..
+git fetch --unshallow
 echo flutter.sdk=$(pwd) > emas_config.local.properties
 cat emas_config.local.properties > ../android/local.properties
 cd ..
