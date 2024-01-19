@@ -9,7 +9,8 @@ echo "====================================================================="
 # 更新java 版本,老版本无法编译
 wget -q https://download.oracle.com/java/17/latest/jdk-17_linux-x64_bin.tar.gz
 tar -xvf jdk-17_linux-x64_bin.tar.gz
-export JAVA_HOME=`pwd`/jdk-17.0.10
+find . -maxdepth 1 -type d -name 'jdk-17*' -exec mv {} jdk-17 \;
+export JAVA_HOME=`pwd`/jdk-17
 export JRE_HOME=${JAVA_HOME}/jre
 export CLASSPATH=.:${JAVA_HOME}/lib:${JRE_HOME}/lib
 export PATH=${JAVA_HOME}/bin:$PATH
@@ -48,7 +49,7 @@ export ANDROID_SDK_ROOT="$ANDROID_HOME"
 
 
 # 重新配jdk 保证环境是新版的
-export JAVA_HOME=`pwd`/jdk-17.0.10
+export JAVA_HOME=`pwd`/jdk-17
 export JRE_HOME=${JAVA_HOME}/jre
 export CLASSPATH=.:${JAVA_HOME}/lib:${JRE_HOME}/lib
 export PATH=${JAVA_HOME}/bin:$PATH
