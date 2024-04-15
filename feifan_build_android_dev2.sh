@@ -80,7 +80,7 @@ echo "====================================================================="
 flutter pub get
 
 MAX_RETRIES=2
-BUILD_COMMAND="flutter build apk --release --target ./lib/main_dev2.dart"
+BUILD_COMMAND="flutter build apk --release --target ./lib/main_dev2.dart" -v
 attempt=1
 while [ $attempt -le $MAX_RETRIES ]; do
     echo "开始第 $attempt 次构建尝试"
