@@ -25,17 +25,10 @@ nmap <leader>P "*P
 vmap <leader>p "*p
 vmap <leader>P "*P
 
-" scrolling
-nmap <leader>d <C-d>
-nmap <leader>u <C-u>
-vmap <leader>d <C-d>
-vmap <leader>u <C-u>
-
 " actions
 nmap <leader>h <action>(PreviousTab)
 nmap <leader>l <action>(NextTab)
-nmap <leader>bd <action>(CloseEditor)
-nmap <leader>i <action>(Generate)
+nmap <leader>aa <action>(CloseEditor)
 nmap <leader>m <action>(Git.Menu)
 nmap <leader>s <action>(QuickChangeScheme)
 nmap <leader>/ <action>(ShowErrorDescription)
