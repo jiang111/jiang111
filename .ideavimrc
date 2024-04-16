@@ -25,7 +25,7 @@ nmap <leader>P "*P
 vmap <leader>p "*p
 vmap <leader>P "*P
 
-" actions
+" actions 输入空格+
 nmap <leader>h <action>(PreviousTab)
 nmap <leader>l <action>(NextTab)
 nmap <leader>aa <action>(CloseEditor)
