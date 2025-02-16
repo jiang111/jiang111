@@ -1,0 +1,27 @@
+[[endpoints]]
+listen = "0.0.0.0:20002"
+remote = "dmit-hk.19931115.xyz:20002"
+[[endpoints]]
+listen = "0.0.0.0:20003"
+remote = "hk.19931115.xyz:20003"
+[[endpoints]]
+listen = "0.0.0.0:20004"
+remote = "sg.19931115.xyz:20004"
+[[endpoints]]
+listen = "0.0.0.0:20005"
+remote = "jp.19931115.xyz:20005"
+[[endpoints]]
+listen = "0.0.0.0:20006"
+remote = "stack.19931115.xyz:20006"
+[[endpoints]]
+listen = "0.0.0.0:30001"
+remote = "alice.19931115.xyz:30001"
+[[endpoints]]
+listen = "0.0.0.0:30002"
+remote = "alice.19931115.xyz:30002"
+[[endpoints]]
+listen = "0.0.0.0:30003"
+remote = "alice.19931115.xyz:30003"
+[[endpoints]]
+listen = "0.0.0.0:30004"
+remote = "alice.19931115.xyz:30004"
