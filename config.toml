@@ -1,3 +1,3 @@
 [[endpoints]]
 listen = "0.0.0.0:20003"
-remote = "hk.19931115.xyz:20003"
+remote = "dmit-hk.19931115.xyz:10000"
