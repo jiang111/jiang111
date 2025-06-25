@@ -1,0 +1,9 @@
+DOMAIN-SUFFIX,yxvm.com
+DOMAIN-SUFFIX,kuxueyun.com
+DOMAIN-SUFFIX,mkcloud.net
+DOMAIN-SUFFIX,bagevm.com
+DOMAIN-SUFFIX,lala.gg
+DOMAIN-SUFFIX,guguyun.com
+DOMAIN-SUFFIX,sudatech.store
+DOMAIN-SUFFIX,boil.network
+DOMAIN-SUFFIX,rfchost.com
