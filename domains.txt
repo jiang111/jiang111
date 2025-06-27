@@ -7,3 +7,6 @@ DOMAIN-SUFFIX,guguyun.com
 DOMAIN-SUFFIX,sudatech.store
 DOMAIN-SUFFIX,boil.network
 DOMAIN-SUFFIX,rfchost.com
+DOMAIN-SUFFIX,rfchost.com
+DOMAIN-SUFFIX,bitsflow.cloud
+DOMAIN-SUFFIX,kuxueyun.com
