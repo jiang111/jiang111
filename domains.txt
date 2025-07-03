@@ -10,3 +10,4 @@ DOMAIN-SUFFIX,rfchost.com
 DOMAIN-SUFFIX,rfchost.com
 DOMAIN-SUFFIX,bitsflow.cloud
 DOMAIN-SUFFIX,kuxueyun.com
+DOMAIN-SUFFIX,greencloudvps.com
