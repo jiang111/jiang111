@@ -12,3 +12,4 @@ DOMAIN-SUFFIX,bitsflow.cloud
 DOMAIN-SUFFIX,kuxueyun.com
 DOMAIN-SUFFIX,greencloudvps.com
 DOMAIN-SUFFIX,synexvm.com
+DOMAIN-SUFFIX,leikwanhost.com
