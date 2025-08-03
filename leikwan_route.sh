@@ -262,10 +262,9 @@ speed_test_public() {
         *) echo -e "${CYAN}[-] 无效选择${NC}"; sleep 1 ;;
     esac
 }
-
-# 自定义测速菜单
+# 自定义测速菜单（支持域名输入）
 speed_test_custom() {
-    read -p "[*] 请输入要测试的目标 IP（IPv4 或 IPv6 或域名）: " TARGET
+    read -p "[*] 请输入要测试的目标 IP（IPv4 / IPv6 / 域名）: " TARGET
     if [[ -z "$TARGET" ]]; then
         echo -e "${CYAN}[-] 目标不能为空${NC}"; echo; read -p "按 Enter..."; return
     fi
