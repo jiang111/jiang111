@@ -63,6 +63,41 @@ is_valid_ipv6() {
     [[ "$1" =~ ^([0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}$ ]]
 }
 
+# 检查是否为域名
+is_domain() {
+    [[ "$1" =~ ^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]
+}
+
+# 解析域名为IP（IPv4/IPv6都兼容）
+resolve_domain() {
+    local DOMAIN="$1"
+    local IP=""
+    # 优先解析IPv4
+    IP=$(getent ahosts "$DOMAIN" | awk '/STREAM/ && !/:/ {print $1; exit}')
+    if [[ -n "$IP" ]]; then
+        echo "$IP"
+        return
+    fi
+    # 再解析IPv6
+    IP=$(getent ahosts "$DOMAIN" | awk '/STREAM/ && /:/ {print $1; exit}')
+    if [[ -n "$IP" ]]; then
+        echo "$IP"
+        return
+    fi
+    # fallback dig (优先A/AAAA)
+    IP=$(dig +short "$DOMAIN" A | head -n1)
+    if [[ -n "$IP" ]]; then
+        echo "$IP"
+        return
+    fi
+    IP=$(dig +short "$DOMAIN" AAAA | head -n1)
+    if [[ -n "$IP" ]]; then
+        echo "$IP"
+        return
+    fi
+    echo ""
+}
+
 # 隐藏IP函数
 hide_ip() {
     local IP="$1"
@@ -230,9 +265,18 @@ speed_test_public() {
 
 # 自定义测速菜单
 speed_test_custom() {
-    read -p "[*] 请输入要测试的目标 IP（IPv4 或 IPv6）: " TARGET
+    read -p "[*] 请输入要测试的目标 IP（IPv4 或 IPv6 或域名）: " TARGET
     if [[ -z "$TARGET" ]]; then
         echo -e "${CYAN}[-] 目标不能为空${NC}"; echo; read -p "按 Enter..."; return
+    fi
+    # 支持域名测试
+    if is_domain "$TARGET"; then
+        IP=$(resolve_domain "$TARGET")
+        if [[ -z "$IP" ]]; then
+            echo -e "${CYAN}[-] 域名解析失败${NC}"; echo; read -p "按 Enter..."; return
+        fi
+        TARGET="$IP"
+        echo -e "${YELLOW}[*] 域名已解析: $TARGET${NC}"
     fi
     if is_ipv6 "$TARGET"; then
         is_valid_ipv6 "$TARGET" || { echo -e "${CYAN}[-] IPv6 地址不合法${NC}"; echo; read -p "按 Enter..."; return; }
@@ -242,11 +286,20 @@ speed_test_custom() {
     run_speed_test "$TARGET"
 }
 
-# 添加路由
+# 添加路由（支持域名输入）
 add_route() {
-    read -p "[*] 请输入目标 IP 地址: " TARGET_IP
+    read -p "[*] 请输入目标 IP 地址或域名: " TARGET_IP
     if [[ -z "$TARGET_IP" ]]; then
-        echo -e "${CYAN}[-] IP 不能为空${NC}"; echo; read -p "按 Enter..."; return
+        echo -e "${CYAN}[-] IP/域名不能为空${NC}"; echo; read -p "按 Enter..."; return
+    fi
+    # 支持域名输入
+    if is_domain "$TARGET_IP"; then
+        IP=$(resolve_domain "$TARGET_IP")
+        if [[ -z "$IP" ]]; then
+            echo -e "${CYAN}[-] 域名解析失败${NC}"; echo; read -p "按 Enter..."; return
+        fi
+        TARGET_IP="$IP"
+        echo -e "${YELLOW}[*] 域名已解析: $TARGET_IP${NC}"
     fi
     if is_ipv6 "$TARGET_IP"; then
         is_valid_ipv6 "$TARGET_IP" || { echo -e "${CYAN}[-] 非法的 IPv6 地址${NC}"; echo; read -p "按 Enter..."; return; }
