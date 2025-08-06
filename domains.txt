@@ -16,4 +16,4 @@ DOMAIN-SUFFIX,leikwanhost.com
 DOMAIN-SUFFIX,hostdzire.com
 DOMAIN-SUFFIX,netjett.com
 DOMAIN-SUFFIX,greencloudvps.com
-
+DOMAIN-SUFFIX,heptasky.com
