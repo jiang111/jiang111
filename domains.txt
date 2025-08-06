@@ -15,3 +15,5 @@ DOMAIN-SUFFIX,synexvm.com
 DOMAIN-SUFFIX,leikwanhost.com
 DOMAIN-SUFFIX,hostdzire.com
 DOMAIN-SUFFIX,netjett.com
+DOMAIN-SUFFIX,greencloudvps.com
+
