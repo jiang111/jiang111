@@ -423,15 +423,40 @@ EOF
 # 配置策略路由
 setup_policy_routing() {
     echo -e "${BLUE}[*] 正在配置策略路由...${NC}"
-    grep -q "eth0_table" /etc/iproute2/rt_tables || echo "100 eth0_table" >> /etc/iproute2/rt_tables
-    grep -q "eth1_table" /etc/iproute2/rt_tables || echo "101 eth1_table" >> /etc/iproute2/rt_tables
-    ip route show table eth0_table | grep -q "$NET9929_NET" || ip route add "$NET9929_NET" dev "$NET9929_IF" src "$NET9929_SRC" table eth0_table
-    ip route show table eth0_table | grep -q "default" || ip route add default via "$NET9929_GW" dev "$NET9929_IF" table eth0_table
-    ip route show table eth1_table | grep -q "$CN2_NET" || ip route add "$CN2_NET" dev "$CN2_IF" src "$CN2_SRC" table eth1_table
-    ip route show table eth1_table | grep -q "default" || ip route add default via "$CN2_GW" dev "$CN2_IF" table eth1_table
-    ip rule show | grep -q "from $NET9929_SRC" || ip rule add from "$NET9929_SRC" table eth0_table priority 100
-    ip rule show | grep -q "from $CN2_SRC" || ip rule add from "$CN2_SRC" table eth1_table priority 101
-    echo -e "${GREEN}[+] 策略路由配置/检查完成。${NC}"
+    
+    # 确保路由表存在
+    if ! grep -q "eth0_table" /etc/iproute2/rt_tables; then
+        echo "100 eth0_table" >> /etc/iproute2/rt_tables
+        echo -e "${YELLOW}[+] 已创建 eth0_table 路由表${NC}"
+    fi
+    
+    if ! grep -q "eth1_table" /etc/iproute2/rt_tables; then
+        echo "101 eth1_table" >> /etc/iproute2/rt_tables
+        echo -e "${YELLOW}[+] 已创建 eth1_table 路由表${NC}"
+    fi
+    
+    # 刷新路由表缓存
+    ip route flush cache
+    
+    # 添加路由规则前先检查表是否准备好
+    echo -e "${YELLOW}[*] 添加路由规则到自定义表...${NC}"
+    
+    # 设置eth0路由表
+    ip route add "$NET9929_NET" dev "$NET9929_IF" src "$NET9929_SRC" table eth0_table 2>/dev/null || true
+    ip route add default via "$NET9929_GW" dev "$NET9929_IF" table eth0_table 2>/dev/null || true
+    
+    # 设置eth1路由表
+    ip route add "$CN2_NET" dev "$CN2_IF" src "$CN2_SRC" table eth1_table 2>/dev/null || true
+    ip route add default via "$CN2_GW" dev "$CN2_IF" table eth1_table 2>/dev/null || true
+    
+    # 添加规则
+    ip rule del from "$NET9929_SRC" table eth0_table priority 100 2>/dev/null || true
+    ip rule add from "$NET9929_SRC" table eth0_table priority 100
+    
+    ip rule del from "$CN2_SRC" table eth1_table priority 101 2>/dev/null || true
+    ip rule add from "$CN2_SRC" table eth1_table priority 101
+    
+    echo -e "${GREEN}[+] 策略路由配置完成。${NC}"
 }
 
 # 永久化策略路由
@@ -439,14 +464,17 @@ persist_policy_routing() {
     cat > /etc/systemd/system/policy-routing.service <<EOF
 [Unit]
 Description=应用双网卡策略路由
-After=network.target
+After=network.target network-online.target
+Wants=network-online.target
 [Service]
 Type=oneshot
 ExecStart=/bin/bash $(realpath $0) --setup-policy
+RemainAfterExit=yes
 [Install]
 WantedBy=multi-user.target
 EOF
-    systemctl daemon-reexec; systemctl enable policy-routing.service
+    systemctl daemon-reexec
+    systemctl enable policy-routing.service
     echo -e "${GREEN}[+] 已设置开机自动应用策略路由。${NC}"
     echo -e "${YELLOW}    你可以通过 'systemctl status policy-routing.service' 查看状态。${NC}"
 }
