@@ -1,12 +1,10 @@
 [[endpoints]]
-listen = "0.0.0.0:10000"
-remote = "dmit-hk.19931115.xyz:10000"
+listen = "0.0.0.0:5000"
+remote = "dmit-hk.19931115.xyz:6666"
 [[endpoints]]
-listen = "0.0.0.0:10001"
-remote = "hkt.19931115.xyz:10000"
+listen = "0.0.0.0:5001"
+remote = "rfc-hk.19931115.xyz:22"
 [[endpoints]]
-listen = "0.0.0.0:10002"
-remote = "104.251.236.26:10000"
-[[endpoints]]
-listen = "0.0.0.0:10003"
-remote = "23.249.16.179:10000"
+listen = "0.0.0.0:5002"
+remote = "rfc-jp.19931115.xyz:22"
+
