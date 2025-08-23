@@ -1,10 +1,14 @@
 [[endpoints]]
-listen = "0.0.0.0:5000"
+# 备注: dmit-hk 
+listen = "[::]:5000"
 remote = "dmit-hk.19931115.xyz:6666"
-[[endpoints]]
-listen = "0.0.0.0:5001"
-remote = "rfc-hk.19931115.xyz:22"
-[[endpoints]]
-listen = "0.0.0.0:5002"
-remote = "rfc-jp.19931115.xyz:22"
 
+[[endpoints]]
+# 备注: rfc-hk 
+listen = "[::]:5001"
+remote = "rfc-hk.19931115.xyz:22"
+
+[[endpoints]]
+# 备注: rfc-jp 
+listen = "[::]:5002"
+remote = "rfc-jp.19931115.xyz:22"
