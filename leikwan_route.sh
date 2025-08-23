@@ -25,7 +25,7 @@
 
 CN2_IF="eth1" #如果是ens19就写ens19
 CN2_GW="10.8.0.1" #gateway(网关地址)
-CN2_SRC="10.8.3.255" #这里填你的eth1 / ens19的源IP 
+CN2_SRC="10.8.0.204" #这里填你的eth1 / ens19的源IP 
 CN2_NET="10.8.0.204/22"  #这里填你的eth1 / ens19的网段(应该是/22)
 
 NET9929_IF="eth0" #无需更改
