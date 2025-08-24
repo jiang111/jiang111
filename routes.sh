@@ -211,18 +211,25 @@ function list_routes() {
 
 
 function  delete_system_routes() {
-    echo -e "${YELLOW}=== 临时删除ROUTE_LIST中的路由 ===${NC}"
-    if [[ -f "$ROUTE_LIST" && -s "$ROUTE_LIST" ]]; then
+    echo -e "${YELLOW}=== 临时删除ROUTE_LIST中的路由,但是不删除ROUTE_LIST文件的内容 ===${NC}"
+    # 备份ROUTE_LIST这个文件 到ROUTE_LIST.bak
+    cp "$ROUTE_LIST" "$ROUTE_LIST.bak"
+    if [[ -f "$ROUTE_LIST" ]]; then
         while read -r ROUTE_CMD; do
             if [[ -n "$ROUTE_CMD" ]]; then
                 DEL_CMD=$(echo "$ROUTE_CMD" | sed 's/add/del/')
-                $DEL_CMD 2>/dev/null
+                $DEL_CMD && echo -e "${GREEN}✓ 已删除：$DEL_CMD${NC}" || echo -e "${YELLOW}⚠️  路由可能已不存在于系统中：$DEL_CMD${NC}"
             fi
         done < "$ROUTE_LIST"
-        echo -e "${GREEN}✓ 路由已临时删除（未从列表中移除）${NC}"
+        # 删除ROUTE_LIST
+        rm -f "$ROUTE_LIST"
+        # 恢复ROUTE_LIST.bak到ROUTE_LIST
+        mv "$ROUTE_LIST.bak" "$ROUTE_LIST"
+        echo -e "${GREEN}✓ 所有路由已删除${NC}"
     else
-        echo -e "${YELLOW}⚠️  当前没有已添加的路由。${NC}"
+        echo -e "${YELLOW}⚠️  路由列表文件不存在${NC}"
     fi
+
 }
 function apply_routes() {
     echo "正在应用所有路由..."
