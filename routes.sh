@@ -209,8 +209,9 @@ function list_routes() {
     fi
 }
 
-function  delete_all_routes() {
-    echo -e "${YELLOW}=== 删除所有路由 ===${NC}"
+
+function  delete_system_routes() {
+    echo -e "${YELLOW}=== 临时删除ROUTE_LIST中的路由 ===${NC}"
     if [[ -f "$ROUTE_LIST" && -s "$ROUTE_LIST" ]]; then
         while read -r ROUTE_CMD; do
             if [[ -n "$ROUTE_CMD" ]]; then
@@ -218,8 +219,7 @@ function  delete_all_routes() {
                 $DEL_CMD 2>/dev/null
             fi
         done < "$ROUTE_LIST"
-        rm -f "$ROUTE_LIST"
-        echo -e "${GREEN}✓ 所有路由已删除${NC}"
+        echo -e "${GREEN}✓ 路由已临时删除（未从列表中移除）${NC}"
     else
         echo -e "${YELLOW}⚠️  当前没有已添加的路由。${NC}"
     fi
@@ -227,7 +227,7 @@ function  delete_all_routes() {
 function apply_routes() {
     echo "正在应用所有路由..."
     # 先检查已经存在的路由，如果存在则删除
-    delete_all_routes
+    delete_system_routes
     # 重新应用路由
     if [[ -f "$ROUTE_LIST" ]]; then
         while read -r ROUTE_CMD; do
@@ -243,21 +243,21 @@ function apply_routes() {
 }
 
 function start_service() {
-    delete_all_routes
+    delete_system_routes
     echo -e "${YELLOW}=== 启动服务 ===${NC}"
     systemctl start $SERVICE_NAME
     systemctl status $SERVICE_NAME --no-pager
 }
 
 function restart_service() {
-    delete_all_routes
+    delete_system_routes
     echo -e "${YELLOW}=== 重启服务 ===${NC}"
     systemctl restart $SERVICE_NAME
     systemctl status $SERVICE_NAME --no-pager
 }
 
 function stop_service() {
-    delete_all_routes
+    delete_system_routes
     echo -e "${YELLOW}=== 停止服务 ===${NC}"
     systemctl stop $SERVICE_NAME
     systemctl status $SERVICE_NAME --no-pager
