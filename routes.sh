@@ -211,7 +211,7 @@ function list_routes() {
 
 
 function  delete_system_routes() {
-    echo -e "${YELLOW}=== 临时删除ROUTE_LIST中的路由,但是不删除ROUTE_LIST文件的内容 ===${NC}"
+    echo -e "${YELLOW}=== 删除ROUTE_LIST中的路由 ===${NC}"
     # 备份ROUTE_LIST这个文件 到ROUTE_LIST.bak
     cp "$ROUTE_LIST" "$ROUTE_LIST.bak"
     if [[ -f "$ROUTE_LIST" ]]; then
