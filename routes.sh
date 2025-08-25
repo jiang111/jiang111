@@ -399,7 +399,7 @@ function execute_choice() {
             exit 0
             ;;
         *) 
-            echo -e "${RED}❌ 无效选择，请输入 0-8${NC}"
+            echo -e "${RED}❌ 无效选择，请输入 0-9${NC}"
             return 1
             ;;
     esac
@@ -408,11 +408,11 @@ function execute_choice() {
 function main_loop() {
     while true; do
         show_menu
-        read -p "请输入序号 [0-8]: " CHOICE
+        read -p "请输入序号 [0-9]: " CHOICE
         
         # 验证输入是否为数字
-        if ! [[ "$CHOICE" =~ ^[0-8]$ ]]; then
-            echo -e "${RED}❌ 请输入有效的数字 (0-8)${NC}"
+        if ! [[ "$CHOICE" =~ ^[0-9]$ ]]; then
+            echo -e "${RED}❌ 请输入有效的数字 (0-9)${NC}"
             echo "按任意键继续..."
             read -n 1
             continue
