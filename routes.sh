@@ -111,23 +111,25 @@ function trace_route() {
             echo -e "\n${YELLOW}=== eth0 路由追踪结果 ===${NC}"
             # 配置路由
             ip route add $IP/32 via 10.7.0.1 dev eth0 2>/dev/null
-            nexttrace -i eth0 "$TARGET"
+            nexttrace "$TARGET"
             # 删除路由
             ip route del $IP/32 via 10.7.0.1 dev eth0 2>/dev/null
+            apply_routes
             ;;
         2)
             echo -e "\n${YELLOW}=== eth1 路由追踪结果 ===${NC}"
             # 配置路由
             ip route add $IP/32 via 10.8.0.1 dev eth1 2>/dev/null
-            nexttrace -i eth1 "$TARGET"
+            nexttrace "$TARGET"
             # 删除路由
             ip route del $IP/32 via 10.8.0.1 dev eth1 2>/dev/null
+            apply_routes
             ;;
         3)
             echo -e "\n${YELLOW}=== eth0 路由追踪结果 ===${NC}"
             # 配置 eth0 路由
             ip route add $IP/32 via 10.7.0.1 dev eth0 2>/dev/null
-            nexttrace -i eth0 "$TARGET"
+            nexttrace "$TARGET"
             # 删除 eth0 路由
             ip route del $IP/32 via 10.7.0.1 dev eth0 2>/dev/null
 
@@ -136,9 +138,10 @@ function trace_route() {
             echo -e "\n${YELLOW}=== eth1 路由追踪结果 ===${NC}"
             # 配置 eth1 路由
             ip route add $IP/32 via 10.8.0.1 dev eth1 2>/dev/null
-            nexttrace -i eth1 "$TARGET"
+            nexttrace "$TARGET"
             # 删除 eth1 路由
             ip route del $IP/32 via 10.8.0.1 dev eth1 2>/dev/null
+            apply_routes
             ;;
         4)
             echo -e "${YELLOW}已取消路由追踪${NC}"
