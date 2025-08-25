@@ -275,12 +275,34 @@ function nexttrace_route() {
         return 1
     fi
     
-    IP=$(getent ahosts "$TARGET" | grep -m1 "STREAM" | awk '{print $1}')
-    if [[ -z $IP ]]; then
-        echo -e "${RED}❌ 无法解析域名或IP: $TARGET${NC}"
-        return 1
+    # 检查是否为有效IP地址格式
+    if [[ "$TARGET" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        # 进一步验证IP地址的有效性
+        IFS='.' read -ra ADDR <<< "$TARGET"
+        valid_ip=true
+        for i in "${ADDR[@]}"; do
+            if [[ $i -lt 0 || $i -gt 255 ]]; then
+                valid_ip=false
+                break
+            fi
+        done
+        
+        if $valid_ip; then
+            IP="$TARGET"
+            echo -e "${GREEN}输入为IP地址: $IP${NC}"
+        else
+            echo -e "${RED}❌ 无效的IP地址格式: $TARGET${NC}"
+            return 1
+        fi
+    else
+        # 尝试解析域名
+        IP=$(getent ahosts "$TARGET" | grep -m1 "STREAM" | awk '{print $1}')
+        if [[ -z $IP ]]; then
+            echo -e "${RED}❌ 无法解析域名: $TARGET${NC}"
+            return 1
+        fi
+        echo -e "${GREEN}域名解析结果: $TARGET -> $IP${NC}"
     fi
-    echo -e "${GREEN}目标IP为: $IP${NC}"
 
     # 为eth0进行路由追踪
     echo -e "\n${YELLOW}=== 通过 eth0 进行路由追踪 ===${NC}"
