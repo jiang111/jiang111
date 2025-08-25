@@ -59,6 +59,98 @@ EOF
 }
 
 
+
+
+function check_nexttrace() {
+    if ! command -v nexttrace &>/dev/null; then
+        echo -e "${YELLOW}nexttrace 未安装，正在自动安装...${NC}"
+        curl -sL nxtrace.org/nt | bash
+        if ! command -v nexttrace &>/dev/null; then
+            echo -e "${RED}❌ nexttrace 安装失败。${NC}"
+            return 1
+        fi
+        echo -e "${GREEN}✓ nexttrace 安装成功${NC}"
+    fi
+    return 0
+}
+
+
+
+function trace_route() {
+    echo -e "${YELLOW}=== 路由追踪 ===${NC}"
+    
+    # 检查并安装 nexttrace
+    if ! check_nexttrace; then
+        return 1
+    fi
+    
+    read -p "请输入目标域名或IP: " TARGET
+    
+    if [[ -z "$TARGET" ]]; then
+        echo -e "${RED}❌ 输入不能为空${NC}"
+        return 1
+    fi
+    
+    IP=$(getent ahosts "$TARGET" | grep -m1 "STREAM" | awk '{print $1}')
+    if [[ -z $IP ]]; then
+        echo -e "${RED}❌ 无法解析域名或IP: $TARGET${NC}"
+        return 1
+    fi
+    echo -e "${GREEN}目标IP为: $IP${NC}"
+    
+    echo -e "\n${YELLOW}请选择要使用的网卡进行追踪：${NC}"
+    echo "1) eth0"
+    echo "2) eth1"
+    echo "3) 两个网卡都追踪"
+    echo "4) 取消追踪"
+    
+    read -p "请输入选择 [1-4]: " CHOICE
+    
+    case $CHOICE in
+        1)
+            echo -e "\n${YELLOW}=== eth0 路由追踪结果 ===${NC}"
+            # 配置路由
+            ip route add $IP/32 via 10.7.0.1 dev eth0 2>/dev/null
+            nexttrace -i eth0 "$TARGET"
+            # 删除路由
+            ip route del $IP/32 via 10.7.0.1 dev eth0 2>/dev/null
+            ;;
+        2)
+            echo -e "\n${YELLOW}=== eth1 路由追踪结果 ===${NC}"
+            # 配置路由
+            ip route add $IP/32 via 10.8.0.1 dev eth1 2>/dev/null
+            nexttrace -i eth1 "$TARGET"
+            # 删除路由
+            ip route del $IP/32 via 10.8.0.1 dev eth1 2>/dev/null
+            ;;
+        3)
+            echo -e "\n${YELLOW}=== eth0 路由追踪结果 ===${NC}"
+            # 配置 eth0 路由
+            ip route add $IP/32 via 10.7.0.1 dev eth0 2>/dev/null
+            nexttrace -i eth0 "$TARGET"
+            # 删除 eth0 路由
+            ip route del $IP/32 via 10.7.0.1 dev eth0 2>/dev/null
+
+            sleep 1
+                
+            echo -e "\n${YELLOW}=== eth1 路由追踪结果 ===${NC}"
+            # 配置 eth1 路由
+            ip route add $IP/32 via 10.8.0.1 dev eth1 2>/dev/null
+            nexttrace -i eth1 "$TARGET"
+            # 删除 eth1 路由
+            ip route del $IP/32 via 10.8.0.1 dev eth1 2>/dev/null
+            ;;
+        4)
+            echo -e "${YELLOW}已取消路由追踪${NC}"
+            return 0
+            ;;
+        *)
+            echo -e "${RED}❌ 无效选择${NC}"
+            return 1
+            ;;
+    esac
+}
+
 function add_route() {
     echo -e "${YELLOW}=== 添加路由 ===${NC}"
     read -p "请输入域名或IP: " TARGET
@@ -284,6 +376,7 @@ function show_menu() {
     echo "6) 启动 systemd 服务"
     echo "7) 重启 systemd 服务"
     echo "8) 停止 systemd 服务"
+    echo "9) 追踪路由"
     echo "0) 退出脚本"
     echo -e "${YELLOW}====================================================${NC}"
 }
@@ -293,12 +386,14 @@ function execute_choice() {
     case $choice in
         1) init_systemd ;;
         2) add_route ;;
+
         3) delete_route ;;
         4) list_routes ;;
         5) apply_routes ;;
         6) start_service ;;
         7) restart_service ;;
         8) stop_service ;;
+        9) trace_route ;;
         0) 
             echo -e "${GREEN}👋 感谢使用，再见！${NC}"
             exit 0
