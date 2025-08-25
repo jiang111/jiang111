@@ -231,6 +231,85 @@ function  delete_system_routes() {
     fi
 
 }
+
+function check_install_nexttrace() {
+    echo -e "${YELLOW}=== 检查 nexttrace 安装状态 ===${NC}"
+    
+    if command -v nexttrace >/dev/null 2>&1; then
+        echo -e "${GREEN}✓ nexttrace 已安装${NC}"
+        return 0
+    fi
+    
+    echo -e "${YELLOW}⚠️  nexttrace 未安装，正在自动安装...${NC}"
+    echo "正在执行: curl -sL nxtrace.org/nt | bash"
+    
+    if curl -sL nxtrace.org/nt | bash; then
+        echo -e "${GREEN}✓ nexttrace 安装成功${NC}"
+        # 刷新PATH以确保能找到nexttrace
+        export PATH="$PATH:/usr/local/bin"
+        if command -v nexttrace >/dev/null 2>&1; then
+            return 0
+        else
+            echo -e "${RED}❌ nexttrace 安装后仍无法找到，请检查安装路径${NC}"
+            return 1
+        fi
+    else
+        echo -e "${RED}❌ nexttrace 安装失败${NC}"
+        return 1
+    fi
+}
+
+function nexttrace_route() {
+    echo -e "${YELLOW}=== 网络路由追踪 ===${NC}"
+    
+    # 检查并安装nexttrace
+    if ! check_install_nexttrace; then
+        echo -e "${RED}❌ 无法安装nexttrace，退出追踪功能${NC}"
+        return 1
+    fi
+    
+    read -p "请输入要追踪的域名或IP: " TARGET
+    
+    if [[ -z "$TARGET" ]]; then
+        echo -e "${RED}❌ 输入不能为空${NC}"
+        return 1
+    fi
+    
+    IP=$(getent ahosts "$TARGET" | grep -m1 "STREAM" | awk '{print $1}')
+    if [[ -z $IP ]]; then
+        echo -e "${RED}❌ 无法解析域名或IP: $TARGET${NC}"
+        return 1
+    fi
+    echo -e "${GREEN}目标IP为: $IP${NC}"
+
+    # 为eth0进行路由追踪
+    echo -e "\n${YELLOW}=== 通过 eth0 进行路由追踪 ===${NC}"
+    echo "配置临时路由: ip route add $IP/32 via 10.7.0.1 dev eth0"
+    ip route add $IP/32 via 10.7.0.1 dev eth0 2>/dev/null
+    
+    echo "开始追踪..."
+    nexttrace $IP -d
+    
+    echo "清理临时路由: ip route del $IP/32 via 10.7.0.1 dev eth0"
+    ip route del $IP/32 via 10.7.0.1 dev eth0 2>/dev/null
+    
+    echo ""
+    read -p "按回车键继续追踪 eth1..."
+    
+    # 为eth1进行路由追踪
+    echo -e "\n${YELLOW}=== 通过 eth1 进行路由追踪 ===${NC}"
+    echo "配置临时路由: ip route add $IP/32 via 10.8.0.1 dev eth1"
+    ip route add $IP/32 via 10.8.0.1 dev eth1 2>/dev/null
+    
+    echo "开始追踪..."
+    nexttrace $IP -d
+    
+    echo "清理临时路由: ip route del $IP/32 via 10.8.0.1 dev eth1"
+    ip route del $IP/32 via 10.8.0.1 dev eth1 2>/dev/null
+    
+    echo -e "\n${GREEN}✓ 路由追踪完成${NC}"
+}
+
 function apply_routes() {
     echo "正在应用所有路由..."
     # 先检查已经存在的路由，如果存在则删除
@@ -284,6 +363,7 @@ function show_menu() {
     echo "6) 启动 systemd 服务"
     echo "7) 重启 systemd 服务"
     echo "8) 停止 systemd 服务"
+    echo "9) 网络路由追踪 (nexttrace)"
     echo "0) 退出脚本"
     echo -e "${YELLOW}====================================================${NC}"
 }
@@ -299,12 +379,13 @@ function execute_choice() {
         6) start_service ;;
         7) restart_service ;;
         8) stop_service ;;
+        9) nexttrace_route ;;
         0) 
             echo -e "${GREEN}👋 感谢使用，再见！${NC}"
             exit 0
             ;;
         *) 
-            echo -e "${RED}❌ 无效选择，请输入 0-8${NC}"
+            echo -e "${RED}❌ 无效选择，请输入 0-9${NC}"
             return 1
             ;;
     esac
@@ -313,11 +394,11 @@ function execute_choice() {
 function main_loop() {
     while true; do
         show_menu
-        read -p "请输入序号 [0-8]: " CHOICE
+        read -p "请输入序号 [0-9]: " CHOICE
         
         # 验证输入是否为数字
-        if ! [[ "$CHOICE" =~ ^[0-8]$ ]]; then
-            echo -e "${RED}❌ 请输入有效的数字 (0-8)${NC}"
+        if ! [[ "$CHOICE" =~ ^[0-9]$ ]]; then
+            echo -e "${RED}❌ 请输入有效的数字 (0-9)${NC}"
             echo "按任意键继续..."
             read -n 1
             continue
