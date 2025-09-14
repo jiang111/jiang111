@@ -69,7 +69,7 @@
         {
             "type": "urltest",
             "tag": "自动选择",
-            "url": "http://connectivitycheck.gstatic.com/generate_204",
+            "url": "http://www.gstatic.com/generate_204",
             "outbounds": [],
             "interval": "3m",
             "tolerance": 30
@@ -169,6 +169,14 @@
                 "url": "https://github.com/MetaCubeX/meta-rules-dat/raw/refs/heads/sing/geo/geosite/tiktok.srs",
                 "update_interval": "24h",
                 "download_detour": "主策略"
+            },
+            {
+                "tag": "vps",
+                "type": "remote",
+                "format": "source",
+                "url": "https://raw.githubusercontent.com/jiang111/jiang111/refs/heads/master/singbox/domains.txt",
+                "update_interval": "24h",
+                "download_detour": "主策略"
             }
         ],
         "rules": [
@@ -221,6 +229,10 @@
             {
                 "rule_set": "tiktok",
                 "outbound": "TikTok"
+            },
+            {
+                "rule_set": "vps",
+                "outbound": "VPS"
             },
             {
                 "rule_set": "gfw",
