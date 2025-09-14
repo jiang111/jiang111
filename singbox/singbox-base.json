@@ -174,7 +174,7 @@
                 "tag": "vps",
                 "type": "remote",
                 "format": "source",
-                "url": "https://raw.githubusercontent.com/jiang111/jiang111/refs/heads/master/singbox/domains.txt",
+                "url": "https://raw.githubusercontent.com/jiang111/jiang111/refs/heads/master/singbox/domains.json",
                 "update_interval": "24h",
                 "download_detour": "主策略"
             }
@@ -201,30 +201,6 @@
             {
                 "clash_mode": "global",
                 "outbound": "主策略"
-            },
-            {
-                "domain_suffix": [
-                    "yxvm.com",
-                    "kuxueyun.com",
-                    "mkcloud.net",
-                    "bagevm.com",
-                    "lala.gg",
-                    "guguyun.com",
-                    "sudatech.store",
-                    "boil.network",
-                    "rfchost.com",
-                    "bitsflow.cloud",
-                    "kuxueyun.com",
-                    "greencloudvps.com",
-                    "synexvm.com",
-                    "leikwanhost.com",
-                    "hostdzire.com",
-                    "netjett.com",
-                    "greencloudvps.com",
-                    "heptasky.com",
-                    "moonvm.com"
-                ],
-                "outbound": "VPS"
             },
             {
                 "rule_set": "tiktok",
