@@ -211,6 +211,30 @@
                 "outbound": "VPS"
             },
             {
+                "rule_set": [
+                    "yxvm.com",
+                    "kuxueyun.com",
+                    "mkcloud.net",
+                    "bagevm.com",
+                    "lala.gg",
+                    "guguyun.com",
+                    "sudatech.store",
+                    "boil.network",
+                    "rfchost.com",
+                    "bitsflow.cloud",
+                    "kuxueyun.com",
+                    "greencloudvps.com",
+                    "synexvm.com",
+                    "leikwanhost.com",
+                    "hostdzire.com",
+                    "netjett.com",
+                    "greencloudvps.com",
+                    "heptasky.com",
+                    "moonvm.com"
+                ],
+                "outbound": "VPS"
+            },
+            {
                 "rule_set": "gfw",
                 "outbound": "主策略"
             },
