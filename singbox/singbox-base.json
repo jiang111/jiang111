@@ -69,7 +69,7 @@
         {
             "type": "urltest",
             "tag": "自动选择",
-            "url": "http://www.gstatic.com/generate_204",
+            "url": "http://connectivitycheck.gstatic.com/generate_204",
             "outbounds": [],
             "interval": "3m",
             "tolerance": 30
