@@ -62,7 +62,8 @@
             "type": "selector",
             "tag": "主策略",
             "outbounds": [
-                "自动选择"
+                "自动选择",
+                "直连"
             ]
         },
         {
@@ -90,12 +91,20 @@
             ]
         },
         {
+            "type": "selector",
+            "tag": "VPS",
+            "outbounds": [
+                "主策略",
+                "自动选择"
+            ]
+        },
+        {
             "type": "direct",
             "tag": "直连"
         }
     ],
     "route": {
-        "final": "Default",
+        "final": "主策略",
         "auto_detect_interface": true,
         "default_domain_resolver": "cn_dns",
         "rule_set": [
@@ -184,6 +193,30 @@
             {
                 "clash_mode": "global",
                 "outbound": "主策略"
+            },
+            {
+                "domain_suffix": [
+                    "yxvm.com",
+                    "kuxueyun.com",
+                    "mkcloud.net",
+                    "bagevm.com",
+                    "lala.gg",
+                    "guguyun.com",
+                    "sudatech.store",
+                    "boil.network",
+                    "rfchost.com",
+                    "bitsflow.cloud",
+                    "kuxueyun.com",
+                    "greencloudvps.com",
+                    "synexvm.com",
+                    "leikwanhost.com",
+                    "hostdzire.com",
+                    "netjett.com",
+                    "greencloudvps.com",
+                    "heptasky.com",
+                    "moonvm.com"
+                ],
+                "outbound": "VPS"
             },
             {
                 "rule_set": "tiktok",
