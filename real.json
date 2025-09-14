@@ -1,0 +1,216 @@
+{
+    "dns": {
+        "servers": [
+            {
+                "tag": "proxy_dns",
+                "type": "https",
+                "server": "8.8.8.8",
+                "detour": "主策略"
+            },
+            {
+                "tag": "cn_dns",
+                "type": "udp",
+                "server": "114.114.114.114"
+            }
+        ],
+        "rules": [
+            {
+                "clash_mode": "direct",
+                "server": "cn_dns"
+            },
+            {
+                "clash_mode": "global",
+                "server": "proxy_dns"
+            },
+            {
+                "type": "logical",
+                "mode": "and",
+                "rules": [
+                    {
+                        "rule_set": "geosite-geolocation-!cn",
+                        "invert": true
+                    },
+                    {
+                        "rule_set": "cnip"
+                    }
+                ],
+                "server": "cn_dns"
+            }
+        ],
+        "strategy": "ipv4_only"
+    },
+    "inbounds": [
+        {
+            "type": "tun",
+            "tag": "tun-in",
+            "interface_name": "singbox_tun",
+            "address": [
+                "172.18.0.1/30"
+            ],
+            "auto_route": true,
+            "strict_route": true
+        },
+        {
+            "type": "mixed",
+            "tag": "mixed-in",
+            "listen": "::",
+            "listen_port": 7890
+        }
+    ],
+    "outbounds": [
+        {
+            "type": "selector",
+            "tag": "主策略",
+            "outbounds": [
+                "自动选择"
+            ]
+        },
+        {
+            "type": "urltest",
+            "tag": "自动选择",
+            "url": "http://www.gstatic.com/generate_204",
+            "outbounds": [],
+            "interval": "3m",
+            "tolerance": 30
+        },
+        {
+            "type": "selector",
+            "tag": "TikTok",
+            "outbounds": [
+                "主策略",
+                "自动选择"
+            ]
+        },
+        {
+            "type": "selector",
+            "tag": "AI",
+            "outbounds": [
+                "主策略",
+                "自动选择"
+            ]
+        },
+        {
+            "type": "direct",
+            "tag": "直连"
+        }
+    ],
+    "route": {
+        "final": "Default",
+        "auto_detect_interface": true,
+        "default_domain_resolver": "cn_dns",
+        "rule_set": [
+            {
+                "type": "remote",
+                "tag": "geosite-geolocation-!cn",
+                "format": "binary",
+                "url": "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-geolocation-!cn.srs"
+            },
+            {
+                "tag": "privatesite",
+                "type": "remote",
+                "format": "binary",
+                "url": "https://github.com/MetaCubeX/meta-rules-dat/raw/refs/heads/sing/geo/geosite/private.srs",
+                "update_interval": "24h",
+                "download_detour": "主策略"
+            },
+            {
+                "tag": "privateip",
+                "type": "remote",
+                "format": "binary",
+                "url": "https://github.com/MetaCubeX/meta-rules-dat/raw/refs/heads/sing/geo/geoip/private.srs",
+                "update_interval": "24h",
+                "download_detour": "主策略"
+            },
+            {
+                "tag": "cnip",
+                "type": "remote",
+                "format": "binary",
+                "url": "https://github.com/MetaCubeX/meta-rules-dat/raw/refs/heads/sing/geo/geoip/cn.srs",
+                "update_interval": "24h",
+                "download_detour": "主策略"
+            },
+            {
+                "tag": "cngames",
+                "type": "remote",
+                "format": "binary",
+                "url": "https://github.com/MetaCubeX/meta-rules-dat/raw/refs/heads/sing/geo/geosite/category-games-!cn@cn.srs",
+                "update_interval": "24h",
+                "download_detour": "主策略"
+            },
+            {
+                "tag": "gfw",
+                "type": "remote",
+                "format": "binary",
+                "url": "https://github.com/MetaCubeX/meta-rules-dat/raw/refs/heads/sing/geo/geosite/gfw.srs",
+                "update_interval": "24h",
+                "download_detour": "主策略"
+            },
+            {
+                "tag": "aiservice",
+                "type": "remote",
+                "format": "binary",
+                "url": "https://github.com/MetaCubeX/meta-rules-dat/raw/refs/heads/sing/geo/geosite/category-ai-!cn.srs",
+                "update_interval": "24h",
+                "download_detour": "主策略"
+            },
+            {
+                "tag": "tiktok",
+                "type": "remote",
+                "format": "binary",
+                "url": "https://github.com/MetaCubeX/meta-rules-dat/raw/refs/heads/sing/geo/geosite/tiktok.srs",
+                "update_interval": "24h",
+                "download_detour": "主策略"
+            }
+        ],
+        "rules": [
+            {
+                "action": "sniff"
+            },
+            {
+                "action": "resolve"
+            },
+            {
+                "protocol": "dns",
+                "action": "hijack-dns"
+            },
+            {
+                "network": "icmp",
+                "outbound": "直连"
+            },
+            {
+                "clash_mode": "direct",
+                "outbound": "直连"
+            },
+            {
+                "clash_mode": "global",
+                "outbound": "主策略"
+            },
+            {
+                "rule_set": "tiktok",
+                "outbound": "TikTok"
+            },
+            {
+                "rule_set": "gfw",
+                "outbound": "主策略"
+            },
+            {
+                "rule_set": [
+                    "privatesite",
+                    "cngames"
+                ],
+                "outbound": "直连"
+            },
+            {
+                "rule_set": "aiservice",
+                "outbound": "AI"
+            },
+            {
+                "rule_set": [
+                    "privateip",
+                    "cnip"
+                ],
+                "outbound": "直连"
+            }
+        ]
+    }
+}
