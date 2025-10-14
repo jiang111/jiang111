@@ -20,3 +20,4 @@ DOMAIN-KEYWORD,moonvm.com
 DOMAIN-KEYWORD,bestvm.cloud
 DOMAIN-KEYWORD,gomami.io
 DOMAIN-KEYWORD,bwh81.net
+DOMAIN-KEYWORD,bigchick.io
