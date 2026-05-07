@@ -17,7 +17,7 @@
 
 set -uo pipefail
 
-VERSION="1.0.0"
+VERSION="1.1.0"
 CONFIG_DIR="${CF_DDNS_DIR:-$HOME/.cf-ddns}"
 RECORDS_DIR="$CONFIG_DIR/records"
 GLOBAL_CONF="$CONFIG_DIR/config"
@@ -65,20 +65,34 @@ ensure_dirs() {
 new_id() { date +%s%N | sha256sum | head -c 8; }
 
 # -------------------- 全局配置 --------------------
-get_interval() {
+# 默认值会被 source $GLOBAL_CONF 覆盖
+load_config() {
+    INTERVAL=5
+    TG_BOT_TOKEN=""
+    TG_CHAT_ID=""
+    TG_NOTIFY_LEVEL="changes"   # off | errors | changes | all
     if [[ -f "$GLOBAL_CONF" ]]; then
         # shellcheck source=/dev/null
         source "$GLOBAL_CONF"
-        echo "${INTERVAL:-5}"
-    else
-        echo "5"
     fi
 }
 
+save_config() {
+    {
+        echo "INTERVAL=${INTERVAL:-5}"
+        printf "TG_BOT_TOKEN=%q\n" "${TG_BOT_TOKEN:-}"
+        printf "TG_CHAT_ID=%q\n"   "${TG_CHAT_ID:-}"
+        echo "TG_NOTIFY_LEVEL=${TG_NOTIFY_LEVEL:-changes}"
+    } > "$GLOBAL_CONF"
+    chmod 600 "$GLOBAL_CONF"
+}
+
+get_interval() { load_config; echo "${INTERVAL:-5}"; }
+
 set_interval() {
-    cat > "$GLOBAL_CONF" <<EOF
-INTERVAL=$1
-EOF
+    load_config
+    INTERVAL="$1"
+    save_config
 }
 
 # -------------------- Cloudflare API --------------------
@@ -126,6 +140,42 @@ find_zone() {
         | "\(.id) \(.name)"' 2>/dev/null
 }
 
+# -------------------- Telegram 通知 --------------------
+# 等级:
+#   off     - 关闭
+#   errors  - 仅失败时发
+#   changes - IP 变更 + 失败 (推荐)
+#   all     - 包含每次无变化的检查 (调试用, 会很吵)
+tg_send() {
+    local message="$1"
+    load_config
+    [[ -z "${TG_BOT_TOKEN:-}" || -z "${TG_CHAT_ID:-}" ]] && return 0
+    curl -sS --max-time 10 \
+        -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
+        -d "chat_id=${TG_CHAT_ID}" \
+        --data-urlencode "text=${message}" \
+        -d "parse_mode=HTML" \
+        -d "disable_web_page_preview=true" \
+        > /dev/null 2>&1 || true
+}
+
+tg_notify() {
+    local level="$1" message="$2"   # level: error | change | info
+    load_config
+    case "${TG_NOTIFY_LEVEL:-changes}" in
+        off)     return 0 ;;
+        errors)  [[ "$level" == "error" ]] || return 0 ;;
+        changes) [[ "$level" == "error" || "$level" == "change" ]] || return 0 ;;
+        all)     ;;
+        *)       [[ "$level" == "error" || "$level" == "change" ]] || return 0 ;;
+    esac
+    local hn; hn=$(hostname 2>/dev/null || echo "server")
+    local full="$message
+
+🖥 <code>$hn</code>  ⏰ $(date '+%F %T')"
+    tg_send "$full"
+}
+
 run_one_record() {
     local conf="$1"
     # shellcheck source=/dev/null
@@ -142,6 +192,9 @@ run_one_record() {
     current_ip=$(get_public_ip "${RECORD_TYPE:-A}")
     if [[ -z "$current_ip" ]]; then
         log "[$label] 获取公网 IP 失败"
+        tg_notify error "❌ <b>DDNS 错误</b>
+📍 <code>$RECORD_NAME</code>
+原因: 获取公网 IP 失败"
         return 1
     fi
 
@@ -150,6 +203,9 @@ run_one_record() {
     zone_id=$(echo "$zone_resp" | jq -r '.result[0].id // empty')
     if [[ -z "$zone_id" ]]; then
         log "[$label] 找不到 zone $ZONE_NAME"
+        tg_notify error "❌ <b>DDNS 错误</b>
+📍 <code>$RECORD_NAME</code>
+原因: 找不到 zone <code>$ZONE_NAME</code> (Token 权限?)"
         return 1
     fi
 
@@ -170,8 +226,14 @@ run_one_record() {
         local resp; resp=$(cf_api POST "/zones/$zone_id/dns_records" "$API_TOKEN" "$data")
         if [[ "$(echo "$resp" | jq -r '.success')" == "true" ]]; then
             log "[$label] 创建 $RECORD_NAME -> $current_ip"
+            tg_notify change "✅ <b>DDNS 已创建</b>
+📍 <code>$RECORD_NAME</code>
+🆕 IP: <code>$current_ip</code>"
         else
             log "[$label] 创建失败: $(echo "$resp" | jq -c '.errors')"
+            tg_notify error "❌ <b>DDNS 创建失败</b>
+📍 <code>$RECORD_NAME</code>
+目标 IP: <code>$current_ip</code>"
             return 1
         fi
         return 0
@@ -179,14 +241,24 @@ run_one_record() {
 
     if [[ "$rec_ip" == "$current_ip" ]]; then
         log "[$label] 无变化 ($RECORD_NAME = $current_ip)"
+        tg_notify info "ℹ️ <b>DDNS 检查</b>
+📍 <code>$RECORD_NAME</code>
+IP 未变化: <code>$current_ip</code>"
         return 0
     fi
 
     local resp; resp=$(cf_api PUT "/zones/$zone_id/dns_records/$rec_id" "$API_TOKEN" "$data")
     if [[ "$(echo "$resp" | jq -r '.success')" == "true" ]]; then
         log "[$label] 更新 $RECORD_NAME: $rec_ip -> $current_ip"
+        tg_notify change "🔄 <b>DDNS 已更新</b>
+📍 <code>$RECORD_NAME</code>
+旧: <code>$rec_ip</code>
+新: <code>$current_ip</code>"
     else
         log "[$label] 更新失败: $(echo "$resp" | jq -c '.errors')"
+        tg_notify error "❌ <b>DDNS 更新失败</b>
+📍 <code>$RECORD_NAME</code>
+当前: <code>$rec_ip</code> → 期望: <code>$current_ip</code>"
         return 1
     fi
 }
@@ -454,6 +526,87 @@ action_manual_check() {
     tail -n 20 "$LOG_FILE" 2>/dev/null || true
 }
 
+action_configure_telegram() {
+    info "配置 Telegram 通知"
+    cat <<'EOF'
+
+如何获取 Bot Token 和 Chat ID:
+  1) 在 Telegram 中找 @BotFather，发 /newbot 创建一个 Bot，得到 Bot Token
+  2) 给你刚创建的 Bot 发任意一条消息（必须先发，不然取不到 chat_id）
+  3) 找 @userinfobot 或 @getidsbot 获取你的 Chat ID
+     （群组通知则把 Bot 拉进群，Chat ID 形如 -100xxxxxxx）
+
+EOF
+    load_config
+    local token chat
+    if [[ -n "$TG_BOT_TOKEN" ]]; then
+        read -rp "Bot Token [当前: ${TG_BOT_TOKEN:0:10}...，回车保持]: " token
+        token="${token:-$TG_BOT_TOKEN}"
+    else
+        read -rp "Bot Token: " token
+    fi
+    if [[ -n "$TG_CHAT_ID" ]]; then
+        read -rp "Chat ID [当前: $TG_CHAT_ID，回车保持]: " chat
+        chat="${chat:-$TG_CHAT_ID}"
+    else
+        read -rp "Chat ID: " chat
+    fi
+
+    cat <<EOF
+
+通知级别：
+  1) all     - 所有事件（含每次无变化的检查，会很吵）
+  2) changes - IP 变更 + 错误（推荐）
+  3) errors  - 仅错误
+  4) off     - 关闭
+EOF
+    read -rp "选择 [当前: ${TG_NOTIFY_LEVEL}]: " l
+    local level
+    case "$l" in
+        1) level="all" ;;
+        2) level="changes" ;;
+        3) level="errors" ;;
+        4) level="off" ;;
+        "") level="$TG_NOTIFY_LEVEL" ;;
+        *)  warn "无效选项，保持 $TG_NOTIFY_LEVEL"; level="$TG_NOTIFY_LEVEL" ;;
+    esac
+
+    TG_BOT_TOKEN="$token"
+    TG_CHAT_ID="$chat"
+    TG_NOTIFY_LEVEL="$level"
+    save_config
+    ok "Telegram 配置已保存（级别: $level）"
+
+    if [[ -n "$token" && -n "$chat" && "$level" != "off" ]]; then
+        read -rp "立即发送一条测试消息确认是否生效？[Y/n]: " yn
+        [[ "$yn" =~ ^[nN]$ ]] || action_test_telegram
+    fi
+}
+
+action_test_telegram() {
+    load_config
+    if [[ -z "$TG_BOT_TOKEN" || -z "$TG_CHAT_ID" ]]; then
+        err "尚未配置 Bot Token 或 Chat ID"
+        return
+    fi
+    info "正在发送测试消息..."
+    local resp http
+    resp=$(curl -sS --max-time 10 \
+        -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
+        -d "chat_id=${TG_CHAT_ID}" \
+        --data-urlencode "text=🧪 <b>cf-ddns 测试通知</b>
+来自服务器: <code>$(hostname 2>/dev/null || echo server)</code>
+时间: $(date '+%F %T')
+通知级别: <code>${TG_NOTIFY_LEVEL}</code>" \
+        -d "parse_mode=HTML" 2>&1) || true
+    if [[ "$(echo "$resp" | jq -r '.ok' 2>/dev/null)" == "true" ]]; then
+        ok "测试消息发送成功，请到 Telegram 查看"
+    else
+        err "发送失败：$(echo "$resp" | jq -r '.description // empty' 2>/dev/null || echo "$resp")"
+        warn "请检查 Bot Token 是否正确，以及你是否已先给 Bot 发过消息"
+    fi
+}
+
 action_show_log() {
     [[ -f "$LOG_FILE" ]] && tail -n 50 "$LOG_FILE" || info "暂无日志"
 }
@@ -507,6 +660,13 @@ EOF
     info "立即执行第一次同步..."
     run_all
     echo
+
+    # 可选：Telegram 通知
+    read -rp "是否要配置 Telegram 通知（IP 变更时收到推送）？[y/N]: " want_tg
+    if [[ "$want_tg" =~ ^[yY]$ ]]; then
+        action_configure_telegram
+    fi
+    echo
     ok "全部完成！再次运行此脚本可进入管理菜单"
     echo
     info "脚本已安装到: $INSTALL_PATH"
@@ -518,6 +678,16 @@ EOF
 show_menu() {
     while true; do
         clear
+        load_config
+        local tg_status
+        if [[ -n "$TG_BOT_TOKEN" && -n "$TG_CHAT_ID" && "$TG_NOTIFY_LEVEL" != "off" ]]; then
+            tg_status="${GREEN}${TG_NOTIFY_LEVEL}${NC}"
+        elif [[ -n "$TG_BOT_TOKEN" && "$TG_NOTIFY_LEVEL" == "off" ]]; then
+            tg_status="${YELLOW}已配置但关闭${NC}"
+        else
+            tg_status="${RED}未配置${NC}"
+        fi
+
         cat <<EOF
 ============================================
   Cloudflare DDNS 管理器  v$VERSION
@@ -525,6 +695,7 @@ show_menu() {
 EOF
         printf "  服务状态: %b   开机自启: %b   间隔: %s 分钟\n" \
             "$(service_status)" "$(autostart_status)" "$(get_interval)"
+        printf "  Telegram: %b\n" "$tg_status"
         echo "--------------------------------------------"
         echo "  当前记录："
         list_records
@@ -544,9 +715,13 @@ EOF
     9) 开启开机自启动
    10) 关闭开机自启动
 
+  [Telegram 通知]
+   11) 配置 Telegram
+   12) 发送测试消息
+
   [其他]
-   11) 查看日志
-   12) 完全卸载
+   13) 查看日志
+   14) 完全卸载
     0) 退出
 EOF
         echo
@@ -562,8 +737,10 @@ EOF
             8)  pause_service ;;
             9)  enable_autostart ;;
             10) disable_autostart ;;
-            11) action_show_log ;;
-            12) action_uninstall ;;
+            11) action_configure_telegram ;;
+            12) action_test_telegram ;;
+            13) action_show_log ;;
+            14) action_uninstall ;;
             0)  exit 0 ;;
             *)  warn "无效选项" ;;
         esac
