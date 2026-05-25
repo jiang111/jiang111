@@ -1,36 +1,49 @@
 #!/usr/bin/env bash
 # ============================================================
-#  cf-ddns.sh  —  Cloudflare DDNS 一键管理脚本
+#  cf-ddns.sh  —  Cloudflare DDNS 一键管理脚本 (Linux + macOS)
 # ============================================================
 #  功能：
 #    - 配置 Cloudflare API Token + 域名，自动建立/更新 DNS 记录
 #    - 多条记录管理：新增 / 编辑 / 删除 / 启用 / 停用
 #    - 自定义检查间隔（分钟）
 #    - 手动立即检查
-#    - 开机自启动 / 暂停 / 启动（基于 systemd timer）
+#    - 开机自启动 / 暂停 / 启动
+#        Linux: systemd timer
+#        macOS: launchd LaunchAgent
+#    - Telegram 通知（IP 变更/错误推送）
 #    - 完全卸载
 #
-#  依赖：bash, curl, jq, systemd
-#  运行：./cf-ddns.sh   （首次会引导配置，之后显示菜单）
-#       ./cf-ddns.sh --run   （供 systemd 调用）
+#  依赖：
+#    通用:        bash, curl, jq
+#    Linux:       systemd (systemctl)
+#    macOS:       launchctl  (Homebrew 安装 jq:  brew install jq)
+#
+#  运行：
+#    ./cf-ddns.sh         首次运行向导 / 管理菜单
+#    ./cf-ddns.sh --run   供 systemd / launchd 调用
 # ============================================================
 
 set -uo pipefail
 
-VERSION="1.1.0"
+VERSION="2.0.0"
 CONFIG_DIR="${CF_DDNS_DIR:-$HOME/.cf-ddns}"
 RECORDS_DIR="$CONFIG_DIR/records"
 GLOBAL_CONF="$CONFIG_DIR/config"
 LOG_FILE="$CONFIG_DIR/ddns.log"
 INSTALL_PATH="$CONFIG_DIR/cf-ddns.sh"
+
+# 服务名 / 标识
 SERVICE_NAME="cf-ddns"
+LAUNCHD_LABEL="com.cf-ddns"
+
+# 平台相关路径，detect_os 中填充
+OS_TYPE=""
 SYSTEMD_DIR="/etc/systemd/system"
-SCRIPT_PATH="$(readlink -f "$0" 2>/dev/null || echo "$0")"
-
+LAUNCHD_DIR="$HOME/Library/LaunchAgents"
+LAUNCHD_PLIST=""
 SUDO=""
-[[ $EUID -ne 0 ]] && SUDO="sudo"
 
-# -------------------- helpers --------------------
+# -------------------- 颜色 / 日志 --------------------
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 BLUE='\033[0;34m'; CYAN='\033[0;36m'; NC='\033[0m'
 
@@ -40,32 +53,109 @@ ok()   { echo -e "${GREEN}[✓]${NC} $*"; }
 warn() { echo -e "${YELLOW}[!]${NC} $*"; }
 err()  { echo -e "${RED}[✗]${NC} $*" >&2; }
 
+# -------------------- 平台兼容层 --------------------
+detect_os() {
+    case "$(uname -s)" in
+        Linux*)  OS_TYPE="linux"  ;;
+        Darwin*) OS_TYPE="macos"  ;;
+        *)
+            err "不支持的系统: $(uname -s)（仅支持 Linux 和 macOS）"
+            exit 1
+            ;;
+    esac
+    LAUNCHD_PLIST="$LAUNCHD_DIR/$LAUNCHD_LABEL.plist"
+    # 只有 Linux 上需要 sudo（macOS 用 user LaunchAgent）
+    if [[ "$OS_TYPE" == "linux" && $EUID -ne 0 ]]; then
+        SUDO="sudo"
+    fi
+}
+
+# macOS 没有 readlink -f；做一个跨平台版本
+resolve_path() {
+    local target="$1"
+    # 优先 readlink -f / greadlink -f
+    if readlink -f / >/dev/null 2>&1; then
+        readlink -f "$target"; return
+    fi
+    if command -v greadlink >/dev/null 2>&1; then
+        greadlink -f "$target"; return
+    fi
+    # 纯 bash fallback：cd + pwd
+    local dir base
+    if [[ -d "$target" ]]; then
+        ( cd "$target" && pwd )
+    else
+        dir=$(cd "$(dirname "$target")" 2>/dev/null && pwd) || { echo "$target"; return; }
+        base=$(basename "$target")
+        echo "$dir/$base"
+    fi
+}
+
+# macOS 没有 sha256sum，用 shasum 替代；同时回退 md5
+hash_stream() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum | awk '{print $1}'
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 | awk '{print $1}'
+    else
+        # 极端 fallback
+        md5sum 2>/dev/null | awk '{print $1}' || md5 -q
+    fi
+}
+
+# macOS BSD date 没有纳秒（%N）
+new_id() {
+    echo "$(date +%s)-$$-$RANDOM-$RANDOM" | hash_stream | head -c 8
+}
+
+SCRIPT_PATH="$(resolve_path "$0")"
+
+# -------------------- 依赖检查 --------------------
 check_deps() {
     local missing=()
-    for c in curl jq; do command -v "$c" &>/dev/null || missing+=("$c"); done
+    for c in curl jq; do command -v "$c" >/dev/null 2>&1 || missing+=("$c"); done
     if [[ ${#missing[@]} -gt 0 ]]; then
         err "缺少依赖: ${missing[*]}"
-        info "Debian/Ubuntu:  sudo apt install -y ${missing[*]}"
-        info "RHEL/CentOS:    sudo yum install -y ${missing[*]}"
-        info "Arch:           sudo pacman -S ${missing[*]}"
+        case "$OS_TYPE" in
+            linux)
+                info "Debian/Ubuntu:  sudo apt install -y ${missing[*]}"
+                info "RHEL/CentOS:    sudo yum install -y ${missing[*]}"
+                info "Arch:           sudo pacman -S ${missing[*]}"
+                ;;
+            macos)
+                info "macOS (Homebrew):  brew install ${missing[*]}"
+                if ! command -v brew >/dev/null 2>&1; then
+                    info "未检测到 Homebrew，请先安装: https://brew.sh"
+                fi
+                ;;
+        esac
         exit 1
     fi
-    if ! command -v systemctl &>/dev/null; then
-        err "未检测到 systemd，本脚本仅支持 systemd 系统"
-        exit 1
-    fi
+
+    case "$OS_TYPE" in
+        linux)
+            if ! command -v systemctl >/dev/null 2>&1; then
+                err "未检测到 systemd (systemctl)，本脚本在 Linux 上需要 systemd"
+                exit 1
+            fi
+            ;;
+        macos)
+            if ! command -v launchctl >/dev/null 2>&1; then
+                err "未检测到 launchctl"
+                exit 1
+            fi
+            ;;
+    esac
 }
 
 ensure_dirs() {
     mkdir -p "$CONFIG_DIR" "$RECORDS_DIR"
     chmod 700 "$CONFIG_DIR" "$RECORDS_DIR"
     [[ -f "$LOG_FILE" ]] || touch "$LOG_FILE"
+    [[ "$OS_TYPE" == "macos" ]] && mkdir -p "$LAUNCHD_DIR"
 }
 
-new_id() { date +%s%N | sha256sum | head -c 8; }
-
 # -------------------- 全局配置 --------------------
-# 默认值会被 source $GLOBAL_CONF 覆盖
 load_config() {
     INTERVAL=5
     TG_BOT_TOKEN=""
@@ -129,7 +219,7 @@ verify_token() {
     [[ "$(echo "$resp" | jq -r '.success')" == "true" ]]
 }
 
-# 根据完整域名找出对应的 zone (取所有 zones 中最长后缀匹配)
+# 根据完整域名找出对应的 zone（取最长后缀匹配）
 find_zone() {
     local record="$1" token="$2"
     cf_api GET "/zones?per_page=50" "$token" | jq -r \
@@ -141,11 +231,6 @@ find_zone() {
 }
 
 # -------------------- Telegram 通知 --------------------
-# 等级:
-#   off     - 关闭
-#   errors  - 仅失败时发
-#   changes - IP 变更 + 失败 (推荐)
-#   all     - 包含每次无变化的检查 (调试用, 会很吵)
 tg_send() {
     local message="$1"
     load_config
@@ -176,6 +261,7 @@ tg_notify() {
     tg_send "$full"
 }
 
+# -------------------- 同步逻辑 --------------------
 run_one_record() {
     local conf="$1"
     # shellcheck source=/dev/null
@@ -332,7 +418,6 @@ select_record() {
     echo "${files[$idx]}"
 }
 
-# 交互式输入新记录（支持自动检测 zone）
 prompt_new_record() {
     local token domain rec_type proxied name zone_info zone_id zone_name
 
@@ -377,33 +462,26 @@ prompt_new_record() {
     return 0
 }
 
-# -------------------- systemd 管理 --------------------
-service_status() {
-    if systemctl is-active --quiet "$SERVICE_NAME.timer" 2>/dev/null; then
-        echo -e "${GREEN}运行中${NC}"
-    elif [[ -f "$SYSTEMD_DIR/$SERVICE_NAME.timer" ]]; then
-        if systemctl is-enabled --quiet "$SERVICE_NAME.timer" 2>/dev/null; then
-            echo -e "${YELLOW}已安装但未运行${NC}"
-        else
-            echo -e "${YELLOW}已安装未启用${NC}"
-        fi
-    else
-        echo -e "${RED}未安装${NC}"
-    fi
-}
+# ============================================================
+#  服务管理 - 平台抽象层
+# ============================================================
+#  统一接口（不论 Linux/macOS 都用这些）：
+#    svc_install        生成 / 写入服务文件
+#    svc_enable         开机自启动（载入并设为自动启动）
+#    svc_disable        关闭开机自启动
+#    svc_start          启动（含立即触发一次）
+#    svc_stop           停止
+#    svc_uninstall      移除服务文件
+#    svc_is_active      服务是否正在跑（exit code）
+#    svc_is_enabled     是否设为开机自启动（exit code）
+#    svc_status_text    给菜单显示用的彩色状态文字
+#    svc_autostart_text 给菜单显示用的"开机自启"彩色文字
+# ============================================================
 
-autostart_status() {
-    if systemctl is-enabled --quiet "$SERVICE_NAME.timer" 2>/dev/null; then
-        echo -e "${GREEN}已启用${NC}"
-    else
-        echo -e "${RED}未启用${NC}"
-    fi
-}
-
-install_systemd() {
+# ---------- Linux: systemd ----------
+linux_install() {
     local interval; interval=$(get_interval)
 
-    # 把脚本拷到稳定路径，避免源文件移动后服务失效
     if [[ "$SCRIPT_PATH" != "$INSTALL_PATH" ]]; then
         cp "$SCRIPT_PATH" "$INSTALL_PATH"
         chmod +x "$INSTALL_PATH"
@@ -441,32 +519,170 @@ EOF
     $SUDO systemctl daemon-reload
 }
 
-enable_autostart() {
-    install_systemd
-    $SUDO systemctl enable --now "$SERVICE_NAME.timer"
-    ok "已开启开机自启动，每 $(get_interval) 分钟执行一次"
+linux_enable()    { linux_install; $SUDO systemctl enable --now "$SERVICE_NAME.timer"; }
+linux_disable()   { $SUDO systemctl disable --now "$SERVICE_NAME.timer" 2>/dev/null || true; }
+linux_start()     { [[ -f "$SYSTEMD_DIR/$SERVICE_NAME.timer" ]] || linux_install
+                    $SUDO systemctl start "$SERVICE_NAME.timer"; }
+linux_stop()      { $SUDO systemctl stop "$SERVICE_NAME.timer" 2>/dev/null || true; }
+linux_uninstall() { $SUDO systemctl disable --now "$SERVICE_NAME.timer" 2>/dev/null || true
+                    $SUDO rm -f "$SYSTEMD_DIR/$SERVICE_NAME.service" "$SYSTEMD_DIR/$SERVICE_NAME.timer"
+                    $SUDO systemctl daemon-reload; }
+linux_is_active() { systemctl is-active --quiet "$SERVICE_NAME.timer" 2>/dev/null; }
+linux_is_enabled(){ systemctl is-enabled --quiet "$SERVICE_NAME.timer" 2>/dev/null; }
+linux_status_text() {
+    if linux_is_active; then
+        echo -e "${GREEN}运行中${NC}"
+    elif [[ -f "$SYSTEMD_DIR/$SERVICE_NAME.timer" ]]; then
+        if linux_is_enabled; then
+            echo -e "${YELLOW}已安装但未运行${NC}"
+        else
+            echo -e "${YELLOW}已安装未启用${NC}"
+        fi
+    else
+        echo -e "${RED}未安装${NC}"
+    fi
+}
+linux_autostart_text() {
+    if linux_is_enabled; then echo -e "${GREEN}已启用${NC}"
+    else echo -e "${RED}未启用${NC}"; fi
 }
 
-disable_autostart() {
-    $SUDO systemctl disable --now "$SERVICE_NAME.timer" 2>/dev/null || true
-    ok "已关闭开机自启动"
+# ---------- macOS: launchd ----------
+macos_install() {
+    local interval; interval=$(get_interval)
+    local interval_sec=$(( interval * 60 ))
+
+    if [[ "$SCRIPT_PATH" != "$INSTALL_PATH" ]]; then
+        cp "$SCRIPT_PATH" "$INSTALL_PATH"
+        chmod +x "$INSTALL_PATH"
+    fi
+
+    info "生成 LaunchAgent: $LAUNCHD_PLIST"
+
+    # 如果已加载，先卸载，否则更新不生效
+    if macos_is_loaded; then
+        launchctl unload "$LAUNCHD_PLIST" 2>/dev/null || true
+    fi
+
+    # launchd 跑起来时 PATH 非常窄，必须把 Homebrew 路径写进去
+    # 同时支持 Intel (/usr/local) 和 Apple Silicon (/opt/homebrew)
+    cat > "$LAUNCHD_PLIST" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>$LAUNCHD_LABEL</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>$INSTALL_PATH</string>
+        <string>--run</string>
+    </array>
+
+    <key>StartInterval</key>
+    <integer>$interval_sec</integer>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>WorkingDirectory</key>
+    <string>$HOME</string>
+
+    <key>StandardOutPath</key>
+    <string>$CONFIG_DIR/launchd.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>$CONFIG_DIR/launchd.err.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>$HOME</string>
+        <key>CF_DDNS_DIR</key>
+        <string>$CONFIG_DIR</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+</dict>
+</plist>
+EOF
+    chmod 644 "$LAUNCHD_PLIST"
 }
 
-start_service() {
-    [[ -f "$SYSTEMD_DIR/$SERVICE_NAME.timer" ]] || install_systemd
-    $SUDO systemctl start "$SERVICE_NAME.timer"
-    ok "服务已启动"
+macos_is_loaded() {
+    launchctl list 2>/dev/null | awk '{print $3}' | grep -qx "$LAUNCHD_LABEL"
+}
+macos_is_enabled() {
+    # 在 macOS 上 "开机自启" 的定义就是：plist 已被 load
+    # 因为 LaunchAgent 一旦 load -w，就会在用户登录时自动 load
+    macos_is_loaded
+}
+macos_is_active() {
+    # launchd 是 periodic 触发，没法判断"现在是不是正在跑"
+    # 这里把"已 load 且 plist 存在" 视为运行中（和 systemd timer 等价）
+    [[ -f "$LAUNCHD_PLIST" ]] && macos_is_loaded
+}
+macos_load()   { launchctl load -w "$LAUNCHD_PLIST" 2>/dev/null || true; }
+macos_unload() { launchctl unload -w "$LAUNCHD_PLIST" 2>/dev/null || true; }
+
+macos_enable() { macos_install; macos_load; }
+macos_disable(){ macos_unload; }
+macos_start()  {
+    [[ -f "$LAUNCHD_PLIST" ]] || macos_install
+    macos_is_loaded || macos_load
+    # 立即触发一次（不影响后续 schedule）
+    launchctl start "$LAUNCHD_LABEL" 2>/dev/null || true
+}
+macos_stop()   { macos_unload; }
+macos_uninstall() {
+    macos_unload
+    rm -f "$LAUNCHD_PLIST"
+}
+macos_status_text() {
+    if macos_is_active; then
+        echo -e "${GREEN}运行中${NC}"
+    elif [[ -f "$LAUNCHD_PLIST" ]]; then
+        echo -e "${YELLOW}已安装但未启用${NC}"
+    else
+        echo -e "${RED}未安装${NC}"
+    fi
+}
+macos_autostart_text() {
+    if macos_is_enabled; then echo -e "${GREEN}已启用${NC}"
+    else echo -e "${RED}未启用${NC}"; fi
 }
 
-pause_service() {
-    $SUDO systemctl stop "$SERVICE_NAME.timer" 2>/dev/null || true
-    ok "服务已暂停"
-}
+# ---------- 统一调度 ----------
+svc_install()        { case "$OS_TYPE" in linux) linux_install ;;        macos) macos_install ;;        esac; }
+svc_enable()         { case "$OS_TYPE" in linux) linux_enable ;;         macos) macos_enable ;;         esac; }
+svc_disable()        { case "$OS_TYPE" in linux) linux_disable ;;        macos) macos_disable ;;        esac; }
+svc_start()          { case "$OS_TYPE" in linux) linux_start ;;          macos) macos_start ;;          esac; }
+svc_stop()           { case "$OS_TYPE" in linux) linux_stop ;;           macos) macos_stop ;;           esac; }
+svc_uninstall()      { case "$OS_TYPE" in linux) linux_uninstall ;;      macos) macos_uninstall ;;      esac; }
+svc_is_active()      { case "$OS_TYPE" in linux) linux_is_active ;;      macos) macos_is_active ;;      esac; }
+svc_is_enabled()     { case "$OS_TYPE" in linux) linux_is_enabled ;;     macos) macos_is_enabled ;;     esac; }
+svc_status_text()    { case "$OS_TYPE" in linux) linux_status_text ;;    macos) macos_status_text ;;    esac; }
+svc_autostart_text() { case "$OS_TYPE" in linux) linux_autostart_text ;; macos) macos_autostart_text ;; esac; }
 
-uninstall_systemd() {
-    $SUDO systemctl disable --now "$SERVICE_NAME.timer" 2>/dev/null || true
-    $SUDO rm -f "$SYSTEMD_DIR/$SERVICE_NAME.service" "$SYSTEMD_DIR/$SERVICE_NAME.timer"
-    $SUDO systemctl daemon-reload
+# 旧名称的兼容包装（保持代码可读性）
+enable_autostart()  { svc_enable;  ok "已开启开机自启动，每 $(get_interval) 分钟执行一次"; }
+disable_autostart() { svc_disable; ok "已关闭开机自启动"; }
+start_service()     { svc_start;   ok "服务已启动"; }
+pause_service()     { svc_stop;    ok "服务已暂停"; }
+
+# 间隔变更时需要重启服务
+restart_if_running() {
+    if [[ "$OS_TYPE" == "linux" ]]; then
+        [[ -f "$SYSTEMD_DIR/$SERVICE_NAME.timer" ]] || return 0
+        linux_install
+        $SUDO systemctl restart "$SERVICE_NAME.timer" 2>/dev/null || true
+    else
+        [[ -f "$LAUNCHD_PLIST" ]] || return 0
+        macos_install
+        macos_load
+    fi
 }
 
 # -------------------- 菜单动作 --------------------
@@ -512,10 +728,7 @@ action_set_interval() {
     new="${new:-$cur}"
     if ! [[ "$new" =~ ^[0-9]+$ ]] || [[ "$new" -lt 1 ]]; then err "无效"; return; fi
     set_interval "$new"
-    if [[ -f "$SYSTEMD_DIR/$SERVICE_NAME.timer" ]]; then
-        install_systemd
-        $SUDO systemctl restart "$SERVICE_NAME.timer" 2>/dev/null || true
-    fi
+    restart_if_running
     ok "间隔已设为 $new 分钟"
 }
 
@@ -590,12 +803,12 @@ action_test_telegram() {
         return
     fi
     info "正在发送测试消息..."
-    local resp http
+    local resp
     resp=$(curl -sS --max-time 10 \
         -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
         -d "chat_id=${TG_CHAT_ID}" \
         --data-urlencode "text=🧪 <b>cf-ddns 测试通知</b>
-来自服务器: <code>$(hostname 2>/dev/null || echo server)</code>
+来自: <code>$(hostname 2>/dev/null || echo server)</code> ($OS_TYPE)
 时间: $(date '+%F %T')
 通知级别: <code>${TG_NOTIFY_LEVEL}</code>" \
         -d "parse_mode=HTML" 2>&1) || true
@@ -612,10 +825,10 @@ action_show_log() {
 }
 
 action_uninstall() {
-    warn "这会删除所有配置和 systemd 服务"
+    warn "这会删除所有配置和服务文件"
     read -rp "确定卸载？[y/N]: " yn
     if [[ "$yn" =~ ^[yY]$ ]]; then
-        uninstall_systemd
+        svc_uninstall
         rm -rf "$CONFIG_DIR"
         ok "卸载完成"
         exit 0
@@ -630,6 +843,7 @@ first_run() {
 
 ============================================
   Cloudflare DDNS 一键脚本  v$VERSION
+  平台: $OS_TYPE
 ============================================
 
 第一次运行，请按提示完成配置：
@@ -661,7 +875,6 @@ EOF
     run_all
     echo
 
-    # 可选：Telegram 通知
     read -rp "是否要配置 Telegram 通知（IP 变更时收到推送）？[y/N]: " want_tg
     if [[ "$want_tg" =~ ^[yY]$ ]]; then
         action_configure_telegram
@@ -672,6 +885,9 @@ EOF
     info "脚本已安装到: $INSTALL_PATH"
     info "日志位置:     $LOG_FILE"
     info "配置目录:     $CONFIG_DIR"
+    if [[ "$OS_TYPE" == "macos" ]]; then
+        info "LaunchAgent:  $LAUNCHD_PLIST"
+    fi
 }
 
 # -------------------- 菜单 --------------------
@@ -690,11 +906,11 @@ show_menu() {
 
         cat <<EOF
 ============================================
-  Cloudflare DDNS 管理器  v$VERSION
+  Cloudflare DDNS 管理器  v$VERSION  [$OS_TYPE]
 ============================================
 EOF
         printf "  服务状态: %b   开机自启: %b   间隔: %s 分钟\n" \
-            "$(service_status)" "$(autostart_status)" "$(get_interval)"
+            "$(svc_status_text)" "$(svc_autostart_text)" "$(get_interval)"
         printf "  Telegram: %b\n" "$tg_status"
         echo "--------------------------------------------"
         echo "  当前记录："
@@ -752,21 +968,23 @@ EOF
 # -------------------- 入口 --------------------
 print_help() {
     cat <<EOF
-cf-ddns.sh v$VERSION  -  Cloudflare DDNS 一键脚本
+cf-ddns.sh v$VERSION  -  Cloudflare DDNS 一键脚本 (Linux + macOS)
 
 用法:
   $0                  首次运行向导 / 管理菜单
-  $0 --run            执行一次同步（systemd 用）
+  $0 --run            执行一次同步（systemd / launchd 用）
   $0 --status         查看状态
   $0 --check          立即同步（同菜单中的手动检测）
   $0 --version
   $0 --help
 
+平台: 自动检测 (linux=systemd / macos=launchd)
 配置目录: $CONFIG_DIR
 EOF
 }
 
 main() {
+    detect_os
     case "${1:-}" in
         --run)
             check_deps; ensure_dirs
@@ -778,7 +996,8 @@ main() {
             ;;
         --status)
             ensure_dirs
-            echo "服务: $(service_status)   自启: $(autostart_status)   间隔: $(get_interval) min"
+            echo "平台: $OS_TYPE"
+            echo "服务: $(svc_status_text)   自启: $(svc_autostart_text)   间隔: $(get_interval) min"
             list_records
             exit 0
             ;;
