@@ -25,7 +25,7 @@
 
 set -uo pipefail
 
-VERSION="2.1.0"
+VERSION="2.2.0"
 CONFIG_DIR="${CF_DDNS_DIR:-$HOME/.cf-ddns}"
 RECORDS_DIR="$CONFIG_DIR/records"
 CACHE_DIR="$CONFIG_DIR/cache"
@@ -221,6 +221,8 @@ verify_token() {
 }
 
 # 根据完整域名找出对应的 zone（取最长后缀匹配）
+# 旧实现：列出全部 zone 后本地过滤。需要账号级 Zone:Read，且写死 per_page=50。
+# 留作 fallback。
 find_zone() {
     local record="$1" token="$2"
     cf_api GET "/zones?per_page=50" "$token" | jq -r \
@@ -229,6 +231,25 @@ find_zone() {
         | map(select($rec == .name or ($rec | endswith("." + .name))))
         | sort_by(.name | length) | reverse | .[0]
         | "\(.id) \(.name)"' 2>/dev/null
+}
+
+# 按域名后缀逐级用 /zones?name=X 探测 zone。
+# 比 find_zone 更鲁棒：精确匹配单条 zone，不需要列表权限，对 zone-scoped Token 友好。
+# 输出 "zone_id zone_name"，失败返回非 0。
+auto_zone() {
+    local record="$1" token="$2"
+    local candidate="$record" resp id name
+    while [[ "$candidate" == *.* ]]; do
+        resp=$(cf_api GET "/zones?name=$candidate" "$token")
+        id=$(echo "$resp" | jq -r '.result[0].id // empty' 2>/dev/null)
+        name=$(echo "$resp" | jq -r '.result[0].name // empty' 2>/dev/null)
+        if [[ -n "$id" && -n "$name" ]]; then
+            echo "$id $name"
+            return 0
+        fi
+        candidate="${candidate#*.}"
+    done
+    return 1
 }
 
 # -------------------- Telegram 通知 --------------------
@@ -300,16 +321,18 @@ IP 未变化: <code>$current_ip</code>"
         fi
     fi
 
-    local zone_resp zone_id
-    zone_resp=$(cf_api GET "/zones?name=$ZONE_NAME" "$API_TOKEN")
-    zone_id=$(echo "$zone_resp" | jq -r '.result[0].id // empty')
-    if [[ -z "$zone_id" ]]; then
-        log "[$label] 找不到 zone $ZONE_NAME"
+    # 按 RECORD_NAME 后缀逐级探测 zone，不再依赖配置里存的 ZONE_NAME。
+    # 老配置兼容：ZONE_NAME 字段仍保留写入，只是运行时不读。
+    local zone_info zone_id zone_name
+    zone_info=$(auto_zone "$RECORD_NAME" "$API_TOKEN")
+    if [[ -z "$zone_info" ]]; then
+        log "[$label] 自动识别 zone 失败: $RECORD_NAME"
         tg_notify error "❌ <b>DDNS 错误</b>
 📍 <code>$RECORD_NAME</code>
-原因: 找不到 zone <code>$ZONE_NAME</code> (Token 权限?)"
+原因: 无法识别 zone (Token 对该域名没有 Zone:Read 权限?)"
         return 1
     fi
+    read -r zone_id zone_name <<< "$zone_info"
 
     local rec_resp rec_id rec_ip
     rec_resp=$(cf_api GET "/zones/$zone_id/dns_records?name=$RECORD_NAME&type=$RECORD_TYPE" "$API_TOKEN")
@@ -462,17 +485,19 @@ prompt_new_record() {
     read -rp "是否走 Cloudflare 代理 (橙云)? [y/N]: " p
     [[ "$p" =~ ^[yY]$ ]] && proxied="true" || proxied="false"
 
-    info "自动检测 zone..."
-    zone_info=$(find_zone "$domain" "$token")
+    info "自动识别 zone..."
+    zone_info=$(auto_zone "$domain" "$token")
+    if [[ -z "$zone_info" ]]; then
+        # auto_zone 失败再退回 find_zone（账号 zone 列表）做最后一次兜底
+        zone_info=$(find_zone "$domain" "$token")
+    fi
     if [[ -z "$zone_info" || "$zone_info" == "null null" ]]; then
         err "未在你的账号下找到 $domain 对应的 zone"
-        warn "你也可以手动输入 zone 名称"
-        read -rp "Zone 名称 (根域名, 例如 example.com): " zone_name
-        [[ -z "$zone_name" ]] && return 1
-    else
-        read -r zone_id zone_name <<< "$zone_info"
-        ok "找到 zone: $zone_name"
+        warn "请确认 Token 对该 zone 有 Zone:Read 权限"
+        return 1
     fi
+    read -r zone_id zone_name <<< "$zone_info"
+    ok "已识别 zone: $zone_name"
 
     read -rp "为这条记录起个备注名 [默认: $domain]: " name
     name="${name:-$domain}"
@@ -714,13 +739,22 @@ action_edit() {
     # shellcheck source=/dev/null
     source "$conf"
     info "直接回车保留原值"
-    local nname ntoken nzone nrec ntype np
+    local nname ntoken nrec ntype np
     read -rp "备注名 [$NAME]: " nname; nname="${nname:-$NAME}"
     read -rp "API Token [${API_TOKEN:0:6}...]: " ntoken; ntoken="${ntoken:-$API_TOKEN}"
-    read -rp "Zone [$ZONE_NAME]: " nzone; nzone="${nzone:-$ZONE_NAME}"
     read -rp "完整域名 [$RECORD_NAME]: " nrec; nrec="${nrec:-$RECORD_NAME}"
     read -rp "类型 [$RECORD_TYPE]: " ntype; ntype="${ntype:-$RECORD_TYPE}"
     read -rp "Proxied [$PROXIED]: " np; np="${np:-$PROXIED}"
+
+    # zone 由域名自动识别；失败则保留原 ZONE_NAME（不阻塞编辑）
+    local nzone="$ZONE_NAME" zinfo
+    if zinfo=$(auto_zone "$nrec" "$ntoken") && [[ -n "$zinfo" ]]; then
+        read -r _ nzone <<< "$zinfo"
+        ok "已识别 zone: $nzone"
+    else
+        warn "未能自动识别 zone，保留原值: $ZONE_NAME"
+    fi
+
     write_record "$ID" "$nname" "${ENABLED:-true}" "$ntoken" "$nzone" "$nrec" "$ntype" "$np"
     ok "已更新"
 }
