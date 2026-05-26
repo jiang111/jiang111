@@ -25,9 +25,10 @@
 
 set -uo pipefail
 
-VERSION="2.0.0"
+VERSION="2.1.0"
 CONFIG_DIR="${CF_DDNS_DIR:-$HOME/.cf-ddns}"
 RECORDS_DIR="$CONFIG_DIR/records"
+CACHE_DIR="$CONFIG_DIR/cache"
 GLOBAL_CONF="$CONFIG_DIR/config"
 LOG_FILE="$CONFIG_DIR/ddns.log"
 INSTALL_PATH="$CONFIG_DIR/cf-ddns.sh"
@@ -149,8 +150,8 @@ check_deps() {
 }
 
 ensure_dirs() {
-    mkdir -p "$CONFIG_DIR" "$RECORDS_DIR"
-    chmod 700 "$CONFIG_DIR" "$RECORDS_DIR"
+    mkdir -p "$CONFIG_DIR" "$RECORDS_DIR" "$CACHE_DIR"
+    chmod 700 "$CONFIG_DIR" "$RECORDS_DIR" "$CACHE_DIR"
     [[ -f "$LOG_FILE" ]] || touch "$LOG_FILE"
     [[ "$OS_TYPE" == "macos" ]] && mkdir -p "$LAUNCHD_DIR"
 }
@@ -284,6 +285,21 @@ run_one_record() {
         return 1
     fi
 
+    # 命中本地缓存：上次成功同步后 IP 未变化，跳过 CF API
+    # 避免在 IP 不变时无谓地调用 Cloudflare（也避免 token/zone 异常时反复刷错误推送）
+    local cache_file="$CACHE_DIR/$ID.ip"
+    if [[ -f "$cache_file" ]]; then
+        local cached_ip
+        cached_ip=$(cat "$cache_file" 2>/dev/null)
+        if [[ -n "$cached_ip" && "$cached_ip" == "$current_ip" ]]; then
+            log "[$label] IP 无变化 ($RECORD_NAME = $current_ip)，命中缓存，跳过 Cloudflare API"
+            tg_notify info "ℹ️ <b>DDNS 检查</b>
+📍 <code>$RECORD_NAME</code>
+IP 未变化: <code>$current_ip</code>"
+            return 0
+        fi
+    fi
+
     local zone_resp zone_id
     zone_resp=$(cf_api GET "/zones?name=$ZONE_NAME" "$API_TOKEN")
     zone_id=$(echo "$zone_resp" | jq -r '.result[0].id // empty')
@@ -311,6 +327,7 @@ run_one_record() {
     if [[ -z "$rec_id" ]]; then
         local resp; resp=$(cf_api POST "/zones/$zone_id/dns_records" "$API_TOKEN" "$data")
         if [[ "$(echo "$resp" | jq -r '.success')" == "true" ]]; then
+            echo "$current_ip" > "$cache_file"
             log "[$label] 创建 $RECORD_NAME -> $current_ip"
             tg_notify change "✅ <b>DDNS 已创建</b>
 📍 <code>$RECORD_NAME</code>
@@ -326,6 +343,7 @@ run_one_record() {
     fi
 
     if [[ "$rec_ip" == "$current_ip" ]]; then
+        echo "$current_ip" > "$cache_file"
         log "[$label] 无变化 ($RECORD_NAME = $current_ip)"
         tg_notify info "ℹ️ <b>DDNS 检查</b>
 📍 <code>$RECORD_NAME</code>
@@ -335,6 +353,7 @@ IP 未变化: <code>$current_ip</code>"
 
     local resp; resp=$(cf_api PUT "/zones/$zone_id/dns_records/$rec_id" "$API_TOKEN" "$data")
     if [[ "$(echo "$resp" | jq -r '.success')" == "true" ]]; then
+        echo "$current_ip" > "$cache_file"
         log "[$label] 更新 $RECORD_NAME: $rec_ip -> $current_ip"
         tg_notify change "🔄 <b>DDNS 已更新</b>
 📍 <code>$RECORD_NAME</code>
@@ -379,6 +398,8 @@ write_record() {
         echo "PROXIED=$proxied"
     } > "$file"
     chmod 600 "$file"
+    # 配置变更后清掉 IP 缓存，强制下次同步走一次完整 CF 流程
+    rm -f "$CACHE_DIR/$id.ip"
 }
 
 list_records() {
@@ -709,7 +730,7 @@ action_delete() {
     # shellcheck source=/dev/null
     source "$conf"
     read -rp "确认删除 '$NAME' ($RECORD_NAME)? [y/N]: " yn
-    [[ "$yn" =~ ^[yY]$ ]] && { rm -f "$conf"; ok "已删除"; } || info "已取消"
+    [[ "$yn" =~ ^[yY]$ ]] && { rm -f "$conf" "$CACHE_DIR/$ID.ip"; ok "已删除"; } || info "已取消"
 }
 
 action_toggle() {
