@@ -1,0 +1,45 @@
+# Flutter / Dart
+.dart_tool/
+.packages
+.pub-cache/
+.pub/
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+pubspec.lock
+
+# IDE
+.idea/
+.vscode/
+*.iml
+*.ipr
+*.iws
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Downloaded models (never commit large model binaries)
+**/models/
+*.onnx
+*.task
+*.litertlm
+*.tar.bz2
+
+# Symbols / native
+*.dSYM/
+
+# Android
+**/android/.gradle/
+**/android/local.properties
+**/android/key.properties
+
+# iOS / macOS
+**/ios/Pods/
+**/macos/Pods/
+**/ios/.symlinks/
+**/Flutter/Flutter.framework
+**/Flutter/Flutter.podspec
+
+# Windows
+**/windows/flutter/ephemeral/

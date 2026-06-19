@@ -1,0 +1,22 @@
+name: flutter_speaker_llm_example
+description: Example app demonstrating the flutter_speaker_llm voice-command library.
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.3.0 <4.0.0'
+  flutter: '>=3.19.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_speaker_llm:
+    path: ../
+  permission_handler: ^11.3.0
+  path_provider: ^2.1.3
+
+dev_dependencies:
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true

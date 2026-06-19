@@ -1,0 +1,47 @@
+name: flutter_speaker_llm
+description: >-
+  On-device voice commands for Flutter — wake word, offline Whisper speech
+  recognition (sherpa-onnx) and on-device LLM intent recognition
+  (flutter_gemma / Qwen), with spoken feedback.
+version: 0.1.0
+publish_to: 'none'
+repository: https://github.com/jiang111/flutter_speaker_llm
+
+environment:
+  sdk: '>=3.3.0 <4.0.0'
+  flutter: '>=3.19.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # Speech: wake word (KWS), VAD, Whisper ASR, optional offline TTS.
+  sherpa_onnx: ^1.13.3
+
+  # On-device LLM (Qwen2.5-0.5B function/JSON intent). NOTE: verify the version
+  # you resolve — flutter_gemma's API has changed across releases (see
+  # docs/VERIFY.md). Desktop (Windows/macOS) additionally requires the host app
+  # to add `flutter_gemma_litertlm` and use `.litertlm` models.
+  flutter_gemma: ^0.9.0
+
+  # Voice feedback (system TTS, default).
+  flutter_tts: ^4.2.5
+
+  # Microphone capture (raw PCM stream).
+  record: ^5.1.2
+
+  # Playback for the optional sherpa offline TTS engine.
+  audioplayers: ^6.1.0
+
+  # Downloads + utils.
+  dio: ^5.4.0
+  crypto: ^3.0.3
+  path: ^1.9.0
+  path_provider: ^2.1.3
+  permission_handler: ^11.3.0
+  meta: ^1.12.0
+
+dev_dependencies:
+  flutter_lints: ^4.0.0
+  flutter_test:
+    sdk: flutter
