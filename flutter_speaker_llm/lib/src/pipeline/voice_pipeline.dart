@@ -134,7 +134,7 @@ class VoicePipeline {
 
       final handled = await _registry.dispatch(command);
 
-      if (command.toolName.isEmpty) {
+      if (command.name.isEmpty) {
         // Nothing matched → tell the user.
         _setState(PipelineState.speaking);
         await _feedback.speakNotRecognized(command.language);

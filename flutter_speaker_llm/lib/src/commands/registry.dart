@@ -2,34 +2,27 @@ import 'dart:async';
 
 import 'command.dart';
 
-/// A handler invoked when a [Command] of a given [CommandType] is recognised.
+/// A handler invoked when a [Command] with a given tool name is recognised.
 typedef CommandHandler = FutureOr<void> Function(Command command);
 
-/// Holds the integrator-supplied handlers and dispatches recognised commands
-/// to them.
-///
-/// The library ships no behaviour for the built-in commands — the host app
-/// registers what each one should do:
+/// Holds the integrator-supplied handlers and dispatches recognised commands by
+/// tool name.
 ///
 /// ```dart
-/// registry.on(CommandType.polarAlign, (c) => mount.startPolarAlign());
-/// registry.on(CommandType.gotoTarget, (c) => mount.goto(c.target!));
+/// registry.on('polar_align', (c) => mount.startPolarAlign());
+/// registry.on('goto_target', (c) => mount.goto(c.target!));
 /// registry.onUnknown((c) => log('not recognised: ${c.transcript}'));
 /// ```
+///
+/// You usually don't call [on] directly — pass [CommandDefinition]s via
+/// `SynlinkConfig.commands` and the engine registers them for you.
 class CommandRegistry {
-  final Map<CommandType, CommandHandler> _handlers = {};
-  final Map<String, CommandHandler> _toolHandlers = {};
+  final Map<String, CommandHandler> _handlers = {};
   CommandHandler? _unknownHandler;
 
-  /// Registers [handler] for a built-in [type], replacing any previous handler.
-  void on(CommandType type, CommandHandler handler) {
-    _handlers[type] = handler;
-  }
-
-  /// Registers [handler] for a custom tool by its tool name (see
-  /// `engine.addTool`). Use this for commands beyond the built-in set.
-  void onTool(String toolName, CommandHandler handler) {
-    _toolHandlers[toolName] = handler;
+  /// Registers [handler] for the tool named [name], replacing any previous one.
+  void on(String name, CommandHandler handler) {
+    _handlers[name] = handler;
   }
 
   /// Registers a fallback invoked when nothing matched, or when a recognised
@@ -38,33 +31,24 @@ class CommandRegistry {
     _unknownHandler = handler;
   }
 
-  /// Removes the handler for [type].
-  void remove(CommandType type) => _handlers.remove(type);
+  void remove(String name) => _handlers.remove(name);
 
-  /// Clears all handlers.
   void clear() {
     _handlers.clear();
-    _toolHandlers.clear();
     _unknownHandler = null;
   }
 
-  bool hasHandler(CommandType type) => _handlers.containsKey(type);
+  bool hasHandler(String name) => _handlers.containsKey(name);
 
-  /// Dispatches [command] to the matching handler.
+  /// Dispatches [command] to its handler.
   ///
-  /// Returns `true` if a concrete handler (built-in or custom tool) ran.
-  /// Returns `false` when nothing matched or no handler was registered — the
-  /// caller can then decide whether to trigger voice feedback. Any
-  /// [onUnknown] fallback is still invoked in the `false` case.
+  /// Returns `true` if a concrete handler ran; `false` when nothing matched or
+  /// no handler was registered (the [onUnknown] fallback is still invoked in
+  /// that case).
   Future<bool> dispatch(Command command) async {
-    final byType = _handlers[command.type];
-    if (command.type != CommandType.unknown && byType != null) {
-      await byType(command);
-      return true;
-    }
-    final byName = _toolHandlers[command.toolName];
-    if (command.toolName.isNotEmpty && byName != null) {
-      await byName(command);
+    final handler = _handlers[command.name];
+    if (command.name.isNotEmpty && handler != null) {
+      await handler(command);
       return true;
     }
     if (_unknownHandler != null) {

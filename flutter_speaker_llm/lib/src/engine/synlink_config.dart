@@ -22,7 +22,6 @@ class SynlinkConfig {
   const SynlinkConfig({
     required this.modelSources,
     this.commands = const [],
-    this.includeBuiltInTools = true,
     this.wakeWord = 'hi synlink',
     this.wakeWordThreshold = 0.25,
     this.whisperModel = WhisperModelSize.base,
@@ -41,14 +40,10 @@ class SynlinkConfig {
   /// point at your CDN.
   final ModelSources modelSources;
 
-  /// Fully integrator-defined commands (recognition + handler in one place).
-  /// These are registered with the LLM and the dispatcher automatically.
+  /// The app's commands (recognition + handler in one place). The library ships
+  /// none — define your own here. These are registered with the LLM and the
+  /// dispatcher automatically.
   final List<CommandDefinition> commands;
-
-  /// Whether to also expose the six built-in telescope tools (对极轴 / GOTO /
-  /// 对焦 / 拍摄 / 拍单张 / 下载图片) to the LLM. Set `false` for an app whose
-  /// command set is entirely defined via [commands].
-  final bool includeBuiltInTools;
 
   /// Wake phrase. Must match the entry in the KWS `keywords.txt` (English
   /// tokeniser). Default: `hi synlink`.

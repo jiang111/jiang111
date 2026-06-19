@@ -67,8 +67,7 @@ class IntentService {
     }
 
     return Command(
-      type: commandTypeFromToolName(name),
-      toolName: name,
+      name: name,
       params: params,
       transcript: transcript,
       language: effectiveLang,

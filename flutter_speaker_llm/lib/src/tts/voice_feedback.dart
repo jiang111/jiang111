@@ -72,8 +72,8 @@ class VoiceFeedbackConfig {
   /// lang-code → prompt for error cases.
   final Map<String, String> errorPrompts;
 
-  /// Optional per-command success prompts: `{CommandType: {lang: text}}`.
-  final Map<CommandType, Map<String, String>>? successPrompts;
+  /// Optional per-command success prompts: `{commandName: {lang: text}}`.
+  final Map<String, Map<String, String>>? successPrompts;
 
   final double speechRate;
   final double volume;
@@ -252,7 +252,7 @@ class VoiceFeedback {
   }
 
   Future<void> speakSuccess(Command command) {
-    final prompts = config.successPrompts?[command.type];
+    final prompts = config.successPrompts?[command.name];
     if (!config.announceOnSuccess || prompts == null) return Future.value();
     final lang = _languageFor(command.language);
     return _say(resolvePrompt(prompts, lang), lang);

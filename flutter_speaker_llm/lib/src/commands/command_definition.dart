@@ -10,7 +10,6 @@ import 'registry.dart';
 ///
 /// ```dart
 /// SynlinkConfig(
-///   includeBuiltInTools: false, // drop the telescope presets
 ///   commands: [
 ///     CommandDefinition(
 ///       name: 'set_temperature',

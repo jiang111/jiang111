@@ -52,7 +52,12 @@ reasoning(LLM) → dispatch | speaking(TTS) → listeningWake`.
 
 ---
 
-## Built‑in commands
+## Commands
+
+**The library ships no commands** — you define your own (recognition +
+behaviour) and pass them in. The example app defines these six telescope
+commands in
+[`example/lib/commands/telescope_commands.dart`](example/lib/commands/telescope_commands.dart):
 
 | Command (中文) | Tool name        | Params           |
 |----------------|------------------|------------------|
@@ -63,8 +68,8 @@ reasoning(LLM) → dispatch | speaking(TTS) → listeningWake`.
 | 拍单张         | `single_shot`    | –                |
 | 下载图片       | `download_image` | –                |
 
-The library only **recognises** commands and extracts parameters. **You supply
-the behaviour** by registering handlers. You can also add your own tools.
+The engine **recognises** commands and extracts parameters; **your handler
+supplies the behaviour**.
 
 ---
 
@@ -83,6 +88,28 @@ final engine = SynlinkEngine(
     // Point these at your own CDN (see "Models & download"):
     modelSources: ModelSources.fromBaseUrl('https://cdn.example.com/synlink-models'),
     voiceFeedback: const VoiceFeedbackConfig(enabled: true), // system TTS
+    // Define your commands — recognition + handler in one place.
+    commands: [
+      CommandDefinition(
+        name: 'polar_align',
+        description: 'Start polar alignment. 对极轴.',
+        handler: (c) => mount.startPolarAlign(),
+      ),
+      CommandDefinition(
+        name: 'goto_target',
+        description: 'GOTO a named target. 对准 / 到 <目标>.',
+        parameters: {
+          'type': 'object',
+          'properties': {'target': {'type': 'string'}},
+          'required': ['target'],
+        },
+        handler: (c) => mount.goto(c.target!),   // c.target == "M31"
+      ),
+      CommandDefinition(name: 'focus',        description: '对焦.', handler: (c) => camera.autoFocus()),
+      CommandDefinition(name: 'capture',      description: '拍摄.', handler: (c) => camera.startCapture()),
+      CommandDefinition(name: 'single_shot',  description: '拍单张.', handler: (c) => camera.singleShot()),
+      CommandDefinition(name: 'download_image', description: '下载图片.', handler: (c) => gallery.downloadLatest()),
+    ],
   ),
 );
 
@@ -91,15 +118,7 @@ await engine.ensureModelsReady(onProgress: (p) {
   print('Downloading ${p.stage}: ${(p.fraction * 100).toStringAsFixed(0)}%');
 });
 
-// 2) Wire up what each command does.
-engine.registry.on(CommandType.polarAlign,  (c) => mount.startPolarAlign());
-engine.registry.on(CommandType.gotoTarget,  (c) => mount.goto(c.target!));   // c.target == "M31"
-engine.registry.on(CommandType.focus,       (c) => camera.autoFocus());
-engine.registry.on(CommandType.capture,     (c) => camera.startCapture());
-engine.registry.on(CommandType.singleShot,  (c) => camera.singleShot());
-engine.registry.on(CommandType.downloadImage,(c) => gallery.downloadLatest());
-
-// 3) Start always‑on listening.
+// 2) Start always‑on listening.
 await engine.start();
 
 // Optional: observe everything.
@@ -112,46 +131,25 @@ await engine.stop();
 await engine.dispose();
 ```
 
-### Configuring your own commands
+> Telescope-themed names above are just an example — define whatever commands
+> your app needs.
 
-The command set is fully configurable — define commands (recognition + handler
-together) and pass them in `SynlinkConfig.commands`. Set
-`includeBuiltInTools: false` to drop the telescope presets and use only yours:
+### Adding a command at runtime
 
-```dart
-final engine = SynlinkEngine(
-  config: SynlinkConfig(
-    modelSources: ModelSources.fromBaseUrl('https://cdn.example.com/models'),
-    includeBuiltInTools: false,            // omit the 6 telescope presets
-    commands: [
-      CommandDefinition(
-        name: 'set_temperature',
-        description: 'Set the cooler target temperature in Celsius. 设置制冷温度.',
-        parameters: {
-          'type': 'object',
-          'properties': {'celsius': {'type': 'number'}},
-          'required': ['celsius'],
-        },
-        handler: (c) => cooler.setTarget(c.params['celsius']),
-      ),
-      CommandDefinition(
-        name: 'park',
-        description: 'Park the mount. 归位 / 停靠.',
-        handler: (c) => mount.park(),
-      ),
-    ],
-  ),
-);
-```
-
-Each `CommandDefinition` is registered with the LLM and the dispatcher
-automatically. (`includeBuiltInTools: true`, the default, keeps the six
-telescope commands available alongside yours.) You can also add a tool at
-runtime:
+Besides `SynlinkConfig.commands`, you can add a tool after construction (e.g.
+based on connected hardware):
 
 ```dart
-engine.addTool(SynlinkTool(name: 'set_exposure', description: '...', parameters: {...}));
-engine.registry.onTool('set_exposure', (c) => camera.setExposure(c.params['seconds']));
+engine.addTool(SynlinkTool(
+  name: 'set_exposure',
+  description: 'Set the camera exposure time in seconds. 设置曝光时间.',
+  parameters: {
+    'type': 'object',
+    'properties': {'seconds': {'type': 'number'}},
+    'required': ['seconds'],
+  },
+));
+engine.registry.on('set_exposure', (c) => camera.setExposure(c.params['seconds']));
 ```
 
 ---

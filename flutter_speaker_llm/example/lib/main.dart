@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_speaker_llm/flutter_speaker_llm.dart';
 
-import 'commands/handlers.dart';
+import 'commands/telescope_commands.dart';
 import 'ui/home_page.dart';
 import 'ui/setup_page.dart';
 
@@ -28,17 +28,13 @@ class _ExampleAppState extends State<ExampleApp> {
         whisperModel: WhisperModelSize.base,
         powerMode: PowerMode.balanced,
         voiceFeedback: const VoiceFeedbackConfig(enabled: true),
-        // Example of a fully config-driven command (alongside the built-ins).
-        commands: [
-          CommandDefinition(
-            name: 'park',
-            description: 'Park the telescope mount. 归位 / 停靠.',
-            handler: (c) => debugPrint('[command] park (归位)'),
-          ),
-        ],
+        // The app defines its own command set — the library ships none.
+        commands: telescopeCommands(),
       ),
     );
-    registerExampleHandlers(engine);
+    engine.registry.onUnknown(
+      (c) => debugPrint('[command] not recognised: "${c.transcript}"'),
+    );
   }
 
   @override

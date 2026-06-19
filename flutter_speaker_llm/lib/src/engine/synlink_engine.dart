@@ -45,7 +45,9 @@ class SynlinkEngine with WidgetsBindingObserver {
 
   final SynlinkConfig config;
 
-  /// Register command handlers here (built-in via `on`, custom via `onTool`).
+  /// Direct access to the dispatcher. Handlers from `config.commands` are
+  /// registered automatically; use `registry.on(name, handler)` for extras and
+  /// `registry.onUnknown(...)` for a fallback.
   final CommandRegistry registry = CommandRegistry();
 
   final DownloadManager _downloads = DownloadManager();
@@ -77,8 +79,8 @@ class SynlinkEngine with WidgetsBindingObserver {
   StreamSubscription<Command> onCommand(void Function(Command) handler) =>
       commandStream.listen(handler);
 
-  /// Adds a custom tool the LLM may call. Register its handler with
-  /// `registry.onTool(tool.name, ...)`.
+  /// Adds a tool the LLM may call. Register its handler with
+  /// `registry.on(tool.name, ...)`.
   void addTool(SynlinkTool tool) {
     _extraTools.add(tool);
     _intent?.addTool(tool);
@@ -204,15 +206,14 @@ class SynlinkEngine with WidgetsBindingObserver {
       maxTokens: config.llmMaxTokens,
     );
 
-    // Assemble the tool set the LLM sees: optional built-ins + integrator's
-    // configured commands + any added at runtime. Register configured handlers.
+    // Assemble the tool set the LLM sees: the integrator's configured commands
+    // plus any added at runtime. Register their handlers with the dispatcher.
     final tools = <SynlinkTool>[
-      if (config.includeBuiltInTools) ...kBuiltInTools,
       for (final CommandDefinition d in config.commands) d.toTool(),
       ..._extraTools,
     ];
     for (final CommandDefinition d in config.commands) {
-      registry.onTool(d.name, d.handler);
+      registry.on(d.name, d.handler);
     }
     _intent = IntentService(backend: _llm!, tools: tools);
 

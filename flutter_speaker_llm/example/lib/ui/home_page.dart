@@ -76,7 +76,8 @@ class _HomePageState extends State<HomePage> {
                 final c = snap.data;
                 if (c == null) return const Text('—');
                 final params = c.params.isEmpty ? '' : ' ${c.params}';
-                return Text('${c.type.name}$params  [${c.language ?? '?'}]');
+                final name = c.isUnknown ? '(none)' : c.name;
+                return Text('$name$params  [${c.language ?? '?'}]');
               },
             ),
             const Spacer(),
