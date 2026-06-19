@@ -7,6 +7,7 @@ import 'package:path_provider/path_provider.dart';
 
 import '../audio/audio_manager.dart';
 import '../commands/command.dart';
+import '../commands/command_definition.dart';
 import '../commands/registry.dart';
 import '../download/download_manager.dart';
 import '../download/model_asset.dart';
@@ -202,7 +203,19 @@ class SynlinkEngine with WidgetsBindingObserver {
       modelUrl: config.modelSources.llmUrl,
       maxTokens: config.llmMaxTokens,
     );
-    _intent = IntentService(backend: _llm!, extraTools: _extraTools);
+
+    // Assemble the tool set the LLM sees: optional built-ins + integrator's
+    // configured commands + any added at runtime. Register configured handlers.
+    final tools = <SynlinkTool>[
+      if (config.includeBuiltInTools) ...kBuiltInTools,
+      for (final CommandDefinition d in config.commands) d.toTool(),
+      ..._extraTools,
+    ];
+    for (final CommandDefinition d in config.commands) {
+      registry.onTool(d.name, d.handler);
+    }
+    _intent = IntentService(backend: _llm!, tools: tools);
+
     _feedback = VoiceFeedback(
       config: config.voiceFeedback,
       engine: _buildTtsEngine(dir),

@@ -28,6 +28,14 @@ class _ExampleAppState extends State<ExampleApp> {
         whisperModel: WhisperModelSize.base,
         powerMode: PowerMode.balanced,
         voiceFeedback: const VoiceFeedbackConfig(enabled: true),
+        // Example of a fully config-driven command (alongside the built-ins).
+        commands: [
+          CommandDefinition(
+            name: 'park',
+            description: 'Park the telescope mount. 归位 / 停靠.',
+            handler: (c) => debugPrint('[command] park (归位)'),
+          ),
+        ],
       ),
     );
     registerExampleHandlers(engine);

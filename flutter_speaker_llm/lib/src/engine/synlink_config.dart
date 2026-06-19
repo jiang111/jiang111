@@ -1,3 +1,4 @@
+import '../commands/command_definition.dart';
 import '../download/model_sources.dart';
 import '../tts/voice_feedback.dart';
 
@@ -20,6 +21,8 @@ enum WhisperModelSize { tiny, base }
 class SynlinkConfig {
   const SynlinkConfig({
     required this.modelSources,
+    this.commands = const [],
+    this.includeBuiltInTools = true,
     this.wakeWord = 'hi synlink',
     this.wakeWordThreshold = 0.25,
     this.whisperModel = WhisperModelSize.base,
@@ -37,6 +40,15 @@ class SynlinkConfig {
   /// Where to download model files from. Use [ModelSources.fromBaseUrl] to
   /// point at your CDN.
   final ModelSources modelSources;
+
+  /// Fully integrator-defined commands (recognition + handler in one place).
+  /// These are registered with the LLM and the dispatcher automatically.
+  final List<CommandDefinition> commands;
+
+  /// Whether to also expose the six built-in telescope tools (对极轴 / GOTO /
+  /// 对焦 / 拍摄 / 拍单张 / 下载图片) to the LLM. Set `false` for an app whose
+  /// command set is entirely defined via [commands].
+  final bool includeBuiltInTools;
 
   /// Wake phrase. Must match the entry in the KWS `keywords.txt` (English
   /// tokeniser). Default: `hi synlink`.

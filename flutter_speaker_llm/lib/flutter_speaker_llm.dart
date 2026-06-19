@@ -11,6 +11,7 @@ export 'src/engine/synlink_config.dart'
     show SynlinkConfig, PowerMode, WhisperModelSize;
 
 export 'src/commands/command.dart' show Command, CommandType;
+export 'src/commands/command_definition.dart' show CommandDefinition;
 export 'src/commands/registry.dart' show CommandRegistry, CommandHandler;
 
 export 'src/pipeline/voice_pipeline.dart' show PipelineState;

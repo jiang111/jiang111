@@ -8,8 +8,8 @@ import 'tools.dart';
 class IntentService {
   IntentService({
     required this.backend,
-    List<SynlinkTool>? extraTools,
-  }) : _tools = [...kBuiltInTools, ...?extraTools];
+    required List<SynlinkTool> tools,
+  }) : _tools = [...tools];
 
   final LlmBackend backend;
   final List<SynlinkTool> _tools;
