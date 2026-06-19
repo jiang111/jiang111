@@ -18,8 +18,9 @@ them:
 <base>/
   kws/      encoder.onnx  decoder.onnx  joiner.onnx  tokens.txt  keywords.txt
   vad/      silero_vad.onnx
-  whisper/  tiny-encoder.int8.onnx  tiny-decoder.int8.onnx  tiny-tokens.txt
-            base-encoder.int8.onnx  base-decoder.int8.onnx  base-tokens.txt
+  whisper/  {tiny,base,small,medium}-encoder.int8.onnx
+            {tiny,base,small,medium}-decoder.int8.onnx
+            {tiny,base,small,medium}-tokens.txt   (host only the size you ship)
   llm/      qwen2.5-0.5b-instruct.task        (Android / iOS)
             qwen2.5-0.5b-instruct.litertlm    (Windows / macOS)
   tts/      model.onnx  tokens.txt  lexicon.txt   (optional offline TTS)
@@ -55,13 +56,24 @@ Upstream: `https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/si
 
 ## 3. ASR — Whisper (multilingual, int8)
 
-- **tiny** (~40–75 MB): `csukuangfj/sherpa-onnx-whisper-tiny`
-  → `tiny-encoder.int8.onnx`, `tiny-decoder.int8.onnx`, `tiny-tokens.txt`
-- **base** (~80–140 MB): `csukuangfj/sherpa-onnx-whisper-base`
-  → `base-encoder.int8.onnx`, `base-decoder.int8.onnx`, `base-tokens.txt`
+All sizes are multilingual (zh/en/ja/es/… ~99 languages — the only offline
+family that covers both CJK and European languages). Pick via
+`SynlinkConfig.whisperModel`. Files: `{size}-encoder.int8.onnx`,
+`{size}-decoder.int8.onnx`, `{size}-tokens.txt` from
+`csukuangfj/sherpa-onnx-whisper-{size}`.
 
-Both are multilingual (zh/en/ja/es/…). Pick via
-`SynlinkConfig.whisperModel`.
+| size | ~int8 size | notes |
+|------|-----------|-------|
+| tiny | ~40–75 MB | weakest; prone to errors/hallucination on short commands |
+| base | ~80–140 MB | a bit better |
+| **small** | **~250 MB** | **recommended default** — clearly better for commands |
+| medium | ~770 MB | most accurate; heavy/slow, better suited to desktop |
+
+> Accuracy tips for short commands: prefer `small`+; the engine only feeds VAD
+> speech segments (no silence) to reduce Whisper hallucination. If your users
+> are mainly CJK (no Spanish/European needed), SenseVoice is faster and more
+> accurate — but it does not support Spanish, which is why Whisper is the
+> default here.
 
 ## 4. LLM — Qwen2.5-0.5B-Instruct (function calling)
 

@@ -106,7 +106,7 @@ SynlinkConfig({
   required ModelSources modelSources,
   List<CommandDefinition> commands = const [],
   String wakeWord = 'hi synlink', double wakeWordThreshold = 0.25,
-  WhisperModelSize whisperModel = base, String? asrLanguage,   // null=自动
+  WhisperModelSize whisperModel = small, String? asrLanguage,  // null=自动; tiny/base/small/medium
   PowerMode powerMode = balanced, bool pauseInBackground = true,
   Duration? keepModelsWarmIdle = 3min, Duration maxUtterance = 30s,
   Duration vadMinSilence = 600ms, VoiceFeedbackConfig voiceFeedback,

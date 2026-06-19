@@ -81,7 +81,7 @@ import 'package:flutter_speaker_llm/flutter_speaker_llm.dart';
 final engine = SynlinkEngine(
   config: SynlinkConfig(
     wakeWord: 'hi synlink',
-    whisperModel: WhisperModelSize.base,        // tiny = smaller/faster, base = more accurate
+    whisperModel: WhisperModelSize.small,       // tiny/base = smaller, small/medium = more accurate
     powerMode: PowerMode.balanced,
     pauseInBackground: true,
     keepModelsWarmIdle: const Duration(minutes: 3),
@@ -165,8 +165,9 @@ CDN and use `ModelSources.fromBaseUrl(...)`, which expects this layout:
 <base>/
   kws/      encoder.onnx  decoder.onnx  joiner.onnx  tokens.txt  keywords.txt
   vad/      silero_vad.onnx
-  whisper/  tiny-encoder.int8.onnx  tiny-decoder.int8.onnx  tiny-tokens.txt
-            base-encoder.int8.onnx  base-decoder.int8.onnx  base-tokens.txt
+  whisper/  {tiny,base,small,medium}-encoder.int8.onnx
+            {tiny,base,small,medium}-decoder.int8.onnx
+            {tiny,base,small,medium}-tokens.txt   (only the size you use)
   llm/      qwen2.5-0.5b-instruct.task        (Android / iOS)
             qwen2.5-0.5b-instruct.litertlm    (Windows / macOS)
 ```

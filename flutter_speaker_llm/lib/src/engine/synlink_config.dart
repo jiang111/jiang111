@@ -14,8 +14,10 @@ enum PowerMode {
   performance,
 }
 
-/// Whisper model size used for transcription.
-enum WhisperModelSize { tiny, base }
+/// Whisper model size used for transcription. Larger = more accurate but
+/// bigger/slower. `small` is the recommended default for command recognition
+/// (notably better than tiny/base, still fully multilingual incl. Spanish).
+enum WhisperModelSize { tiny, base, small, medium }
 
 /// Top-level configuration for [SynlinkEngine].
 class SynlinkConfig {
@@ -24,7 +26,7 @@ class SynlinkConfig {
     this.commands = const [],
     this.wakeWord = 'hi synlink',
     this.wakeWordThreshold = 0.25,
-    this.whisperModel = WhisperModelSize.base,
+    this.whisperModel = WhisperModelSize.small,
     this.asrLanguage,
     this.powerMode = PowerMode.balanced,
     this.pauseInBackground = true,

@@ -25,7 +25,7 @@ class _ExampleAppState extends State<ExampleApp> {
         // Replace with your CDN:
         // modelSources: ModelSources.fromBaseUrl('https://cdn.example.com/models'),
         modelSources: ModelSources.defaults(),
-        whisperModel: WhisperModelSize.base,
+        whisperModel: WhisperModelSize.small, // more accurate than tiny/base
         powerMode: PowerMode.balanced,
         voiceFeedback: const VoiceFeedbackConfig(enabled: true),
         // The app defines its own command set — the library ships none.

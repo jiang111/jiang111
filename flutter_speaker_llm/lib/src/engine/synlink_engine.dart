@@ -98,12 +98,26 @@ class SynlinkEngine with WidgetsBindingObserver {
     return _modelsDir = base;
   }
 
+  ModelBundle _whisperBundle() {
+    final src = config.modelSources;
+    return switch (config.whisperModel) {
+      WhisperModelSize.tiny => src.whisperTiny,
+      WhisperModelSize.base => src.whisperBase,
+      WhisperModelSize.small => src.whisperSmall,
+      WhisperModelSize.medium => src.whisperMedium,
+    };
+  }
+
+  String get _whisperPrefix => switch (config.whisperModel) {
+        WhisperModelSize.tiny => 'tiny',
+        WhisperModelSize.base => 'base',
+        WhisperModelSize.small => 'small',
+        WhisperModelSize.medium => 'medium',
+      };
+
   List<ModelBundle> _sherpaBundles() {
     final src = config.modelSources;
-    final whisper = config.whisperModel == WhisperModelSize.tiny
-        ? src.whisperTiny
-        : src.whisperBase;
-    final bundles = <ModelBundle>[src.kws, src.vad, whisper];
+    final bundles = <ModelBundle>[src.kws, src.vad, _whisperBundle()];
     if (config.voiceFeedback.engine == TtsEngineType.sherpaOffline &&
         src.tts != null) {
       bundles.add(src.tts!);
@@ -148,11 +162,11 @@ class SynlinkEngine with WidgetsBindingObserver {
 
   SpeechConfig _buildSpeechConfig(Directory dir) {
     final src = config.modelSources;
-    final isTiny = config.whisperModel == WhisperModelSize.tiny;
-    final whisper = isTiny ? src.whisperTiny : src.whisperBase;
-    final encName = isTiny ? 'tiny-encoder.int8.onnx' : 'base-encoder.int8.onnx';
-    final decName = isTiny ? 'tiny-decoder.int8.onnx' : 'base-decoder.int8.onnx';
-    final tokName = isTiny ? 'tiny-tokens.txt' : 'base-tokens.txt';
+    final whisper = _whisperBundle();
+    final prefix = _whisperPrefix;
+    final encName = '$prefix-encoder.int8.onnx';
+    final decName = '$prefix-decoder.int8.onnx';
+    final tokName = '$prefix-tokens.txt';
     String path(ModelBundle b, String name) => _downloads.filePath(b, dir, name);
 
     return SpeechConfig(

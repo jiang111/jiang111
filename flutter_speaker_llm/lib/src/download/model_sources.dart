@@ -31,6 +31,8 @@ class ModelSources {
     required this.vad,
     required this.whisperTiny,
     required this.whisperBase,
+    required this.whisperSmall,
+    required this.whisperMedium,
     required this.llmTaskUrl,
     required this.llmLitertlmUrl,
     this.tts,
@@ -40,6 +42,8 @@ class ModelSources {
   final ModelBundle vad;
   final ModelBundle whisperTiny;
   final ModelBundle whisperBase;
+  final ModelBundle whisperSmall;
+  final ModelBundle whisperMedium;
 
   /// LLM URL for mobile/web (`.task`, MediaPipe format).
   final String llmTaskUrl;
@@ -87,6 +91,25 @@ class ModelSources {
             url: u('whisper/base-decoder.int8.onnx')),
         ModelFile(name: 'base-tokens.txt', url: u('whisper/base-tokens.txt')),
       ]),
+      whisperSmall: ModelBundle(id: 'whisper', dirName: 'whisper', files: [
+        ModelFile(
+            name: 'small-encoder.int8.onnx',
+            url: u('whisper/small-encoder.int8.onnx')),
+        ModelFile(
+            name: 'small-decoder.int8.onnx',
+            url: u('whisper/small-decoder.int8.onnx')),
+        ModelFile(name: 'small-tokens.txt', url: u('whisper/small-tokens.txt')),
+      ]),
+      whisperMedium: ModelBundle(id: 'whisper', dirName: 'whisper', files: [
+        ModelFile(
+            name: 'medium-encoder.int8.onnx',
+            url: u('whisper/medium-encoder.int8.onnx')),
+        ModelFile(
+            name: 'medium-decoder.int8.onnx',
+            url: u('whisper/medium-decoder.int8.onnx')),
+        ModelFile(
+            name: 'medium-tokens.txt', url: u('whisper/medium-tokens.txt')),
+      ]),
       llmTaskUrl: u('llm/qwen2.5-0.5b-instruct.task'),
       llmLitertlmUrl: u('llm/qwen2.5-0.5b-instruct.litertlm'),
       tts: includeTts
@@ -111,6 +134,8 @@ class ModelSources {
     ModelBundle? vad,
     ModelBundle? whisperTiny,
     ModelBundle? whisperBase,
+    ModelBundle? whisperSmall,
+    ModelBundle? whisperMedium,
     String? llmTaskUrl,
     String? llmLitertlmUrl,
     ModelBundle? tts,
@@ -120,6 +145,8 @@ class ModelSources {
       vad: vad ?? this.vad,
       whisperTiny: whisperTiny ?? this.whisperTiny,
       whisperBase: whisperBase ?? this.whisperBase,
+      whisperSmall: whisperSmall ?? this.whisperSmall,
+      whisperMedium: whisperMedium ?? this.whisperMedium,
       llmTaskUrl: llmTaskUrl ?? this.llmTaskUrl,
       llmLitertlmUrl: llmLitertlmUrl ?? this.llmLitertlmUrl,
       tts: tts ?? this.tts,
@@ -189,6 +216,34 @@ final ModelSources _officialSources = ModelSources(
         name: 'base-tokens.txt',
         url:
             'https://huggingface.co/csukuangfj/sherpa-onnx-whisper-base/resolve/main/base-tokens.txt'),
+  ]),
+  whisperSmall: const ModelBundle(id: 'whisper', dirName: 'whisper', files: [
+    ModelFile(
+        name: 'small-encoder.int8.onnx',
+        url:
+            'https://huggingface.co/csukuangfj/sherpa-onnx-whisper-small/resolve/main/small-encoder.int8.onnx'),
+    ModelFile(
+        name: 'small-decoder.int8.onnx',
+        url:
+            'https://huggingface.co/csukuangfj/sherpa-onnx-whisper-small/resolve/main/small-decoder.int8.onnx'),
+    ModelFile(
+        name: 'small-tokens.txt',
+        url:
+            'https://huggingface.co/csukuangfj/sherpa-onnx-whisper-small/resolve/main/small-tokens.txt'),
+  ]),
+  whisperMedium: const ModelBundle(id: 'whisper', dirName: 'whisper', files: [
+    ModelFile(
+        name: 'medium-encoder.int8.onnx',
+        url:
+            'https://huggingface.co/csukuangfj/sherpa-onnx-whisper-medium/resolve/main/medium-encoder.int8.onnx'),
+    ModelFile(
+        name: 'medium-decoder.int8.onnx',
+        url:
+            'https://huggingface.co/csukuangfj/sherpa-onnx-whisper-medium/resolve/main/medium-decoder.int8.onnx'),
+    ModelFile(
+        name: 'medium-tokens.txt',
+        url:
+            'https://huggingface.co/csukuangfj/sherpa-onnx-whisper-medium/resolve/main/medium-tokens.txt'),
   ]),
   // Qwen2.5-0.5B LLM URLs are resolved by flutter_gemma; confirm the exact
   // .task / .litertlm asset URLs in docs/MODELS.md and set them here or via
