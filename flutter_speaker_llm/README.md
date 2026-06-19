@@ -277,6 +277,14 @@ flutter run -d macos
 
 ---
 
+## Documentation
+
+- [`CLAUDE.md`](CLAUDE.md) — project context for Claude Code (start here when continuing development)
+- [`docs/REQUIREMENTS.md`](docs/REQUIREMENTS.md) — requirements / PRD
+- [`docs/DESIGN.md`](docs/DESIGN.md) — technical design (architecture, modules, data flow, risks)
+- [`docs/MODELS.md`](docs/MODELS.md) — model files & download URLs
+- [`docs/VERIFY.md`](docs/VERIFY.md) — compile/verify checklist
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
