@@ -12,8 +12,13 @@
 #     bash province_whitelist.sh            # 交互式安装
 #     bash province_whitelist.sh update     # 更新省份 IP 数据(可放 cron)
 #     bash province_whitelist.sh status     # 查看当前状态
+#     bash province_whitelist.sh add-province [省份名|代码]...  # 新增白名单省份
+#     bash province_whitelist.sh del-province [省份名|代码]...  # 移除白名单省份
 #     bash province_whitelist.sh add-ip <IP/CIDR>   # 添加额外白名单 IP
 #     bash province_whitelist.sh del-ip <IP/CIDR>   # 删除额外白名单 IP
+#     bash province_whitelist.sh auto-update on|off # 开启/关闭每日自动同步
+#     bash province_whitelist.sh pause      # 暂停白名单(保留配置, 不再拦截)
+#     bash province_whitelist.sh resume     # 恢复白名单
 #     bash province_whitelist.sh uninstall  # 卸载并恢复原样
 #=================================================================#
 
@@ -193,10 +198,7 @@ EOF
     systemctl daemon-reload
     systemctl enable province-whitelist.service >/dev/null 2>&1
 
-    # 每天自动更新省份 IP 数据 (数据源每小时更新, 每天同步一次足够)
-    cat > "$CRON_FILE" <<EOF
-$((RANDOM % 60)) $((RANDOM % 6)) * * * root bash ${SCRIPT_PATH} update >/dev/null 2>&1
-EOF
+    write_cron
 
     # 把脚本自身复制到固定位置
     [[ "$(readlink -f "$0")" != "$SCRIPT_PATH" ]] && cp -f "$(readlink -f "$0")" "$SCRIPT_PATH"
@@ -207,30 +209,81 @@ load_conf() {
     [[ -f "$CONF_FILE" ]] || { err "未找到配置 ${CONF_FILE}, 请先运行安装"; exit 1; }
     # shellcheck disable=SC1090
     source "$CONF_FILE"
+    ENABLED=${ENABLED:-1}
 }
 
-cmd_install() {
-    require_root
-    install_deps
+save_conf() {
+    mkdir -p "$CONF_DIR"
+    cat > "$CONF_FILE" <<EOF
+PROVINCES="${PROVINCES}"
+PORTS="${PORTS}"
+ENABLED="${ENABLED:-1}"
+EOF
+}
 
-    echo "==================== 选择省份 ===================="
+# 行政区划代码 -> 省份名
+name_of_code() {
     local i
+    for i in "${!PROVINCE_CODES[@]}"; do
+        [[ ${PROVINCE_CODES[$i]} == "$1" ]] && { echo "${PROVINCE_NAMES[$i]}"; return; }
+    done
+    echo "$1"
+}
+
+# 省份名(江苏)或代码(320000) -> 代码, 未匹配返回 1
+resolve_province() {
+    local i
+    for i in "${!PROVINCE_CODES[@]}"; do
+        if [[ ${PROVINCE_CODES[$i]} == "$1" || ${PROVINCE_NAMES[$i]} == "$1" ]]; then
+            echo "${PROVINCE_CODES[$i]}"; return 0
+        fi
+    done
+    return 1
+}
+
+# 交互式省份菜单, 结果代码存入全局数组 PICKED
+pick_provinces() {
+    local i picks=() n
+    echo "==================== 省份列表 ===================="
     for i in "${!PROVINCE_NAMES[@]}"; do
         printf "%2d) %-4s\t" "$((i+1))" "${PROVINCE_NAMES[$i]}"
         (( (i+1) % 4 == 0 )) && echo
     done
     echo
     echo "=================================================="
-    read -rp "输入要加入白名单的省份编号(可多选, 空格分隔, 如: 16 19): " -a picks
+    read -rp "$1(可多选, 空格分隔, 如: 16 19): " -a picks
     [[ ${#picks[@]} -eq 0 ]] && { err "未选择任何省份"; exit 1; }
-
-    local codes=() names=() n
+    PICKED=()
     for n in "${picks[@]}"; do
         [[ "$n" =~ ^[0-9]+$ ]] && (( n >= 1 && n <= ${#PROVINCE_CODES[@]} )) \
             || { err "无效编号: $n"; exit 1; }
-        codes+=("${PROVINCE_CODES[$((n-1))]}")
-        names+=("${PROVINCE_NAMES[$((n-1))]}")
+        PICKED+=("${PROVINCE_CODES[$((n-1))]}")
     done
+}
+
+# 把自定义链从 INPUT 上摘下来 (全端口/按端口两种挂载方式都处理)
+detach_chain() {
+    iptables -D INPUT -j "$CHAIN" 2>/dev/null
+    while read -r rule; do
+        # shellcheck disable=SC2086
+        iptables ${rule/-A/-D} 2>/dev/null
+    done < <(iptables-save 2>/dev/null | grep -- "-j ${CHAIN}" | grep "^-A INPUT")
+}
+
+write_cron() {
+    # 每天自动更新省份 IP 数据 (数据源每小时更新, 每天同步一次足够)
+    cat > "$CRON_FILE" <<EOF
+$((RANDOM % 60)) $((RANDOM % 6)) * * * root bash ${SCRIPT_PATH} update >/dev/null 2>&1
+EOF
+}
+
+cmd_install() {
+    require_root
+    install_deps
+
+    pick_provinces "输入要加入白名单的省份编号"
+    local codes=("${PICKED[@]}") names=() c
+    for c in "${codes[@]}"; do names+=("$(name_of_code "$c")"); done
     info "已选省份: ${names[*]}"
 
     echo
@@ -266,10 +319,10 @@ cmd_install() {
     mkdir -p "$CONF_DIR"
     build_ipset "${codes[@]}" || exit 1
 
-    cat > "$CONF_FILE" <<EOF
-PROVINCES="${codes[*]}"
-PORTS="${ports}"
-EOF
+    PROVINCES="${codes[*]}"
+    PORTS="${ports}"
+    ENABLED=1
+    save_conf
 
     apply_iptables "$ports"
     install_persistence
@@ -279,9 +332,13 @@ EOF
     info "省份: ${names[*]}"
     [[ -n "$ports" ]] && info "保护端口: ${ports}" || info "保护范围: 全部端口"
     info "IP 数据每天自动更新; 常用命令:"
-    echo "   bash ${SCRIPT_PATH} status     # 查看状态"
-    echo "   bash ${SCRIPT_PATH} add-ip x.x.x.x   # 添加额外白名单"
-    echo "   bash ${SCRIPT_PATH} uninstall  # 卸载"
+    echo "   bash ${SCRIPT_PATH} status              # 查看状态"
+    echo "   bash ${SCRIPT_PATH} add-province 广东   # 新增省份"
+    echo "   bash ${SCRIPT_PATH} del-province 广东   # 移除省份"
+    echo "   bash ${SCRIPT_PATH} add-ip x.x.x.x      # 添加额外白名单 IP"
+    echo "   bash ${SCRIPT_PATH} auto-update off     # 关闭每日自动同步"
+    echo "   bash ${SCRIPT_PATH} pause / resume      # 暂停 / 恢复"
+    echo "   bash ${SCRIPT_PATH} uninstall           # 卸载"
 }
 
 cmd_update() {
@@ -295,6 +352,10 @@ cmd_update() {
 cmd_restore_rules() {
     require_root
     load_conf
+    if [[ "$ENABLED" != "1" ]]; then
+        info "白名单处于暂停状态, 跳过规则恢复"
+        return 0
+    fi
     [[ -f "${CONF_DIR}/ipset.rules" ]] && ipset restore -! < "${CONF_DIR}/ipset.rules"
     ensure_extra_set
     ipset list -name | grep -qx "$IPSET_MAIN" || bash "$SCRIPT_PATH" update
@@ -303,16 +364,128 @@ cmd_restore_rules() {
 
 cmd_status() {
     require_root
-    if ! ipset list -name 2>/dev/null | grep -qx "$IPSET_MAIN"; then
-        warn "白名单未启用"; exit 0
-    fi
+    [[ -f "$CONF_FILE" ]] || { warn "白名单未安装"; exit 0; }
     load_conf
-    info "省份代码: ${PROVINCES}"
+    local c pnames=""
+    for c in $PROVINCES; do pnames+="$(name_of_code "$c") "; done
+    [[ "$ENABLED" == "1" ]] && info "状态: 启用" || warn "状态: 已暂停 (resume 恢复)"
+    info "白名单省份: ${pnames}(${PROVINCES})"
     [[ -n "$PORTS" ]] && info "保护端口: ${PORTS}" || info "保护范围: 全部端口"
-    info "省份 IP 段: $(ipset list "$IPSET_MAIN" -terse | awk '/Number of entries/{print $4}') 条"
-    info "额外白名单: $(ipset list "$IPSET_EXTRA" -terse 2>/dev/null | awk '/Number of entries/{print $4}') 条"
-    echo "---- iptables 链 ${CHAIN} ----"
-    iptables -L "$CHAIN" -n -v --line-numbers
+    [[ -f "$CRON_FILE" ]] && info "每日自动同步: 开启" || info "每日自动同步: 关闭"
+    if ipset list -name 2>/dev/null | grep -qx "$IPSET_MAIN"; then
+        info "省份 IP 段: $(ipset list "$IPSET_MAIN" -terse | awk '/Number of entries/{print $4}') 条"
+        info "额外白名单: $(ipset list "$IPSET_EXTRA" -terse 2>/dev/null | awk '/Number of entries/{print $4}') 条"
+    else
+        warn "ipset 集合不存在 (未生效)"
+    fi
+    if iptables -L "$CHAIN" -n >/dev/null 2>&1; then
+        echo "---- iptables 链 ${CHAIN} ----"
+        iptables -L "$CHAIN" -n -v --line-numbers
+    fi
+}
+
+cmd_add_province() {
+    require_root
+    load_conf
+    ensure_extra_set
+    # shellcheck disable=SC2206
+    local codes=($PROVINCES) new=() a c
+    if [[ $# -gt 0 ]]; then
+        for a in "$@"; do
+            c=$(resolve_province "$a") || { err "未知省份: $a (支持省份名如 江苏, 或代码如 320000)"; exit 1; }
+            new+=("$c")
+        done
+    else
+        pick_provinces "输入要新增的省份编号"
+        new=("${PICKED[@]}")
+    fi
+    for c in "${new[@]}"; do
+        [[ " ${codes[*]} " == *" $c "* ]] || codes+=("$c")
+    done
+    build_ipset "${codes[@]}" || exit 1
+    PROVINCES="${codes[*]}"
+    save_conf
+    local pnames=""
+    for c in $PROVINCES; do pnames+="$(name_of_code "$c") "; done
+    info "当前白名单省份: ${pnames}"
+}
+
+cmd_del_province() {
+    require_root
+    load_conf
+    ensure_extra_set
+    # shellcheck disable=SC2206
+    local codes=($PROVINCES) del=() left=() a c
+    if [[ $# -gt 0 ]]; then
+        for a in "$@"; do
+            c=$(resolve_province "$a") || { err "未知省份: $a (支持省份名如 江苏, 或代码如 320000)"; exit 1; }
+            del+=("$c")
+        done
+    else
+        local pnames=""
+        for c in "${codes[@]}"; do pnames+="$(name_of_code "$c") "; done
+        info "当前白名单省份: ${pnames}"
+        pick_provinces "输入要移除的省份编号"
+        del=("${PICKED[@]}")
+    fi
+    for c in "${codes[@]}"; do
+        [[ " ${del[*]} " == *" $c "* ]] || left+=("$c")
+    done
+    if [[ ${#left[@]} -eq 0 ]]; then
+        err "不能移除全部省份; 如需停用白名单请用: $0 pause 或 $0 uninstall"
+        exit 1
+    fi
+    [[ ${#left[@]} -eq ${#codes[@]} ]] && { warn "所选省份不在当前白名单中, 无变化"; exit 0; }
+    build_ipset "${left[@]}" || exit 1
+    PROVINCES="${left[*]}"
+    save_conf
+    local pnames=""
+    for c in $PROVINCES; do pnames+="$(name_of_code "$c") "; done
+    info "当前白名单省份: ${pnames}"
+}
+
+cmd_autoupdate() {
+    require_root
+    case "${1:-}" in
+        on)
+            write_cron
+            info "已开启每日自动同步省份 IP 数据"
+            ;;
+        off)
+            rm -f "$CRON_FILE"
+            info "已关闭每日自动同步 (可随时用 auto-update on 恢复, 或手动执行 update)"
+            ;;
+        *)
+            err "用法: $0 auto-update on|off"; exit 1
+            ;;
+    esac
+}
+
+cmd_pause() {
+    require_root
+    load_conf
+    detach_chain
+    ENABLED=0
+    save_conf
+    iptables-save > "${CONF_DIR}/iptables.rules" 2>/dev/null
+    info "白名单已暂停, 不再拦截任何 IP (配置保留, 恢复: $0 resume)"
+}
+
+cmd_resume() {
+    require_root
+    load_conf
+    ensure_extra_set
+    if ! ipset list -name 2>/dev/null | grep -qx "$IPSET_MAIN"; then
+        if [[ -f "${CONF_DIR}/ipset.rules" ]]; then
+            ipset restore -! < "${CONF_DIR}/ipset.rules"
+        fi
+        # shellcheck disable=SC2086
+        ipset list -name | grep -qx "$IPSET_MAIN" || build_ipset $PROVINCES || exit 1
+    fi
+    apply_iptables "$PORTS"
+    ENABLED=1
+    save_conf
+    info "白名单已恢复拦截"
 }
 
 cmd_add_ip() {
@@ -334,12 +507,7 @@ cmd_del_ip() {
 
 cmd_uninstall() {
     require_root
-    iptables -D INPUT -j "$CHAIN" 2>/dev/null
-    # 删除按端口挂载的规则
-    while read -r rule; do
-        # shellcheck disable=SC2086
-        iptables ${rule/-A/-D} 2>/dev/null
-    done < <(iptables-save | grep -- "-j ${CHAIN}" | grep "^-A INPUT")
+    detach_chain
     iptables -F "$CHAIN" 2>/dev/null
     iptables -X "$CHAIN" 2>/dev/null
     ipset destroy "$IPSET_MAIN" 2>/dev/null
@@ -351,13 +519,23 @@ cmd_uninstall() {
     info "已卸载, 防火墙恢复原样 (脚本 ${SCRIPT_PATH} 保留, 可手动删除)"
 }
 
-case "${1:-install}" in
+cmd=${1:-install}
+shift 2>/dev/null || true
+case "$cmd" in
     install)        cmd_install ;;
     update)         cmd_update ;;
     status)         cmd_status ;;
-    add-ip)         cmd_add_ip "${2:-}" ;;
-    del-ip)         cmd_del_ip "${2:-}" ;;
+    add-province)   cmd_add_province "$@" ;;
+    del-province)   cmd_del_province "$@" ;;
+    add-ip)         cmd_add_ip "${1:-}" ;;
+    del-ip)         cmd_del_ip "${1:-}" ;;
+    auto-update)    cmd_autoupdate "${1:-}" ;;
+    pause)          cmd_pause ;;
+    resume)         cmd_resume ;;
     restore-rules)  cmd_restore_rules ;;
     uninstall)      cmd_uninstall ;;
-    *) echo "用法: $0 {install|update|status|add-ip <IP>|del-ip <IP>|uninstall}"; exit 1 ;;
+    *)
+        echo "用法: $0 {install|update|status|add-province [省份]...|del-province [省份]...|add-ip <IP>|del-ip <IP>|auto-update on|off|pause|resume|uninstall}"
+        exit 1
+        ;;
 esac
