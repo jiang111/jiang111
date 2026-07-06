@@ -90,7 +90,6 @@ build_ipset() {
     local tmpdir tmpset="${IPSET_MAIN}_tmp" total=0 code name i
 
     tmpdir=$(mktemp -d)
-    trap 'rm -rf "$tmpdir"' RETURN
 
     for code in "${codes[@]}"; do
         name=$code
@@ -100,6 +99,7 @@ build_ipset() {
         info "下载 ${name}(${code}) IP 段..."
         if ! fetch_province "$code" "${tmpdir}/${code}.txt"; then
             err "下载 ${name}(${code}) 失败, 所有镜像均不可用, 本次不更新"
+            rm -rf "$tmpdir"
             return 1
         fi
     done
@@ -113,6 +113,8 @@ build_ipset() {
                 | sed "s/^/add ${tmpset} /"
         done
     } | ipset restore -!
+
+    rm -rf "$tmpdir"
 
     total=$(ipset list "$tmpset" -terse | awk '/Number of entries/{print $4}')
     if [[ -z "$total" || "$total" -lt 10 ]]; then
