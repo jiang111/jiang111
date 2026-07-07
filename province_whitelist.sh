@@ -9,7 +9,8 @@
 #           按 GB/T 2260 省级行政区划代码提供 CIDR 列表
 #
 #   用法:
-#     bash province_whitelist.sh            # 交互式安装
+#     bash province_whitelist.sh            # 打开交互式管理菜单
+#     bash province_whitelist.sh install    # 直接进入安装向导
 #     bash province_whitelist.sh update     # 更新省份 IP 数据(可放 cron)
 #     bash province_whitelist.sh status     # 查看当前状态
 #     bash province_whitelist.sh add-province [省份名|代码]...  # 新增白名单省份
@@ -331,14 +332,8 @@ cmd_install() {
     info "安装完成!"
     info "省份: ${names[*]}"
     [[ -n "$ports" ]] && info "保护端口: ${ports}" || info "保护范围: 全部端口"
-    info "IP 数据每天自动更新; 常用命令:"
-    echo "   bash ${SCRIPT_PATH} status              # 查看状态"
-    echo "   bash ${SCRIPT_PATH} add-province 广东   # 新增省份"
-    echo "   bash ${SCRIPT_PATH} del-province 广东   # 移除省份"
-    echo "   bash ${SCRIPT_PATH} add-ip x.x.x.x      # 添加额外白名单 IP"
-    echo "   bash ${SCRIPT_PATH} auto-update off     # 关闭每日自动同步"
-    echo "   bash ${SCRIPT_PATH} pause / resume      # 暂停 / 恢复"
-    echo "   bash ${SCRIPT_PATH} uninstall           # 卸载"
+    info "IP 数据每天自动更新"
+    info "日常管理直接运行: bash ${SCRIPT_PATH}  (交互菜单)"
 }
 
 cmd_update() {
@@ -519,9 +514,92 @@ cmd_uninstall() {
     info "已卸载, 防火墙恢复原样 (脚本 ${SCRIPT_PATH} 保留, 可手动删除)"
 }
 
-cmd=${1:-install}
+is_installed() { [[ -f "$CONF_FILE" ]]; }
+
+main_menu() {
+    require_root
+    local ch summary auto_label pause_label enabled pnames c ip ok
+    while true; do
+        # 状态摘要
+        summary="未安装"
+        auto_label="开启每日自动同步"
+        pause_label="暂停白名单"
+        if is_installed; then
+            # shellcheck disable=SC1090
+            enabled=$(source "$CONF_FILE" 2>/dev/null; echo "${ENABLED:-1}")
+            # shellcheck disable=SC1090
+            pnames=$(source "$CONF_FILE" 2>/dev/null; for c in ${PROVINCES}; do printf '%s ' "$(name_of_code "$c")"; done)
+            if [[ "$enabled" == "1" ]]; then
+                summary="运行中 | 省份: ${pnames}"
+                pause_label="暂停白名单"
+            else
+                summary="已暂停 | 省份: ${pnames}"
+                pause_label="恢复白名单"
+            fi
+            [[ -f "$CRON_FILE" ]] && auto_label="关闭每日自动同步" || auto_label="开启每日自动同步"
+        fi
+
+        echo
+        echo "============ 省份 IP 白名单管理 ============"
+        echo -e " 当前状态: ${GREEN}${summary}${PLAIN}"
+        echo "--------------------------------------------"
+        echo "  1) 安装 / 重新配置"
+        echo "  2) 查看详细状态"
+        echo "  3) 新增白名单省份"
+        echo "  4) 移除白名单省份"
+        echo "  5) 添加额外白名单 IP"
+        echo "  6) 删除额外白名单 IP"
+        echo "  7) 立即更新省份 IP 数据"
+        echo "  8) ${auto_label}"
+        echo "  9) ${pause_label}"
+        echo " 10) 卸载"
+        echo "  0) 退出"
+        echo "============================================"
+        read -rp "请选择 [0-10]: " ch
+
+        # 除安装外的操作都需要先安装; 子命令放子 shell 里跑,
+        # 内部 exit 不会退出菜单
+        case "$ch" in
+            1) ( cmd_install ) ;;
+            2) is_installed && ( cmd_status ) || err "尚未安装, 请先选 1" ;;
+            3) is_installed && ( cmd_add_province ) || err "尚未安装, 请先选 1" ;;
+            4) is_installed && ( cmd_del_province ) || err "尚未安装, 请先选 1" ;;
+            5)
+                is_installed || { err "尚未安装, 请先选 1"; continue; }
+                read -rp "输入要添加的 IP 或网段(如 1.2.3.4 或 1.2.3.0/24): " ip
+                [[ -n "$ip" ]] && ( cmd_add_ip "$ip" )
+                ;;
+            6)
+                is_installed || { err "尚未安装, 请先选 1"; continue; }
+                read -rp "输入要删除的 IP 或网段: " ip
+                [[ -n "$ip" ]] && ( cmd_del_ip "$ip" )
+                ;;
+            7) is_installed && ( cmd_update ) || err "尚未安装, 请先选 1" ;;
+            8)
+                is_installed || { err "尚未安装, 请先选 1"; continue; }
+                if [[ -f "$CRON_FILE" ]]; then ( cmd_autoupdate off ); else ( cmd_autoupdate on ); fi
+                ;;
+            9)
+                is_installed || { err "尚未安装, 请先选 1"; continue; }
+                # shellcheck disable=SC1090
+                enabled=$(source "$CONF_FILE" 2>/dev/null; echo "${ENABLED:-1}")
+                if [[ "$enabled" == "1" ]]; then ( cmd_pause ); else ( cmd_resume ); fi
+                ;;
+            10)
+                is_installed || { err "尚未安装, 无需卸载"; continue; }
+                read -rp "确认卸载并清除所有规则? [y/N]: " ok
+                [[ "$ok" =~ ^[Yy]$ ]] && ( cmd_uninstall )
+                ;;
+            0) exit 0 ;;
+            *) err "无效选择: $ch" ;;
+        esac
+    done
+}
+
+cmd=${1:-menu}
 shift 2>/dev/null || true
 case "$cmd" in
+    menu)           main_menu ;;
     install)        cmd_install ;;
     update)         cmd_update ;;
     status)         cmd_status ;;
@@ -535,7 +613,8 @@ case "$cmd" in
     restore-rules)  cmd_restore_rules ;;
     uninstall)      cmd_uninstall ;;
     *)
-        echo "用法: $0 {install|update|status|add-province [省份]...|del-province [省份]...|add-ip <IP>|del-ip <IP>|auto-update on|off|pause|resume|uninstall}"
+        echo "用法: $0                # 交互式管理菜单"
+        echo "     $0 {install|update|status|add-province [省份]...|del-province [省份]...|add-ip <IP>|del-ip <IP>|auto-update on|off|pause|resume|uninstall}"
         exit 1
         ;;
 esac
