@@ -1,1 +1,7 @@
-
+DOMAIN-KEYWORD,facebook
+DOMAIN-KEYWORD,instagram
+DOMAIN-KEYWORD,threads
+DOMAIN-KEYWORD,whatsapp
+DOMAIN-KEYWORD,line.me
+DOMAIN-KEYWORD,yahoo.com
+DOMAIN-KEYWORD,shopee
