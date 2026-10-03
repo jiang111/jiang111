@@ -31,7 +31,7 @@
 set -u
 
 # 脚本版本号 (整数). 自动同步副本时只升不降, 用旧脚本跑命令不会把已安装的新版本覆盖掉
-VERSION=3
+VERSION=4
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; PLAIN='\033[0m'
 
@@ -142,29 +142,32 @@ with_lock() {
 }
 
 # 把两个集合保存到磁盘供开机恢复 (写到唯一的临时文件再替换, 集合不存在就跳过, 不会把文件清空)
-# 调用方负责持锁: build_ipset_locked 内部已持锁, 其他地方用 with_lock save_ipsets
+# 任何一个 ipset save 失败都不替换原文件, 宁可保留上一次的完整数据
+# 调用方负责持锁: build_ipset_apply 内部已持锁, 其他地方用 with_lock save_ipsets
 save_ipsets() {
-    local tmp
+    local tmp rc=0
     mkdir -p "$CONF_DIR"
     tmp=$(mktemp "${IPSET_RULES}.XXXXXX") || return 1
     {
-        ipset_exists "$IPSET_MAIN"  && ipset save "$IPSET_MAIN"
-        ipset_exists "$IPSET_EXTRA" && ipset save "$IPSET_EXTRA"
-        true
-    } > "$tmp" && mv -f "$tmp" "$IPSET_RULES"
-    rm -f "$tmp"
+        if ipset_exists "$IPSET_MAIN";  then ipset save "$IPSET_MAIN"  || rc=1; fi
+        if ipset_exists "$IPSET_EXTRA"; then ipset save "$IPSET_EXTRA" || rc=1; fi
+    } > "$tmp"
+    if (( rc != 0 )); then
+        rm -f "$tmp"
+        err "ipset save 失败, 保留原有的 ${IPSET_RULES}"
+        return 1
+    fi
+    mv -f "$tmp" "$IPSET_RULES"
 }
 
 # 下载所选省份数据并原子更新 ipset (先建临时集合再 swap, 更新过程不断流)
-# 整个过程持有文件锁, 避免 cron 与手动更新同时跑时争用临时集合
-build_ipset() { with_lock build_ipset_locked "$@"; }
-
-build_ipset_locked() {
+# 下载阶段不加锁 (各进程用自己的临时目录), 只有建集合/swap/写盘这一小段持锁,
+# 这样 cron 更新卡在慢镜像上时, add-ip 之类的写盘操作不会跟着等
+build_ipset() {
     local codes=("$@")
-    local tmpdir tmpset="${IPSET_MAIN}_tmp" total=0 code name
+    local tmpdir code name rc
 
     tmpdir=$(mktemp -d)
-
     for code in "${codes[@]}"; do
         name=$(name_of_code "$code")
         info "下载 ${name}(${code}) IP 段..."
@@ -175,8 +178,19 @@ build_ipset_locked() {
         fi
     done
 
+    with_lock build_ipset_apply "$tmpdir" "${codes[@]}"
+    rc=$?
+    rm -rf "$tmpdir"
+    return $rc
+}
+
+# $1 = 已下载好数据的目录, 其余参数 = 省份代码. 在锁内执行.
+build_ipset_apply() {
+    local tmpdir=$1; shift
+    local codes=("$@") tmpset="${IPSET_MAIN}_tmp" total=0 code
+
     ipset destroy "$tmpset" 2>/dev/null
-    ipset create "$tmpset" hash:net family inet hashsize 4096 maxelem 262144
+    ipset create "$tmpset" hash:net family inet hashsize 4096 maxelem 262144 || return 1
 
     {
         for code in "${codes[@]}"; do
@@ -184,8 +198,6 @@ build_ipset_locked() {
                 | sed "s/^/add ${tmpset} /"
         done
     } | ipset restore -!
-
-    rm -rf "$tmpdir"
 
     total=$(ipset list "$tmpset" -terse 2>/dev/null | awk '/Number of entries/{print $4}')
     if [[ -z "$total" || "$total" -lt 10 ]]; then
@@ -202,7 +214,8 @@ build_ipset_locked() {
     fi
     info "白名单 IP 段共 ${total} 条"
 
-    save_ipsets
+    # 内存里的集合已经生效; 写盘失败只影响下次开机, 提示但不算本次更新失败
+    save_ipsets || warn "本次更新未能写入磁盘, 重启后会使用上一次保存的数据"
     return 0
 }
 
@@ -308,26 +321,40 @@ replace_script_with() {
 # 把当前运行的脚本同步到固定位置 (cron / systemd 运行的是那份副本)
 # $1 = force: install 时使用. 即使没有本地文件(curl | bash 方式运行)也要从仓库下载一份,
 #             且允许用旧版本覆盖(用户明确要装这一版). 不带 force 时只升不降.
+# 返回: 0 已同步或无需同步; 2 因为已安装的版本更新而拒绝覆盖; 1 出错
 sync_script() {
-    local force=${1:-} src tmp installed_ver
+    local force=${1:-} src tmp installed_ver dl_ver
     src=$(readlink -f "$0" 2>/dev/null || true)
-    if [[ -n "$src" && -f "$src" && "$src" != "$SCRIPT_PATH" ]]; then
+    # 只有确实是本脚本的文件才算"本地文件". curl | bash 时 $0 是 "bash",
+    # readlink 可能解析到 bash 二进制本身, 不能把它复制过去.
+    if [[ -z "$src" || ! -f "$src" ]] || ! grep -aqE '^VERSION=[0-9]+$' "$src"; then
+        src=""
+    fi
+
+    if [[ -n "$src" && "$src" != "$SCRIPT_PATH" ]]; then
         if ! cmp -s "$src" "$SCRIPT_PATH"; then
             installed_ver=$(script_version_of "$SCRIPT_PATH")
             if [[ -z "$force" ]] && (( installed_ver > VERSION )); then
                 warn "已安装的脚本版本(${installed_ver})比当前运行的(${VERSION})新, 不覆盖 ${SCRIPT_PATH}"
-                return 0
+                return 2
             fi
             replace_script_with "$src" || { err "复制脚本到 ${SCRIPT_PATH} 失败"; return 1; }
             info "已更新脚本副本 ${SCRIPT_PATH} (版本 ${VERSION})"
         fi
-    elif [[ ! -f "$src" ]] && { [[ -n "$force" ]] || [[ ! -f "$SCRIPT_PATH" ]]; }; then
-        # 通过 curl | bash 等方式运行, 本地没有脚本文件, 从仓库下载
+    elif [[ -z "$src" ]] && { [[ -n "$force" ]] || [[ ! -f "$SCRIPT_PATH" ]]; }; then
+        # 通过 curl | bash 等方式运行, 本地没有脚本文件, 从仓库下载.
+        # 下载到的必须和当前运行的是同一个版本, 否则装进去的就不是用户实际跑的那份.
         info "从 ${SCRIPT_URL} 下载脚本到 ${SCRIPT_PATH}..."
         tmp=$(mktemp) || return 1
-        if ! curl -fsSL --max-time 60 "$SCRIPT_URL" -o "$tmp" || ! grep -q '^VERSION=' "$tmp"; then
+        if ! curl -fsSL --max-time 60 "$SCRIPT_URL" -o "$tmp"; then
             rm -f "$tmp"
-            err "下载失败; 请把脚本保存为文件后再运行, 否则开机恢复和自动更新无法工作"
+            err "下载失败; 请先把脚本保存为文件再运行: curl -fsSL -o province_whitelist.sh ${SCRIPT_URL} && bash province_whitelist.sh install"
+            return 1
+        fi
+        dl_ver=$(script_version_of "$tmp")
+        if (( dl_ver != VERSION )); then
+            rm -f "$tmp"
+            err "仓库里的脚本版本(${dl_ver})与当前运行的(${VERSION})不一致, 不能确定该安装哪一份; 请先把当前脚本保存为文件再运行 install"
             return 1
         fi
         replace_script_with "$tmp" || { rm -f "$tmp"; err "写入 ${SCRIPT_PATH} 失败"; return 1; }
@@ -338,20 +365,22 @@ sync_script() {
 }
 
 # $1 = 1 表示全新安装(写 cron); 重装时尊重用户之前 auto-update off 的选择
+# 脚本副本在 cmd_install 开头就已同步好, 这里只写单元和 cron
 install_persistence() {
     local fresh=${1:-1}
-    sync_script force || exit 1
     ensure_service_unit
     if [[ "$fresh" == "1" || -f "$CRON_FILE" ]]; then
         write_cron
     fi
 }
 
-# 新版脚本直接运行时, 顺手把已安装的副本和 systemd 单元升级到当前版本
+# 新版脚本直接运行时, 顺手把已安装的副本和 systemd 单元升级到当前版本.
+# systemd 单元模板是跟脚本版本配套的: 副本没换(拒绝降级或复制失败)就不动单元.
 upgrade_installed() {
     [[ $EUID -eq 0 ]] && is_installed || return 0
-    sync_script || true
-    ensure_service_unit
+    if sync_script; then
+        ensure_service_unit
+    fi
 }
 
 load_conf() {
@@ -443,18 +472,22 @@ detect_ssh_port() {
 # 当前 SSH 来源 IP (IPv4). sudo 默认会清掉 SSH_* 环境变量, 所以逐级回退:
 #   SSH_CLIENT -> SSH_CONNECTION -> 登录记录(who am i) -> sshd 唯一的已建立连接
 detect_ssh_ip() {
-    local ip="" peers
+    local ip=""
     [[ -n "${SSH_CLIENT:-}" ]] && ip=${SSH_CLIENT%% *}
     [[ -z "$ip" && -n "${SSH_CONNECTION:-}" ]] && ip=${SSH_CONNECTION%% *}
     if ! is_ipv4 "$ip"; then
         ip=$(who am i 2>/dev/null | awk '{print $NF}' | tr -d '()')
     fi
-    if ! is_ipv4 "$ip"; then
-        peers=$(ss -tnH state established "( sport = :$(detect_ssh_port) )" 2>/dev/null \
-            | awk '{print $4}' | sed -E 's/^\[::ffff:([0-9.]+)\]/\1/; s/:[0-9]+$//' | sort -u)
-        [[ $(printf '%s\n' "$peers" | grep -c .) -eq 1 ]] && ip=$peers
-    fi
     is_ipv4 "$ip" && echo "$ip"
+}
+
+# 猜测: sshd 上只有一个已建立的连接时返回它的来源 IP.
+# 这不一定是当前会话 (比如从控制台安装而别人正好在线), 所以调用方必须让用户确认, 不能直接加白.
+guess_ssh_ip() {
+    local peers
+    peers=$(ss -tnH state established "( sport = :$(detect_ssh_port) )" 2>/dev/null \
+        | awk '{print $4}' | sed -E 's/^\[::ffff:([0-9.]+)\]/\1/; s/:[0-9]+$//' | sort -u)
+    [[ $(printf '%s\n' "$peers" | grep -c .) -eq 1 ]] && is_ipv4 "$peers" && echo "$peers"
 }
 
 cmd_install() {
@@ -463,6 +496,10 @@ cmd_install() {
 
     local fresh=1 fw
     is_installed && fresh=0
+
+    # 先把脚本副本放到位 (cron / systemd 要用). 放在最前面: 这一步失败就什么都不改,
+    # 不会出现规则已生效、却没有开机恢复和自动更新的半安装状态
+    sync_script force || exit 1
 
     for fw in ufw firewalld; do
         systemctl is-active --quiet "$fw" 2>/dev/null && \
@@ -501,15 +538,25 @@ cmd_install() {
 
     # 防止把自己锁在门外: 把当前 SSH 来源 IP 加入额外白名单
     ensure_extra_set
-    local myip
+    local myip guess
     myip=$(detect_ssh_ip)
     if [[ -n "$myip" ]]; then
         warn "当前 SSH 来源 IP 为 ${myip}, 将自动加入额外白名单, 避免误锁"
         ipset add "$IPSET_EXTRA" "$myip" -exist
     else
-        warn "未检测到 SSH 来源 IP, 若你的 IP 不在所选省份内, 应用后可能失联!"
-        read -rp "确认继续? [y/N]: " ok
-        [[ "$ok" =~ ^[Yy]$ ]] || exit 1
+        guess=$(guess_ssh_ip)
+        if [[ -n "$guess" ]]; then
+            warn "无法确认当前会话的来源 IP (可能是经 sudo 或控制台运行), 但 sshd 上只有一个已建立的连接, 来自 ${guess}"
+            read -rp "这是你自己的 IP 吗? 是则加入额外白名单 (不确定请选 N) [y/N]: " ok
+            if [[ "$ok" =~ ^[Yy]$ ]]; then
+                ipset add "$IPSET_EXTRA" "$guess" -exist && myip=$guess
+            fi
+        fi
+        if [[ -z "$myip" ]]; then
+            warn "未检测到 SSH 来源 IP, 若你的 IP 不在所选省份内, 应用后可能失联!"
+            read -rp "确认继续? [y/N]: " ok
+            [[ "$ok" =~ ^[Yy]$ ]] || exit 1
+        fi
     fi
 
     mkdir -p "$CONF_DIR"
@@ -691,7 +738,8 @@ cmd_resume() {
     info "白名单已恢复拦截"
 }
 
-ip_to_int() { local a b c d; IFS=. read -r a b c d <<< "$1"; echo $(( (a<<24) | (b<<16) | (c<<8) | d )); }
+# 点分 IPv4 <-> 32 位整数. 每段都加 10# 前缀, 否则 010 会被 bash 当成八进制, 08 直接报错
+ip_to_int() { local a b c d; IFS=. read -r a b c d <<< "$1"; echo $(( (10#$a<<24) | (10#$b<<16) | (10#$c<<8) | 10#$d )); }
 int_to_ip() { echo "$(( ($1>>24) & 255 )).$(( ($1>>16) & 255 )).$(( ($1>>8) & 255 )).$(( $1 & 255 ))"; }
 
 # 把 "IP", "IP/前缀" 或 "IP + 范围(b|c)" 统一成规范网段:
@@ -699,16 +747,16 @@ int_to_ip() { echo "$(( ($1>>24) & 255 )).$(( ($1>>16) & 255 )).$(( ($1>>8) & 25
 #   1.2.3.4 c      -> 1.2.3.0/24         (C 段)
 #   1.2.3.4 b      -> 1.2.0.0/16         (B 段)
 #   1.2.3.4/20     -> 1.2.0.0/20         (自定义前缀, 主机位自动清零)
-# 失败返回 1
+# 前缀只接受 1-32 (hash:net 存不了 /0). 返回: 0 成功; 2 前缀和 b/c 同时给了; 1 其他错误
 parse_net() {
     local arg=$1 scope=${2:-} ip bits ipn mask
     ip=${arg%%/*}
     is_ipv4 "$ip" || return 1
     if [[ "$arg" == */* ]]; then
         # 已经写了前缀就不能再给 b/c, 两者冲突时宁可报错也不猜用户想要哪个
-        [[ -z "$scope" ]] || return 1
+        [[ -z "$scope" ]] || return 2
         bits=${arg#*/}
-        [[ "$bits" =~ ^[0-9]+$ ]] && (( 10#$bits >= 0 && 10#$bits <= 32 )) || return 1
+        [[ "$bits" =~ ^[0-9]+$ ]] && (( 10#$bits >= 1 && 10#$bits <= 32 )) || return 1
         bits=$((10#$bits))
     else
         case "$scope" in
@@ -719,47 +767,56 @@ parse_net() {
         esac
     fi
     ipn=$(ip_to_int "$ip")
-    mask=$(( bits == 0 ? 0 : (0xFFFFFFFF << (32 - bits)) & 0xFFFFFFFF ))
+    mask=$(( (0xFFFFFFFF << (32 - bits)) & 0xFFFFFFFF ))
     if (( bits == 32 )); then
-        echo "$ip"
+        int_to_ip "$ipn"   # 顺便把 010.0.0.1 之类规范成 10.0.0.1
     else
         echo "$(int_to_ip $(( ipn & mask )))/${bits}"
     fi
 }
 
+# add-ip / del-ip 共用的参数解析: 成功打印规范网段, 失败打印原因并返回 1
+net_from_args() {
+    local cmdname=$1 arg=${2:-} scope=${3:-} net rc
+    [[ -n "$arg" ]] || { err "用法: $0 ${cmdname} <IP|IP/CIDR> [b|c]   (b = 整个 B 段 /16, c = 整个 C 段 /24)"; return 1; }
+    net=$(parse_net "$arg" "$scope"); rc=$?
+    case $rc in
+        0) echo "$net" ;;
+        2) err "${arg} 已带前缀, 不能再加 ${scope}; 要么写 IP 加 b/c, 要么直接写 IP/前缀"; return 1 ;;
+        *) err "无效的 IP/网段: ${arg} ${scope} (前缀须在 1-32 之间; b/c 只能跟在不带前缀的 IP 后面)"; return 1 ;;
+    esac
+}
+
 cmd_add_ip() {
     require_root
     local net
-    [[ -n "${1:-}" ]] || { err "用法: $0 add-ip <IP|IP/CIDR> [b|c]   (b = 整个 B 段 /16, c = 整个 C 段 /24)"; exit 1; }
-    [[ "$1" == */* && -n "${2:-}" ]] && { err "$1 已带前缀, 不能再加 ${2}; 要么写 IP 加 b/c, 要么直接写 IP/前缀"; exit 1; }
-    net=$(parse_net "$1" "${2:-}") || { err "无效的 IP/网段: $1 ${2:-}"; exit 1; }
+    net=$(net_from_args add-ip "${1:-}" "${2:-}") || exit 1
     if [[ "$net" == */* ]] && (( ${net#*/} < 16 )); then
         warn "前缀 /${net#*/} 比 B 段还大, 将放行 $(( 1 << (32 - ${net#*/}) )) 个地址, 请确认这是你要的"
     fi
     ensure_extra_set
     ipset add "$IPSET_EXTRA" "$net" -exist || exit 1
     info "已添加 ${net}"
-    with_lock save_ipsets
+    with_lock save_ipsets || warn "未能写入磁盘, 重启后 ${net} 会丢失"
 }
 
 cmd_del_ip() {
     require_root
     local net
-    [[ -n "${1:-}" ]] || { err "用法: $0 del-ip <IP|IP/CIDR> [b|c]"; exit 1; }
-    [[ "$1" == */* && -n "${2:-}" ]] && { err "$1 已带前缀, 不能再加 ${2}"; exit 1; }
-    net=$(parse_net "$1" "${2:-}") || { err "无效的 IP/网段: $1 ${2:-}"; exit 1; }
-    ensure_extra_set
+    net=$(net_from_args del-ip "${1:-}" "${2:-}") || exit 1
+    ipset_exists "$IPSET_EXTRA" || { err "额外白名单集合不存在, 没有可删除的条目"; exit 1; }
     ipset del "$IPSET_EXTRA" "$net" || exit 1
     info "已删除 ${net}"
-    with_lock save_ipsets
+    with_lock save_ipsets || warn "未能写入磁盘, 重启后 ${net} 会重新出现"
 }
 
 # 从一个 CIDR 列表文件里找出包含指定 IP 的网段, 一次 awk 扫描, 不依赖 ipset 也不逐行 fork.
 # 判断方法: 把 IP 和网段都右移 (32-前缀) 位后比较, 用除法代替位运算以兼容 mawk.
 cidrs_containing() {
     local ip=$1 file=$2
-    awk -v ipn="$(ip_to_int "$ip")" -v re="$CIDR_RE" '
-        $1 ~ re {
+    # 正则走环境变量而不是 -v: -v 会处理反斜杠转义, gawk 会对每个 \. 打警告
+    CIDR_RE="$CIDR_RE" awk -v ipn="$(ip_to_int "$ip")" '
+        $1 ~ ENVIRON["CIDR_RE"] {
             split($1, a, "/"); split(a[1], o, ".")
             n = ((o[1]*256 + o[2])*256 + o[3])*256 + o[4]
             d = 2 ^ (32 - a[2])
@@ -773,6 +830,7 @@ cmd_check_ip() {
     require_root
     local ip=${1:-} hit=0 tmpdir i code found=() missing=() hits
     is_ipv4 "$ip" || { err "用法: $0 check-ip <IPv4 地址>"; exit 1; }
+    ip=$(int_to_ip "$(ip_to_int "$ip")")   # 规范化, 去掉前导零
 
     if ipset_exists "$IPSET_EXTRA" && ipset test "$IPSET_EXTRA" "$ip" 2>/dev/null; then
         info "${ip} 在额外白名单 (${IPSET_EXTRA}) 中, 放行"; hit=1
