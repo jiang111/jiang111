@@ -17,6 +17,7 @@
 #     bash province_whitelist.sh del-province [省份名|代码]...  # 移除白名单省份
 #     bash province_whitelist.sh add-ip <IP/CIDR>   # 添加额外白名单 IP
 #     bash province_whitelist.sh del-ip <IP/CIDR>   # 删除额外白名单 IP
+#     bash province_whitelist.sh check-ip <IP>      # 查某个 IP 是否放行, 以及数据源把它归到哪个省
 #     bash province_whitelist.sh auto-update on|off # 开启/关闭每日自动同步
 #     bash province_whitelist.sh pause      # 暂停白名单(保留配置, 不再拦截)
 #     bash province_whitelist.sh resume     # 恢复白名单
@@ -51,9 +52,13 @@ MIRRORS=(
     "https://metowolf.github.io/iplist/data/cncity"
 )
 
-# GB/T 2260 省级行政区划代码 (港澳台追加在末尾, 不影响原有菜单编号)
-PROVINCE_CODES=(110000 120000 130000 140000 150000 210000 220000 230000 310000 320000 330000 340000 350000 360000 370000 410000 420000 430000 440000 450000 460000 500000 510000 520000 530000 540000 610000 620000 630000 640000 650000 710000 810000 820000)
-PROVINCE_NAMES=("北京" "天津" "河北" "山西" "内蒙古" "辽宁" "吉林" "黑龙江" "上海" "江苏" "浙江" "安徽" "福建" "江西" "山东" "河南" "湖北" "湖南" "广东" "广西" "海南" "重庆" "四川" "贵州" "云南" "西藏" "陕西" "甘肃" "青海" "宁夏" "新疆" "台湾" "香港" "澳门")
+# GB/T 2260 省级行政区划代码 (仅中国大陆)
+PROVINCE_CODES=(110000 120000 130000 140000 150000 210000 220000 230000 310000 320000 330000 340000 350000 360000 370000 410000 420000 430000 440000 450000 460000 500000 510000 520000 530000 540000 610000 620000 630000 640000 650000)
+PROVINCE_NAMES=("北京" "天津" "河北" "山西" "内蒙古" "辽宁" "吉林" "黑龙江" "上海" "江苏" "浙江" "安徽" "福建" "江西" "山东" "河南" "湖北" "湖南" "广东" "广西" "海南" "重庆" "四川" "贵州" "云南" "西藏" "陕西" "甘肃" "青海" "宁夏" "新疆")
+
+# 注意: 数据源的省份归属并不精确. 运营商整体登记在总部的大段(如联通
+# 116.128.0.0/10 登记在北京)会被大量划到北京, 江苏联通的手机 IP 也可能落在北京文件里.
+# 遇到"明明是本省 IP 却被拦"的情况, 用 check-ip 查归属, 再决定加省份还是 add-ip.
 
 err()  { echo -e "${RED}[错误]${PLAIN} $*" >&2; }
 warn() { echo -e "${YELLOW}[警告]${PLAIN} $*"; }
@@ -649,6 +654,67 @@ cmd_del_ip() {
     save_ipsets
 }
 
+# 查某个 IP 当前是否放行, 以及数据源把它归到哪个省 (逐省下载后用临时集合匹配)
+cmd_check_ip() {
+    require_root
+    local ip=${1:-} hit=0 tmpdir chk="${IPSET_MAIN}_chk" i code found=()
+    is_ipv4 "$ip" || { err "用法: $0 check-ip <IPv4 地址>"; exit 1; }
+
+    if ipset_exists "$IPSET_EXTRA" && ipset test "$IPSET_EXTRA" "$ip" 2>/dev/null; then
+        info "${ip} 在额外白名单 (${IPSET_EXTRA}) 中, 放行"; hit=1
+    fi
+    if ipset_exists "$IPSET_MAIN" && ipset test "$IPSET_MAIN" "$ip" 2>/dev/null; then
+        info "${ip} 在省份白名单 (${IPSET_MAIN}) 中, 放行"; hit=1
+    fi
+    if [[ $hit -eq 0 ]]; then
+        if ipset_exists "$IPSET_MAIN"; then
+            warn "${ip} 不在当前白名单中, 受保护端口上会被拦截"
+        else
+            warn "白名单集合不存在, 无法判断当前是否放行"
+        fi
+    fi
+
+    info "在数据源中查找 ${ip} 的省份归属 (需下载全部省份数据, 请稍候)..."
+    tmpdir=$(mktemp -d)
+    ipset destroy "$chk" 2>/dev/null
+    for i in "${!PROVINCE_CODES[@]}"; do
+        code=${PROVINCE_CODES[$i]}
+        if ! fetch_province "$code" "${tmpdir}/${code}.txt"; then
+            warn "下载 ${PROVINCE_NAMES[$i]}(${code}) 失败, 跳过"
+            continue
+        fi
+        ipset create "$chk" hash:net family inet hashsize 1024 maxelem 262144 2>/dev/null || break
+        grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+' "${tmpdir}/${code}.txt" \
+            | sed "s/^/add ${chk} /" | ipset restore -!
+        if ipset test "$chk" "$ip" 2>/dev/null; then
+            found+=("${PROVINCE_NAMES[$i]}(${code}): $(grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+' "${tmpdir}/${code}.txt" | cidr_containing "$ip")")
+        fi
+        ipset destroy "$chk" 2>/dev/null
+    done
+    rm -rf "$tmpdir"
+    ipset destroy "$chk" 2>/dev/null
+
+    if [[ ${#found[@]} -eq 0 ]]; then
+        warn "数据源的 31 个省份文件里都没有 ${ip}; 如需放行请用: $0 add-ip ${ip}"
+    else
+        info "数据源归属: ${found[*]}"
+        info "如归属与实际不符, 可直接放行该网段: $0 add-ip <网段>, 或把该省加入白名单: $0 add-province <省份>"
+    fi
+}
+
+# 从 stdin 的 CIDR 列表里找出包含指定 IP 的网段 (纯 bash 位运算)
+cidr_containing() {
+    local ip=$1 cidr net bits ipn netn mask a b c d
+    IFS=. read -r a b c d <<< "$ip"; ipn=$(( (a<<24) | (b<<16) | (c<<8) | d ))
+    while read -r cidr; do
+        net=${cidr%/*}; bits=${cidr#*/}
+        IFS=. read -r a b c d <<< "$net"; netn=$(( (a<<24) | (b<<16) | (c<<8) | d ))
+        mask=$(( bits == 0 ? 0 : (0xFFFFFFFF << (32 - bits)) & 0xFFFFFFFF ))
+        (( (ipn & mask) == (netn & mask) )) && printf '%s ' "$cidr"
+    done
+    echo
+}
+
 cmd_uninstall() {
     require_root
     detach_chain
@@ -701,9 +767,10 @@ main_menu() {
         echo "  8) ${auto_label}"
         echo "  9) ${pause_label}"
         echo " 10) 卸载"
+        echo " 11) 查询某个 IP 是否放行 / 归属省份"
         echo "  0) 退出"
         echo "============================================"
-        read -rp "请选择 [0-10]: " ch
+        read -rp "请选择 [0-11]: " ch
 
         # 除安装外的操作都需要先安装; 子命令放子 shell 里跑,
         # 内部 exit 不会退出菜单
@@ -738,6 +805,10 @@ main_menu() {
                 read -rp "确认卸载并清除所有规则? [y/N]: " ok
                 [[ "$ok" =~ ^[Yy]$ ]] && ( cmd_uninstall )
                 ;;
+            11)
+                read -rp "输入要查询的 IPv4 地址: " ip
+                [[ -n "$ip" ]] && ( cmd_check_ip "$ip" )
+                ;;
             0) exit 0 ;;
             *) err "无效选择: $ch" ;;
         esac
@@ -762,6 +833,7 @@ case "$cmd" in
     del-province)   cmd_del_province "$@" ;;
     add-ip)         cmd_add_ip "${1:-}" ;;
     del-ip)         cmd_del_ip "${1:-}" ;;
+    check-ip)       cmd_check_ip "${1:-}" ;;
     auto-update)    cmd_autoupdate "${1:-}" ;;
     pause)          cmd_pause ;;
     resume)         cmd_resume ;;
@@ -769,7 +841,7 @@ case "$cmd" in
     uninstall)      cmd_uninstall ;;
     *)
         echo "用法: $0                # 交互式管理菜单"
-        echo "     $0 {install|update|status|add-province [省份]...|del-province [省份]...|add-ip <IP>|del-ip <IP>|auto-update on|off|pause|resume|uninstall}"
+        echo "     $0 {install|update|status|add-province [省份]...|del-province [省份]...|add-ip <IP>|del-ip <IP>|check-ip <IP>|auto-update on|off|pause|resume|uninstall}"
         exit 1
         ;;
 esac
