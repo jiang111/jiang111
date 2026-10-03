@@ -21,6 +21,9 @@
 #     bash province_whitelist.sh pause      # 暂停白名单(保留配置, 不再拦截)
 #     bash province_whitelist.sh resume     # 恢复白名单
 #     bash province_whitelist.sh uninstall  # 卸载并恢复原样
+#
+#   升级: 直接用新版脚本执行任意命令(如 status), 会自动把新版同步到
+#         /usr/local/bin 并刷新 systemd 单元, 已有配置和规则原样保留。
 #=================================================================#
 
 set -u
@@ -29,12 +32,16 @@ RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; PLAIN='\033[0m'
 
 CONF_DIR="/etc/province-whitelist"
 CONF_FILE="${CONF_DIR}/config"
+IPSET_RULES="${CONF_DIR}/ipset.rules"
 IPSET_MAIN="province_wl"        # 省份 IP 集合
 IPSET_EXTRA="province_wl_extra" # 额外手动白名单集合
 CHAIN="PROVINCE_WL"             # iptables 自定义链
-SERVICE_FILE="/etc/systemd/system/province-whitelist.service"
+SERVICE_NAME="province-whitelist.service"
+SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}"
 CRON_FILE="/etc/cron.d/province-whitelist"
 SCRIPT_PATH="/usr/local/bin/province_whitelist.sh"
+SCRIPT_URL="https://raw.githubusercontent.com/jiang111/jiang111/master/province_whitelist.sh"
+LOCK_FILE="/var/lock/province-whitelist.lock"
 
 # 数据源镜像, 按顺序尝试 (前两个国内一般可直连)
 MIRRORS=(
@@ -44,9 +51,9 @@ MIRRORS=(
     "https://metowolf.github.io/iplist/data/cncity"
 )
 
-# GB/T 2260 省级行政区划代码
-PROVINCE_CODES=(110000 120000 130000 140000 150000 210000 220000 230000 310000 320000 330000 340000 350000 360000 370000 410000 420000 430000 440000 450000 460000 500000 510000 520000 530000 540000 610000 620000 630000 640000 650000)
-PROVINCE_NAMES=("北京" "天津" "河北" "山西" "内蒙古" "辽宁" "吉林" "黑龙江" "上海" "江苏" "浙江" "安徽" "福建" "江西" "山东" "河南" "湖北" "湖南" "广东" "广西" "海南" "重庆" "四川" "贵州" "云南" "西藏" "陕西" "甘肃" "青海" "宁夏" "新疆")
+# GB/T 2260 省级行政区划代码 (港澳台追加在末尾, 不影响原有菜单编号)
+PROVINCE_CODES=(110000 120000 130000 140000 150000 210000 220000 230000 310000 320000 330000 340000 350000 360000 370000 410000 420000 430000 440000 450000 460000 500000 510000 520000 530000 540000 610000 620000 630000 640000 650000 710000 810000 820000)
+PROVINCE_NAMES=("北京" "天津" "河北" "山西" "内蒙古" "辽宁" "吉林" "黑龙江" "上海" "江苏" "浙江" "安徽" "福建" "江西" "山东" "河南" "湖北" "湖南" "广东" "广西" "海南" "重庆" "四川" "贵州" "云南" "西藏" "陕西" "甘肃" "青海" "宁夏" "新疆" "台湾" "香港" "澳门")
 
 err()  { echo -e "${RED}[错误]${PLAIN} $*" >&2; }
 warn() { echo -e "${YELLOW}[警告]${PLAIN} $*"; }
@@ -55,6 +62,15 @@ info() { echo -e "${GREEN}[信息]${PLAIN} $*"; }
 require_root() {
     [[ $EUID -eq 0 ]] || { err "请使用 root 运行此脚本"; exit 1; }
 }
+
+is_installed() { [[ -f "$CONF_FILE" ]]; }
+
+is_ipv4() { [[ "${1:-}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; }
+
+ipset_exists() { ipset list -name 2>/dev/null | grep -qx "$1"; }
+
+# 自定义链是否已挂到 INPUT 上
+chain_hooked() { iptables-save 2>/dev/null | grep -q "^-A INPUT .*-j ${CHAIN}$"; }
 
 install_deps() {
     local need=()
@@ -90,18 +106,37 @@ fetch_province() {
     return 1
 }
 
+# 把两个集合保存到磁盘供开机恢复 (先写临时文件再替换, 集合不存在就跳过, 不会把文件清空)
+save_ipsets() {
+    mkdir -p "$CONF_DIR"
+    {
+        ipset_exists "$IPSET_MAIN"  && ipset save "$IPSET_MAIN"
+        ipset_exists "$IPSET_EXTRA" && ipset save "$IPSET_EXTRA"
+        true
+    } > "${IPSET_RULES}.tmp" && mv -f "${IPSET_RULES}.tmp" "$IPSET_RULES"
+}
+
 # 下载所选省份数据并原子更新 ipset (先建临时集合再 swap, 更新过程不断流)
+# 整个过程持有文件锁, 避免 cron 与手动更新同时跑时争用临时集合
 build_ipset() {
+    (
+        exec 9>"$LOCK_FILE"
+        if ! flock -w 600 9; then
+            err "另一个更新正在进行中, 等待超时, 本次放弃"
+            exit 1
+        fi
+        build_ipset_locked "$@"
+    )
+}
+
+build_ipset_locked() {
     local codes=("$@")
-    local tmpdir tmpset="${IPSET_MAIN}_tmp" total=0 code name i
+    local tmpdir tmpset="${IPSET_MAIN}_tmp" total=0 code name
 
     tmpdir=$(mktemp -d)
 
     for code in "${codes[@]}"; do
-        name=$code
-        for i in "${!PROVINCE_CODES[@]}"; do
-            [[ ${PROVINCE_CODES[$i]} == "$code" ]] && name=${PROVINCE_NAMES[$i]}
-        done
+        name=$(name_of_code "$code")
         info "下载 ${name}(${code}) IP 段..."
         if ! fetch_province "$code" "${tmpdir}/${code}.txt"; then
             err "下载 ${name}(${code}) 失败, 所有镜像均不可用, 本次不更新"
@@ -122,14 +157,14 @@ build_ipset() {
 
     rm -rf "$tmpdir"
 
-    total=$(ipset list "$tmpset" -terse | awk '/Number of entries/{print $4}')
+    total=$(ipset list "$tmpset" -terse 2>/dev/null | awk '/Number of entries/{print $4}')
     if [[ -z "$total" || "$total" -lt 10 ]]; then
         err "IP 段数量异常(${total:-0}), 放弃本次更新"
         ipset destroy "$tmpset" 2>/dev/null
         return 1
     fi
 
-    if ipset list -name | grep -qx "$IPSET_MAIN"; then
+    if ipset_exists "$IPSET_MAIN"; then
         ipset swap "$tmpset" "$IPSET_MAIN"
         ipset destroy "$tmpset"
     else
@@ -137,36 +172,54 @@ build_ipset() {
     fi
     info "白名单 IP 段共 ${total} 条"
 
-    # 保存到磁盘, 供开机恢复
-    mkdir -p "$CONF_DIR"
-    ipset save "$IPSET_MAIN" > "${CONF_DIR}/ipset.rules"
-    ipset save "$IPSET_EXTRA" >> "${CONF_DIR}/ipset.rules" 2>/dev/null
+    save_ipsets
     return 0
 }
 
 ensure_extra_set() {
-    ipset list -name | grep -qx "$IPSET_EXTRA" || \
+    ipset_exists "$IPSET_EXTRA" || \
         ipset create "$IPSET_EXTRA" hash:net family inet hashsize 1024 maxelem 65536
 }
 
+# 把自定义链从 INPUT 上摘下来 (全端口/按端口两种挂载方式都处理, 重复挂载也会全部摘掉)
+detach_chain() {
+    local rule
+    while read -r rule; do
+        # shellcheck disable=SC2086
+        iptables ${rule/-A/-D} 2>/dev/null
+    done < <(iptables-save 2>/dev/null | grep -- "-j ${CHAIN}$" | grep "^-A INPUT")
+}
+
 # 应用 iptables 规则: PORTS 为空表示保护全部端口
+# 两个集合必须都存在才会挂上 DROP, 否则宁可不拦截, 也不能把所有人挡在门外
 apply_iptables() {
     local ports=$1 p
 
-    # 清掉旧链, 重建
-    iptables -D INPUT -j "$CHAIN" 2>/dev/null
+    if ! ipset_exists "$IPSET_MAIN"; then
+        err "ipset 集合 ${IPSET_MAIN} 不存在, 为避免误锁, 本次不应用拦截规则"
+        return 1
+    fi
+    ensure_extra_set
+
+    # 先摘掉所有挂载(包括旧版本可能残留的重复挂载), 再重建链
+    detach_chain
     iptables -F "$CHAIN" 2>/dev/null
     iptables -X "$CHAIN" 2>/dev/null
-    iptables -N "$CHAIN"
+    iptables -N "$CHAIN" || { err "创建 iptables 链 ${CHAIN} 失败"; return 1; }
 
     # 放行: 本机回环 / 已建立连接 / 内网 / 额外白名单 / 省份白名单
-    iptables -A "$CHAIN" -i lo -j RETURN
-    iptables -A "$CHAIN" -m state --state ESTABLISHED,RELATED -j RETURN
-    iptables -A "$CHAIN" -s 10.0.0.0/8     -j RETURN
-    iptables -A "$CHAIN" -s 172.16.0.0/12  -j RETURN
-    iptables -A "$CHAIN" -s 192.168.0.0/16 -j RETURN
-    iptables -A "$CHAIN" -m set --match-set "$IPSET_EXTRA" src -j RETURN
-    iptables -A "$CHAIN" -m set --match-set "$IPSET_MAIN"  src -j RETURN
+    if ! { iptables -A "$CHAIN" -i lo -j RETURN \
+        && iptables -A "$CHAIN" -m state --state ESTABLISHED,RELATED -j RETURN \
+        && iptables -A "$CHAIN" -s 10.0.0.0/8     -j RETURN \
+        && iptables -A "$CHAIN" -s 172.16.0.0/12  -j RETURN \
+        && iptables -A "$CHAIN" -s 192.168.0.0/16 -j RETURN \
+        && iptables -A "$CHAIN" -m set --match-set "$IPSET_EXTRA" src -j RETURN \
+        && iptables -A "$CHAIN" -m set --match-set "$IPSET_MAIN"  src -j RETURN; }; then
+        err "放行规则添加失败, 为避免误锁, 不挂载 DROP 规则"
+        iptables -F "$CHAIN" 2>/dev/null
+        iptables -X "$CHAIN" 2>/dev/null
+        return 1
+    fi
     iptables -A "$CHAIN" -j DROP
 
     if [[ -n "$ports" ]]; then
@@ -177,16 +230,16 @@ apply_iptables() {
     else
         iptables -I INPUT -j "$CHAIN"
     fi
-
-    iptables-save > "${CONF_DIR}/iptables.rules"
+    return 0
 }
 
-install_persistence() {
-    # systemd 开机恢复
-    cat > "$SERVICE_FILE" <<EOF
-[Unit]
+# 写 systemd 单元 (内容不变就不动; 变了就重写并 daemon-reload, 用于升级旧版本)
+ensure_service_unit() {
+    local content
+    content="[Unit]
 Description=Province IP whitelist (ipset + iptables restore)
-After=network.target
+Wants=network-online.target
+After=network-online.target
 
 [Service]
 Type=oneshot
@@ -195,21 +248,62 @@ ExecStart=/bin/bash ${SCRIPT_PATH} restore-rules
 
 [Install]
 WantedBy=multi-user.target
-EOF
-    systemctl daemon-reload
-    systemctl enable province-whitelist.service >/dev/null 2>&1
+"
+    if [[ ! -f "$SERVICE_FILE" ]] || [[ "$(cat "$SERVICE_FILE")" != "${content%$'\n'}" ]]; then
+        printf '%s' "$content" > "$SERVICE_FILE"
+        systemctl daemon-reload
+        info "已更新 systemd 单元 ${SERVICE_NAME}"
+    fi
+    systemctl enable "$SERVICE_NAME" >/dev/null 2>&1
+}
 
-    write_cron
-
-    # 把脚本自身复制到固定位置
-    [[ "$(readlink -f "$0")" != "$SCRIPT_PATH" ]] && cp -f "$(readlink -f "$0")" "$SCRIPT_PATH"
+# 把当前运行的脚本同步到固定位置 (cron / systemd 运行的是那份副本)
+# $1 = force: 即使没有本地文件(curl | bash 方式运行)也要从仓库下载一份
+sync_script() {
+    local force=${1:-} src
+    src=$(readlink -f "$0" 2>/dev/null || true)
+    if [[ -n "$src" && -f "$src" && "$src" != "$SCRIPT_PATH" ]]; then
+        if ! cmp -s "$src" "$SCRIPT_PATH"; then
+            cp -f "$src" "$SCRIPT_PATH" || { err "复制脚本到 ${SCRIPT_PATH} 失败"; return 1; }
+            info "已更新脚本副本 ${SCRIPT_PATH}"
+        fi
+    elif [[ ! -f "$src" ]] && { [[ -n "$force" ]] || [[ ! -f "$SCRIPT_PATH" ]]; }; then
+        # 通过 curl | bash 等方式运行, 本地没有脚本文件, 从仓库下载
+        info "从 ${SCRIPT_URL} 下载脚本到 ${SCRIPT_PATH}..."
+        if ! curl -fsSL --max-time 60 "$SCRIPT_URL" -o "${SCRIPT_PATH}.tmp"; then
+            rm -f "${SCRIPT_PATH}.tmp"
+            err "下载失败; 请把脚本保存为文件后再运行, 否则开机恢复和自动更新无法工作"
+            return 1
+        fi
+        mv -f "${SCRIPT_PATH}.tmp" "$SCRIPT_PATH"
+    fi
+    [[ -f "$SCRIPT_PATH" ]] || { err "${SCRIPT_PATH} 不存在"; return 1; }
     chmod +x "$SCRIPT_PATH"
+}
+
+# $1 = 1 表示全新安装(写 cron); 重装时尊重用户之前 auto-update off 的选择
+install_persistence() {
+    local fresh=${1:-1}
+    sync_script force || exit 1
+    ensure_service_unit
+    if [[ "$fresh" == "1" || -f "$CRON_FILE" ]]; then
+        write_cron
+    fi
+}
+
+# 新版脚本直接运行时, 顺手把已安装的副本和 systemd 单元升级到当前版本
+upgrade_installed() {
+    [[ $EUID -eq 0 ]] && is_installed || return 0
+    sync_script || true
+    ensure_service_unit
 }
 
 load_conf() {
     [[ -f "$CONF_FILE" ]] || { err "未找到配置 ${CONF_FILE}, 请先运行安装"; exit 1; }
     # shellcheck disable=SC1090
     source "$CONF_FILE"
+    PROVINCES=${PROVINCES:-}
+    PORTS=${PORTS:-}
     ENABLED=${ENABLED:-1}
 }
 
@@ -244,7 +338,7 @@ resolve_province() {
 
 # 交互式省份菜单, 结果代码存入全局数组 PICKED
 pick_provinces() {
-    local i picks=() n
+    local i picks=() n line
     echo "==================== 省份列表 ===================="
     for i in "${!PROVINCE_NAMES[@]}"; do
         printf "%2d) %-4s\t" "$((i+1))" "${PROVINCE_NAMES[$i]}"
@@ -252,23 +346,28 @@ pick_provinces() {
     done
     echo
     echo "=================================================="
-    read -rp "$1(可多选, 空格分隔, 如: 16 19): " -a picks
+    read -rp "$1(可多选, 空格或逗号分隔, 如: 16 19): " line
+    # shellcheck disable=SC2206
+    picks=(${line//,/ })
     [[ ${#picks[@]} -eq 0 ]] && { err "未选择任何省份"; exit 1; }
     PICKED=()
     for n in "${picks[@]}"; do
-        [[ "$n" =~ ^[0-9]+$ ]] && (( n >= 1 && n <= ${#PROVINCE_CODES[@]} )) \
-            || { err "无效编号: $n"; exit 1; }
+        [[ "$n" =~ ^[0-9]+$ ]] || { err "无效编号: $n"; exit 1; }
+        n=$((10#$n))   # 避免 08 之类被当作八进制
+        (( n >= 1 && n <= ${#PROVINCE_CODES[@]} )) || { err "无效编号: $n"; exit 1; }
         PICKED+=("${PROVINCE_CODES[$((n-1))]}")
     done
 }
 
-# 把自定义链从 INPUT 上摘下来 (全端口/按端口两种挂载方式都处理)
-detach_chain() {
-    iptables -D INPUT -j "$CHAIN" 2>/dev/null
-    while read -r rule; do
-        # shellcheck disable=SC2086
-        iptables ${rule/-A/-D} 2>/dev/null
-    done < <(iptables-save 2>/dev/null | grep -- "-j ${CHAIN}" | grep "^-A INPUT")
+# 校验 "22,80,443" 形式的端口列表, 每个都在 1-65535
+validate_ports() {
+    local p
+    [[ "$1" =~ ^[0-9]+(,[0-9]+)*$ ]] || return 1
+    for p in ${1//,/ }; do
+        p=$((10#$p))
+        (( p >= 1 && p <= 65535 )) || return 1
+    done
+    return 0
 }
 
 write_cron() {
@@ -278,9 +377,41 @@ $((RANDOM % 60)) $((RANDOM % 6)) * * * root bash ${SCRIPT_PATH} update >/dev/nul
 EOF
 }
 
+# 当前 sshd 监听端口 (多个时取第一个), 取不到返回 22
+detect_ssh_port() {
+    local port
+    port=$(ss -tnlp 2>/dev/null | awk '/sshd/{split($4,a,":"); print a[length(a)]; exit}')
+    echo "${port:-22}"
+}
+
+# 当前 SSH 来源 IP (IPv4). sudo 默认会清掉 SSH_* 环境变量, 所以逐级回退:
+#   SSH_CLIENT -> SSH_CONNECTION -> 登录记录(who am i) -> sshd 唯一的已建立连接
+detect_ssh_ip() {
+    local ip="" peers
+    [[ -n "${SSH_CLIENT:-}" ]] && ip=${SSH_CLIENT%% *}
+    [[ -z "$ip" && -n "${SSH_CONNECTION:-}" ]] && ip=${SSH_CONNECTION%% *}
+    if ! is_ipv4 "$ip"; then
+        ip=$(who am i 2>/dev/null | awk '{print $NF}' | tr -d '()')
+    fi
+    if ! is_ipv4 "$ip"; then
+        peers=$(ss -tnH state established "( sport = :$(detect_ssh_port) )" 2>/dev/null \
+            | awk '{print $4}' | sed -E 's/^\[::ffff:([0-9.]+)\]/\1/; s/:[0-9]+$//' | sort -u)
+        [[ $(printf '%s\n' "$peers" | grep -c .) -eq 1 ]] && ip=$peers
+    fi
+    is_ipv4 "$ip" && echo "$ip"
+}
+
 cmd_install() {
     require_root
     install_deps
+
+    local fresh=1 fw
+    is_installed && fresh=0
+
+    for fw in ufw firewalld; do
+        systemctl is-active --quiet "$fw" 2>/dev/null && \
+            warn "检测到 ${fw} 正在运行, 它 reload 时会清掉本脚本的 iptables 规则, 之后需执行 $0 resume 重新应用 (每日自动更新也会顺带补上)"
+    done
 
     pick_provinces "输入要加入白名单的省份编号"
     local codes=("${PICKED[@]}") names=() c
@@ -293,24 +424,28 @@ cmd_install() {
     echo " 2) 保护全部端口 (网站等对外服务也会被限制, 请确认)"
     read -rp "请选择 [1/2, 默认 1]: " mode
     mode=${mode:-1}
+    [[ "$mode" == "1" || "$mode" == "2" ]] || { err "无效选择: ${mode}, 只能是 1 或 2"; exit 1; }
 
     local ports=""
     if [[ "$mode" == "1" ]]; then
         local sshport
-        sshport=$(ss -tnlp 2>/dev/null | awk '/sshd/{split($4,a,":"); print a[length(a)]; exit}')
-        sshport=${sshport:-22}
+        sshport=$(detect_ssh_port)
         read -rp "输入要保护的端口(逗号分隔, 默认 ${sshport}): " ports
         ports=${ports:-$sshport}
-        [[ "$ports" =~ ^[0-9]+(,[0-9]+)*$ ]] || { err "端口格式错误"; exit 1; }
+        ports=${ports// /}
+        validate_ports "$ports" || { err "端口格式错误: ${ports} (应为 1-65535 的数字, 逗号分隔)"; exit 1; }
+    else
+        read -rp "确认保护全部端口? 不在白名单内的 IP 将无法访问本机任何服务 [y/N]: " ok
+        [[ "$ok" =~ ^[Yy]$ ]] || exit 1
     fi
 
     # 防止把自己锁在门外: 把当前 SSH 来源 IP 加入额外白名单
     ensure_extra_set
-    local myip=""
-    [[ -n "${SSH_CLIENT:-}" ]] && myip=${SSH_CLIENT%% *}
+    local myip
+    myip=$(detect_ssh_ip)
     if [[ -n "$myip" ]]; then
         warn "当前 SSH 来源 IP 为 ${myip}, 将自动加入额外白名单, 避免误锁"
-        ipset add "$IPSET_EXTRA" "$myip" 2>/dev/null
+        ipset add "$IPSET_EXTRA" "$myip" -exist
     else
         warn "未检测到 SSH 来源 IP, 若你的 IP 不在所选省份内, 应用后可能失联!"
         read -rp "确认继续? [y/N]: " ok
@@ -325,14 +460,14 @@ cmd_install() {
     ENABLED=1
     save_conf
 
-    apply_iptables "$ports"
-    install_persistence
+    apply_iptables "$ports" || exit 1
+    install_persistence "$fresh"
 
     echo
     info "安装完成!"
     info "省份: ${names[*]}"
     [[ -n "$ports" ]] && info "保护端口: ${ports}" || info "保护范围: 全部端口"
-    info "IP 数据每天自动更新"
+    [[ -f "$CRON_FILE" ]] && info "IP 数据每天自动更新" || info "每日自动更新处于关闭状态 (auto-update on 开启)"
     info "日常管理直接运行: bash ${SCRIPT_PATH}  (交互菜单)"
 }
 
@@ -341,7 +476,12 @@ cmd_update() {
     load_conf
     ensure_extra_set
     # shellcheck disable=SC2086
-    build_ipset $PROVINCES
+    build_ipset $PROVINCES || exit 1
+    # 启用状态下如果链被别的防火墙工具 (ufw/firewalld reload) 清掉了, 顺带补回来
+    if [[ "$ENABLED" == "1" ]] && ! chain_hooked; then
+        warn "检测到 iptables 规则丢失, 重新应用"
+        apply_iptables "$PORTS" || exit 1
+    fi
 }
 
 cmd_restore_rules() {
@@ -351,9 +491,15 @@ cmd_restore_rules() {
         info "白名单处于暂停状态, 跳过规则恢复"
         return 0
     fi
-    [[ -f "${CONF_DIR}/ipset.rules" ]] && ipset restore -! < "${CONF_DIR}/ipset.rules"
+    [[ -f "$IPSET_RULES" ]] && ipset restore -! < "$IPSET_RULES"
     ensure_extra_set
-    ipset list -name | grep -qx "$IPSET_MAIN" || bash "$SCRIPT_PATH" update
+    # 磁盘上没有集合数据时(例如首次安装后文件被删), 尝试直接下载
+    # shellcheck disable=SC2086
+    ipset_exists "$IPSET_MAIN" || build_ipset $PROVINCES || true
+    if ! ipset_exists "$IPSET_MAIN"; then
+        err "省份 IP 集合不存在且无法下载 (网络未就绪?), 本次不应用拦截规则以免误锁; 请稍后执行: ${SCRIPT_PATH} resume"
+        return 1
+    fi
     apply_iptables "$PORTS"
 }
 
@@ -367,11 +513,16 @@ cmd_status() {
     info "白名单省份: ${pnames}(${PROVINCES})"
     [[ -n "$PORTS" ]] && info "保护端口: ${PORTS}" || info "保护范围: 全部端口"
     [[ -f "$CRON_FILE" ]] && info "每日自动同步: 开启" || info "每日自动同步: 关闭"
-    if ipset list -name 2>/dev/null | grep -qx "$IPSET_MAIN"; then
+    if ipset_exists "$IPSET_MAIN"; then
         info "省份 IP 段: $(ipset list "$IPSET_MAIN" -terse | awk '/Number of entries/{print $4}') 条"
         info "额外白名单: $(ipset list "$IPSET_EXTRA" -terse 2>/dev/null | awk '/Number of entries/{print $4}') 条"
     else
         warn "ipset 集合不存在 (未生效)"
+    fi
+    if chain_hooked; then
+        info "iptables 规则: 已挂载到 INPUT"
+    elif [[ "$ENABLED" == "1" ]]; then
+        warn "iptables 规则: 未挂载到 INPUT (当前没有在拦截, 可执行 resume 重新应用)"
     fi
     if iptables -L "$CHAIN" -n >/dev/null 2>&1; then
         echo "---- iptables 链 ${CHAIN} ----"
@@ -462,7 +613,6 @@ cmd_pause() {
     detach_chain
     ENABLED=0
     save_conf
-    iptables-save > "${CONF_DIR}/iptables.rules" 2>/dev/null
     info "白名单已暂停, 不再拦截任何 IP (配置保留, 恢复: $0 resume)"
 }
 
@@ -470,14 +620,12 @@ cmd_resume() {
     require_root
     load_conf
     ensure_extra_set
-    if ! ipset list -name 2>/dev/null | grep -qx "$IPSET_MAIN"; then
-        if [[ -f "${CONF_DIR}/ipset.rules" ]]; then
-            ipset restore -! < "${CONF_DIR}/ipset.rules"
-        fi
+    if ! ipset_exists "$IPSET_MAIN"; then
+        [[ -f "$IPSET_RULES" ]] && ipset restore -! < "$IPSET_RULES"
         # shellcheck disable=SC2086
-        ipset list -name | grep -qx "$IPSET_MAIN" || build_ipset $PROVINCES || exit 1
+        ipset_exists "$IPSET_MAIN" || build_ipset $PROVINCES || exit 1
     fi
-    apply_iptables "$PORTS"
+    apply_iptables "$PORTS" || exit 1
     ENABLED=1
     save_conf
     info "白名单已恢复拦截"
@@ -487,17 +635,18 @@ cmd_add_ip() {
     require_root
     [[ -n "${1:-}" ]] || { err "用法: $0 add-ip <IP/CIDR>"; exit 1; }
     ensure_extra_set
-    ipset add "$IPSET_EXTRA" "$1" && info "已添加 $1"
-    ipset save "$IPSET_MAIN" > "${CONF_DIR}/ipset.rules" 2>/dev/null
-    ipset save "$IPSET_EXTRA" >> "${CONF_DIR}/ipset.rules"
+    ipset add "$IPSET_EXTRA" "$1" -exist || exit 1
+    info "已添加 $1"
+    save_ipsets
 }
 
 cmd_del_ip() {
     require_root
     [[ -n "${1:-}" ]] || { err "用法: $0 del-ip <IP/CIDR>"; exit 1; }
-    ipset del "$IPSET_EXTRA" "$1" && info "已删除 $1"
-    ipset save "$IPSET_MAIN" > "${CONF_DIR}/ipset.rules" 2>/dev/null
-    ipset save "$IPSET_EXTRA" >> "${CONF_DIR}/ipset.rules"
+    ensure_extra_set
+    ipset del "$IPSET_EXTRA" "$1" || exit 1
+    info "已删除 $1"
+    save_ipsets
 }
 
 cmd_uninstall() {
@@ -507,14 +656,12 @@ cmd_uninstall() {
     iptables -X "$CHAIN" 2>/dev/null
     ipset destroy "$IPSET_MAIN" 2>/dev/null
     ipset destroy "$IPSET_EXTRA" 2>/dev/null
-    systemctl disable province-whitelist.service >/dev/null 2>&1
-    rm -f "$SERVICE_FILE" "$CRON_FILE"
+    systemctl disable "$SERVICE_NAME" >/dev/null 2>&1
+    rm -f "$SERVICE_FILE" "$CRON_FILE" "$LOCK_FILE"
     systemctl daemon-reload
     rm -rf "$CONF_DIR"
     info "已卸载, 防火墙恢复原样 (脚本 ${SCRIPT_PATH} 保留, 可手动删除)"
 }
-
-is_installed() { [[ -f "$CONF_FILE" ]]; }
 
 main_menu() {
     require_root
@@ -528,10 +675,11 @@ main_menu() {
             # shellcheck disable=SC1090
             enabled=$(source "$CONF_FILE" 2>/dev/null; echo "${ENABLED:-1}")
             # shellcheck disable=SC1090
-            pnames=$(source "$CONF_FILE" 2>/dev/null; for c in ${PROVINCES}; do printf '%s ' "$(name_of_code "$c")"; done)
+            pnames=$(source "$CONF_FILE" 2>/dev/null; for c in ${PROVINCES:-}; do printf '%s ' "$(name_of_code "$c")"; done)
             if [[ "$enabled" == "1" ]]; then
                 summary="运行中 | 省份: ${pnames}"
                 pause_label="暂停白名单"
+                chain_hooked || summary="已启用但规则未挂载(选 9 两次或执行 resume) | 省份: ${pnames}"
             else
                 summary="已暂停 | 省份: ${pnames}"
                 pause_label="恢复白名单"
@@ -598,6 +746,13 @@ main_menu() {
 
 cmd=${1:-menu}
 shift 2>/dev/null || true
+
+# 已安装的机器上用新版脚本跑任何管理命令时, 先把副本和 systemd 单元升级到当前版本
+case "$cmd" in
+    install|restore-rules|uninstall) ;;
+    *) upgrade_installed ;;
+esac
+
 case "$cmd" in
     menu)           main_menu ;;
     install)        cmd_install ;;
