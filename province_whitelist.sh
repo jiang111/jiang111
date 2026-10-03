@@ -15,8 +15,8 @@
 #     bash province_whitelist.sh status     # 查看当前状态
 #     bash province_whitelist.sh add-province [省份名|代码]...  # 新增白名单省份
 #     bash province_whitelist.sh del-province [省份名|代码]...  # 移除白名单省份
-#     bash province_whitelist.sh add-ip <IP/CIDR>   # 添加额外白名单 IP
-#     bash province_whitelist.sh del-ip <IP/CIDR>   # 删除额外白名单 IP
+#     bash province_whitelist.sh add-ip <IP/CIDR> [b|c]  # 添加额外白名单 IP; 加 b 放行整个 B 段(/16), 加 c 放行 C 段(/24)
+#     bash province_whitelist.sh del-ip <IP/CIDR> [b|c]  # 删除额外白名单 IP/网段
 #     bash province_whitelist.sh check-ip <IP>      # 查某个 IP 是否放行, 以及数据源把它归到哪个省
 #     bash province_whitelist.sh auto-update on|off # 开启/关闭每日自动同步
 #     bash province_whitelist.sh pause      # 暂停白名单(保留配置, 不再拦截)
@@ -70,7 +70,12 @@ require_root() {
 
 is_installed() { [[ -f "$CONF_FILE" ]]; }
 
-is_ipv4() { [[ "${1:-}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; }
+is_ipv4() {
+    local o
+    [[ "${1:-}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
+    for o in ${1//./ }; do (( 10#$o <= 255 )) || return 1; done
+    return 0
+}
 
 ipset_exists() { ipset list -name 2>/dev/null | grep -qx "$1"; }
 
@@ -636,21 +641,62 @@ cmd_resume() {
     info "白名单已恢复拦截"
 }
 
+ip_to_int() { local a b c d; IFS=. read -r a b c d <<< "$1"; echo $(( (a<<24) | (b<<16) | (c<<8) | d )); }
+int_to_ip() { echo "$(( ($1>>24) & 255 )).$(( ($1>>16) & 255 )).$(( ($1>>8) & 255 )).$(( $1 & 255 ))"; }
+
+# 把 "IP", "IP/前缀" 或 "IP + 范围(b|c)" 统一成规范网段:
+#   1.2.3.4        -> 1.2.3.4            (单个 IP)
+#   1.2.3.4 c      -> 1.2.3.0/24         (C 段)
+#   1.2.3.4 b      -> 1.2.0.0/16         (B 段)
+#   1.2.3.4/20     -> 1.2.0.0/20         (自定义前缀, 主机位自动清零)
+# 失败返回 1
+parse_net() {
+    local arg=$1 scope=${2:-} ip bits ipn mask
+    ip=${arg%%/*}
+    is_ipv4 "$ip" || return 1
+    if [[ "$arg" == */* ]]; then
+        bits=${arg#*/}
+        [[ "$bits" =~ ^[0-9]+$ ]] && (( 10#$bits >= 0 && 10#$bits <= 32 )) || return 1
+        bits=$((10#$bits))
+    else
+        case "$scope" in
+            b|B|16) bits=16 ;;
+            c|C|24) bits=24 ;;
+            ""|ip|32) bits=32 ;;
+            *) return 1 ;;
+        esac
+    fi
+    ipn=$(ip_to_int "$ip")
+    mask=$(( bits == 0 ? 0 : (0xFFFFFFFF << (32 - bits)) & 0xFFFFFFFF ))
+    if (( bits == 32 )); then
+        echo "$ip"
+    else
+        echo "$(int_to_ip $(( ipn & mask )))/${bits}"
+    fi
+}
+
 cmd_add_ip() {
     require_root
-    [[ -n "${1:-}" ]] || { err "用法: $0 add-ip <IP/CIDR>"; exit 1; }
+    local net
+    [[ -n "${1:-}" ]] || { err "用法: $0 add-ip <IP|IP/CIDR> [b|c]   (b = 整个 B 段 /16, c = 整个 C 段 /24)"; exit 1; }
+    net=$(parse_net "$1" "${2:-}") || { err "无效的 IP/网段: $1 ${2:-}"; exit 1; }
+    if [[ "$net" == */* ]] && (( ${net#*/} < 16 )); then
+        warn "前缀 /${net#*/} 比 B 段还大, 将放行 $(( 1 << (32 - ${net#*/}) )) 个地址, 请确认这是你要的"
+    fi
     ensure_extra_set
-    ipset add "$IPSET_EXTRA" "$1" -exist || exit 1
-    info "已添加 $1"
+    ipset add "$IPSET_EXTRA" "$net" -exist || exit 1
+    info "已添加 ${net}"
     save_ipsets
 }
 
 cmd_del_ip() {
     require_root
-    [[ -n "${1:-}" ]] || { err "用法: $0 del-ip <IP/CIDR>"; exit 1; }
+    local net
+    [[ -n "${1:-}" ]] || { err "用法: $0 del-ip <IP|IP/CIDR> [b|c]"; exit 1; }
+    net=$(parse_net "$1" "${2:-}") || { err "无效的 IP/网段: $1 ${2:-}"; exit 1; }
     ensure_extra_set
-    ipset del "$IPSET_EXTRA" "$1" || exit 1
-    info "已删除 $1"
+    ipset del "$IPSET_EXTRA" "$net" || exit 1
+    info "已删除 ${net}"
     save_ipsets
 }
 
@@ -695,20 +741,20 @@ cmd_check_ip() {
     ipset destroy "$chk" 2>/dev/null
 
     if [[ ${#found[@]} -eq 0 ]]; then
-        warn "数据源的 31 个省份文件里都没有 ${ip}; 如需放行请用: $0 add-ip ${ip}"
+        warn "数据源的 31 个省份文件里都没有 ${ip}; 如需放行请用: $0 add-ip ${ip} b   (放行其 B 段)"
     else
         info "数据源归属: ${found[*]}"
-        info "如归属与实际不符, 可直接放行该网段: $0 add-ip <网段>, 或把该省加入白名单: $0 add-province <省份>"
+        info "如归属与实际不符, 可放行该 IP 所在 B 段: $0 add-ip ${ip} b, 直接放行上面的网段: $0 add-ip <网段>, 或把该省加入白名单: $0 add-province <省份>"
     fi
 }
 
 # 从 stdin 的 CIDR 列表里找出包含指定 IP 的网段 (纯 bash 位运算)
 cidr_containing() {
-    local ip=$1 cidr net bits ipn netn mask a b c d
-    IFS=. read -r a b c d <<< "$ip"; ipn=$(( (a<<24) | (b<<16) | (c<<8) | d ))
+    local ip=$1 cidr net bits ipn netn mask
+    ipn=$(ip_to_int "$ip")
     while read -r cidr; do
         net=${cidr%/*}; bits=${cidr#*/}
-        IFS=. read -r a b c d <<< "$net"; netn=$(( (a<<24) | (b<<16) | (c<<8) | d ))
+        netn=$(ip_to_int "$net")
         mask=$(( bits == 0 ? 0 : (0xFFFFFFFF << (32 - bits)) & 0xFFFFFFFF ))
         (( (ipn & mask) == (netn & mask) )) && printf '%s ' "$cidr"
     done
@@ -731,7 +777,7 @@ cmd_uninstall() {
 
 main_menu() {
     require_root
-    local ch summary auto_label pause_label enabled pnames c ip ok
+    local ch summary auto_label pause_label enabled pnames c ip ok scope
     while true; do
         # 状态摘要
         summary="未安装"
@@ -782,11 +828,21 @@ main_menu() {
             5)
                 is_installed || { err "尚未安装, 请先选 1"; continue; }
                 read -rp "输入要添加的 IP 或网段(如 1.2.3.4 或 1.2.3.0/24): " ip
-                [[ -n "$ip" ]] && ( cmd_add_ip "$ip" )
+                [[ -n "$ip" ]] || continue
+                scope=""
+                if [[ "$ip" != */* ]]; then
+                    echo " 1) 只放行这个 IP"
+                    echo " 2) 放行整个 C 段 /24 (256 个地址)"
+                    echo " 3) 放行整个 B 段 /16 (65536 个地址, 适合家宽/手机等 IP 经常变的情况)"
+                    read -rp "请选择 [1/2/3, 默认 1]: " scope
+                    case "${scope:-1}" in 1) scope="" ;; 2) scope=c ;; 3) scope=b ;; *) err "无效选择"; continue ;; esac
+                fi
+                ( cmd_add_ip "$ip" "$scope" )
                 ;;
             6)
                 is_installed || { err "尚未安装, 请先选 1"; continue; }
-                read -rp "输入要删除的 IP 或网段: " ip
+                ipset list "$IPSET_EXTRA" 2>/dev/null | sed -n '/^Members:/,$p' | tail -n +2 | sed 's/^/   /'
+                read -rp "输入要删除的 IP 或网段(按上面列出的原样输入): " ip
                 [[ -n "$ip" ]] && ( cmd_del_ip "$ip" )
                 ;;
             7) is_installed && ( cmd_update ) || err "尚未安装, 请先选 1" ;;
@@ -831,8 +887,8 @@ case "$cmd" in
     status)         cmd_status ;;
     add-province)   cmd_add_province "$@" ;;
     del-province)   cmd_del_province "$@" ;;
-    add-ip)         cmd_add_ip "${1:-}" ;;
-    del-ip)         cmd_del_ip "${1:-}" ;;
+    add-ip)         cmd_add_ip "${1:-}" "${2:-}" ;;
+    del-ip)         cmd_del_ip "${1:-}" "${2:-}" ;;
     check-ip)       cmd_check_ip "${1:-}" ;;
     auto-update)    cmd_autoupdate "${1:-}" ;;
     pause)          cmd_pause ;;
@@ -841,7 +897,7 @@ case "$cmd" in
     uninstall)      cmd_uninstall ;;
     *)
         echo "用法: $0                # 交互式管理菜单"
-        echo "     $0 {install|update|status|add-province [省份]...|del-province [省份]...|add-ip <IP>|del-ip <IP>|check-ip <IP>|auto-update on|off|pause|resume|uninstall}"
+        echo "     $0 {install|update|status|add-province [省份]...|del-province [省份]...|add-ip <IP> [b|c]|del-ip <IP> [b|c]|check-ip <IP>|auto-update on|off|pause|resume|uninstall}"
         exit 1
         ;;
 esac
