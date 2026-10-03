@@ -23,13 +23,20 @@
 #     bash province_whitelist.sh resume     # 恢复白名单
 #     bash province_whitelist.sh uninstall  # 卸载并恢复原样
 #
-#   升级: 直接用新版脚本执行任意命令(如 status), 会自动把新版同步到
+#   升级: 直接用新版脚本执行任意管理命令(如 status), 会自动把新版同步到
 #         /usr/local/bin 并刷新 systemd 单元, 已有配置和规则原样保留。
+#         同步只升不降(按 VERSION 比较), 用旧脚本跑命令不会覆盖新版本。
 #=================================================================#
 
 set -u
 
+# 脚本版本号 (整数). 自动同步副本时只升不降, 用旧脚本跑命令不会把已安装的新版本覆盖掉
+VERSION=3
+
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; PLAIN='\033[0m'
+
+# 数据文件里的 IPv4 CIDR 行
+CIDR_RE='^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+'
 
 CONF_DIR="/etc/province-whitelist"
 CONF_FILE="${CONF_DIR}/config"
@@ -87,6 +94,7 @@ install_deps() {
     command -v ipset >/dev/null 2>&1 || need+=(ipset)
     command -v iptables >/dev/null 2>&1 || need+=(iptables)
     command -v curl >/dev/null 2>&1 || need+=(curl)
+    command -v flock >/dev/null 2>&1 || need+=(util-linux)
     [[ ${#need[@]} -eq 0 ]] && return 0
     info "安装依赖: ${need[*]}"
     if command -v apt-get >/dev/null 2>&1; then
@@ -106,7 +114,7 @@ fetch_province() {
     for m in "${MIRRORS[@]}"; do
         if curl -fsSL --max-time 60 "${m}/${code}.txt" -o "${out}.tmp" 2>/dev/null; then
             # 校验内容确实是 CIDR 列表
-            if grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+' "${out}.tmp"; then
+            if grep -Eq "$CIDR_RE" "${out}.tmp"; then
                 mv "${out}.tmp" "${out}"
                 return 0
             fi
@@ -116,28 +124,40 @@ fetch_province() {
     return 1
 }
 
-# 把两个集合保存到磁盘供开机恢复 (先写临时文件再替换, 集合不存在就跳过, 不会把文件清空)
+# 在文件锁内执行命令 (子 shell 里跑, 退出即释放锁). 没有 flock 时降级为不加锁并提示.
+# 注意: 已经持锁的代码里不要再套一层 with_lock, 会自己等自己.
+with_lock() {
+    (
+        if command -v flock >/dev/null 2>&1; then
+            exec 9>"$LOCK_FILE"
+            if ! flock -w 600 9; then
+                err "另一个操作正在进行中 (更新/写盘), 等待锁超时, 本次放弃"
+                exit 1
+            fi
+        else
+            warn "系统没有 flock 命令, 本次不加锁执行 (建议安装 util-linux)"
+        fi
+        "$@"
+    )
+}
+
+# 把两个集合保存到磁盘供开机恢复 (写到唯一的临时文件再替换, 集合不存在就跳过, 不会把文件清空)
+# 调用方负责持锁: build_ipset_locked 内部已持锁, 其他地方用 with_lock save_ipsets
 save_ipsets() {
+    local tmp
     mkdir -p "$CONF_DIR"
+    tmp=$(mktemp "${IPSET_RULES}.XXXXXX") || return 1
     {
         ipset_exists "$IPSET_MAIN"  && ipset save "$IPSET_MAIN"
         ipset_exists "$IPSET_EXTRA" && ipset save "$IPSET_EXTRA"
         true
-    } > "${IPSET_RULES}.tmp" && mv -f "${IPSET_RULES}.tmp" "$IPSET_RULES"
+    } > "$tmp" && mv -f "$tmp" "$IPSET_RULES"
+    rm -f "$tmp"
 }
 
 # 下载所选省份数据并原子更新 ipset (先建临时集合再 swap, 更新过程不断流)
 # 整个过程持有文件锁, 避免 cron 与手动更新同时跑时争用临时集合
-build_ipset() {
-    (
-        exec 9>"$LOCK_FILE"
-        if ! flock -w 600 9; then
-            err "另一个更新正在进行中, 等待超时, 本次放弃"
-            exit 1
-        fi
-        build_ipset_locked "$@"
-    )
-}
+build_ipset() { with_lock build_ipset_locked "$@"; }
 
 build_ipset_locked() {
     local codes=("$@")
@@ -160,7 +180,7 @@ build_ipset_locked() {
 
     {
         for code in "${codes[@]}"; do
-            grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+' "${tmpdir}/${code}.txt" \
+            grep -E "$CIDR_RE" "${tmpdir}/${code}.txt" \
                 | sed "s/^/add ${tmpset} /"
         done
     } | ipset restore -!
@@ -249,7 +269,8 @@ ensure_service_unit() {
     content="[Unit]
 Description=Province IP whitelist (ipset + iptables restore)
 Wants=network-online.target
-After=network-online.target
+# 排在常见防火墙工具之后, 否则它们启动时会把本脚本刚挂上的链清掉 (不存在的单元会被 systemd 忽略)
+After=network-online.target ufw.service firewalld.service netfilter-persistent.service iptables.service nftables.service
 
 [Service]
 Type=oneshot
@@ -267,25 +288,50 @@ WantedBy=multi-user.target
     systemctl enable "$SERVICE_NAME" >/dev/null 2>&1
 }
 
+# 读取某个脚本文件里的 VERSION, 读不到(老版本没有这个字段)按 0
+script_version_of() {
+    local v
+    v=$(grep -m1 -E '^VERSION=[0-9]+' "$1" 2>/dev/null | cut -d= -f2)
+    echo "${v:-0}"
+}
+
+# 用新内容原子替换 SCRIPT_PATH: 写到临时文件再 mv 换 inode.
+# bash 是边读边执行脚本文件的, 直接 cp 原地覆盖会让正在跑的 cron/systemd 进程读到错位的内容.
+replace_script_with() {
+    local tmp
+    tmp=$(mktemp "${SCRIPT_PATH}.XXXXXX") || return 1
+    if ! cat "$1" > "$tmp"; then rm -f "$tmp"; return 1; fi
+    chmod 755 "$tmp"
+    mv -f "$tmp" "$SCRIPT_PATH"
+}
+
 # 把当前运行的脚本同步到固定位置 (cron / systemd 运行的是那份副本)
-# $1 = force: 即使没有本地文件(curl | bash 方式运行)也要从仓库下载一份
+# $1 = force: install 时使用. 即使没有本地文件(curl | bash 方式运行)也要从仓库下载一份,
+#             且允许用旧版本覆盖(用户明确要装这一版). 不带 force 时只升不降.
 sync_script() {
-    local force=${1:-} src
+    local force=${1:-} src tmp installed_ver
     src=$(readlink -f "$0" 2>/dev/null || true)
     if [[ -n "$src" && -f "$src" && "$src" != "$SCRIPT_PATH" ]]; then
         if ! cmp -s "$src" "$SCRIPT_PATH"; then
-            cp -f "$src" "$SCRIPT_PATH" || { err "复制脚本到 ${SCRIPT_PATH} 失败"; return 1; }
-            info "已更新脚本副本 ${SCRIPT_PATH}"
+            installed_ver=$(script_version_of "$SCRIPT_PATH")
+            if [[ -z "$force" ]] && (( installed_ver > VERSION )); then
+                warn "已安装的脚本版本(${installed_ver})比当前运行的(${VERSION})新, 不覆盖 ${SCRIPT_PATH}"
+                return 0
+            fi
+            replace_script_with "$src" || { err "复制脚本到 ${SCRIPT_PATH} 失败"; return 1; }
+            info "已更新脚本副本 ${SCRIPT_PATH} (版本 ${VERSION})"
         fi
     elif [[ ! -f "$src" ]] && { [[ -n "$force" ]] || [[ ! -f "$SCRIPT_PATH" ]]; }; then
         # 通过 curl | bash 等方式运行, 本地没有脚本文件, 从仓库下载
         info "从 ${SCRIPT_URL} 下载脚本到 ${SCRIPT_PATH}..."
-        if ! curl -fsSL --max-time 60 "$SCRIPT_URL" -o "${SCRIPT_PATH}.tmp"; then
-            rm -f "${SCRIPT_PATH}.tmp"
+        tmp=$(mktemp) || return 1
+        if ! curl -fsSL --max-time 60 "$SCRIPT_URL" -o "$tmp" || ! grep -q '^VERSION=' "$tmp"; then
+            rm -f "$tmp"
             err "下载失败; 请把脚本保存为文件后再运行, 否则开机恢复和自动更新无法工作"
             return 1
         fi
-        mv -f "${SCRIPT_PATH}.tmp" "$SCRIPT_PATH"
+        replace_script_with "$tmp" || { rm -f "$tmp"; err "写入 ${SCRIPT_PATH} 失败"; return 1; }
+        rm -f "$tmp"
     fi
     [[ -f "$SCRIPT_PATH" ]] || { err "${SCRIPT_PATH} 不存在"; return 1; }
     chmod +x "$SCRIPT_PATH"
@@ -442,8 +488,12 @@ cmd_install() {
         sshport=$(detect_ssh_port)
         read -rp "输入要保护的端口(逗号分隔, 默认 ${sshport}): " ports
         ports=${ports:-$sshport}
-        ports=${ports// /}
-        validate_ports "$ports" || { err "端口格式错误: ${ports} (应为 1-65535 的数字, 逗号分隔)"; exit 1; }
+        # 空格、中文逗号都当分隔符, 合并重复分隔符, 去掉首尾分隔符 ("22 80" -> "22,80")
+        ports=${ports//，/,}
+        ports=${ports//[[:space:]]/,}
+        while [[ "$ports" == *,,* ]]; do ports=${ports//,,/,}; done
+        ports=${ports#,}; ports=${ports%,}
+        validate_ports "$ports" || { err "端口格式错误: ${ports} (应为 1-65535 的数字, 逗号或空格分隔)"; exit 1; }
     else
         read -rp "确认保护全部端口? 不在白名单内的 IP 将无法访问本机任何服务 [y/N]: " ok
         [[ "$ok" =~ ^[Yy]$ ]] || exit 1
@@ -655,6 +705,8 @@ parse_net() {
     ip=${arg%%/*}
     is_ipv4 "$ip" || return 1
     if [[ "$arg" == */* ]]; then
+        # 已经写了前缀就不能再给 b/c, 两者冲突时宁可报错也不猜用户想要哪个
+        [[ -z "$scope" ]] || return 1
         bits=${arg#*/}
         [[ "$bits" =~ ^[0-9]+$ ]] && (( 10#$bits >= 0 && 10#$bits <= 32 )) || return 1
         bits=$((10#$bits))
@@ -679,6 +731,7 @@ cmd_add_ip() {
     require_root
     local net
     [[ -n "${1:-}" ]] || { err "用法: $0 add-ip <IP|IP/CIDR> [b|c]   (b = 整个 B 段 /16, c = 整个 C 段 /24)"; exit 1; }
+    [[ "$1" == */* && -n "${2:-}" ]] && { err "$1 已带前缀, 不能再加 ${2}; 要么写 IP 加 b/c, 要么直接写 IP/前缀"; exit 1; }
     net=$(parse_net "$1" "${2:-}") || { err "无效的 IP/网段: $1 ${2:-}"; exit 1; }
     if [[ "$net" == */* ]] && (( ${net#*/} < 16 )); then
         warn "前缀 /${net#*/} 比 B 段还大, 将放行 $(( 1 << (32 - ${net#*/}) )) 个地址, 请确认这是你要的"
@@ -686,24 +739,39 @@ cmd_add_ip() {
     ensure_extra_set
     ipset add "$IPSET_EXTRA" "$net" -exist || exit 1
     info "已添加 ${net}"
-    save_ipsets
+    with_lock save_ipsets
 }
 
 cmd_del_ip() {
     require_root
     local net
     [[ -n "${1:-}" ]] || { err "用法: $0 del-ip <IP|IP/CIDR> [b|c]"; exit 1; }
+    [[ "$1" == */* && -n "${2:-}" ]] && { err "$1 已带前缀, 不能再加 ${2}"; exit 1; }
     net=$(parse_net "$1" "${2:-}") || { err "无效的 IP/网段: $1 ${2:-}"; exit 1; }
     ensure_extra_set
     ipset del "$IPSET_EXTRA" "$net" || exit 1
     info "已删除 ${net}"
-    save_ipsets
+    with_lock save_ipsets
 }
 
-# 查某个 IP 当前是否放行, 以及数据源把它归到哪个省 (逐省下载后用临时集合匹配)
+# 从一个 CIDR 列表文件里找出包含指定 IP 的网段, 一次 awk 扫描, 不依赖 ipset 也不逐行 fork.
+# 判断方法: 把 IP 和网段都右移 (32-前缀) 位后比较, 用除法代替位运算以兼容 mawk.
+cidrs_containing() {
+    local ip=$1 file=$2
+    awk -v ipn="$(ip_to_int "$ip")" -v re="$CIDR_RE" '
+        $1 ~ re {
+            split($1, a, "/"); split(a[1], o, ".")
+            n = ((o[1]*256 + o[2])*256 + o[3])*256 + o[4]
+            d = 2 ^ (32 - a[2])
+            if (int(ipn / d) == int(n / d)) printf "%s ", $1
+        }' "$file"
+}
+
+# 查某个 IP 当前是否放行, 以及数据源把它归到哪个省
+# 省份文件并行下载, 然后逐个文件 awk 扫描; 下载失败的省份会单独列出, 不会被说成"不在数据源里"
 cmd_check_ip() {
     require_root
-    local ip=${1:-} hit=0 tmpdir chk="${IPSET_MAIN}_chk" i code found=()
+    local ip=${1:-} hit=0 tmpdir i code found=() missing=() hits
     is_ipv4 "$ip" || { err "用法: $0 check-ip <IPv4 地址>"; exit 1; }
 
     if ipset_exists "$IPSET_EXTRA" && ipset test "$IPSET_EXTRA" "$ip" 2>/dev/null; then
@@ -720,45 +788,33 @@ cmd_check_ip() {
         fi
     fi
 
-    info "在数据源中查找 ${ip} 的省份归属 (需下载全部省份数据, 请稍候)..."
+    info "在数据源中查找 ${ip} 的省份归属 (并行下载 ${#PROVINCE_CODES[@]} 个省份文件, 请稍候)..."
     tmpdir=$(mktemp -d)
-    ipset destroy "$chk" 2>/dev/null
+    for code in "${PROVINCE_CODES[@]}"; do
+        fetch_province "$code" "${tmpdir}/${code}.txt" &
+    done
+    wait
+
     for i in "${!PROVINCE_CODES[@]}"; do
         code=${PROVINCE_CODES[$i]}
-        if ! fetch_province "$code" "${tmpdir}/${code}.txt"; then
-            warn "下载 ${PROVINCE_NAMES[$i]}(${code}) 失败, 跳过"
+        if [[ ! -s "${tmpdir}/${code}.txt" ]]; then
+            missing+=("${PROVINCE_NAMES[$i]}(${code})")
             continue
         fi
-        ipset create "$chk" hash:net family inet hashsize 1024 maxelem 262144 2>/dev/null || break
-        grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+' "${tmpdir}/${code}.txt" \
-            | sed "s/^/add ${chk} /" | ipset restore -!
-        if ipset test "$chk" "$ip" 2>/dev/null; then
-            found+=("${PROVINCE_NAMES[$i]}(${code}): $(grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+' "${tmpdir}/${code}.txt" | cidr_containing "$ip")")
-        fi
-        ipset destroy "$chk" 2>/dev/null
+        hits=$(cidrs_containing "$ip" "${tmpdir}/${code}.txt")
+        [[ -n "$hits" ]] && found+=("${PROVINCE_NAMES[$i]}(${code}): ${hits}")
     done
     rm -rf "$tmpdir"
-    ipset destroy "$chk" 2>/dev/null
 
-    if [[ ${#found[@]} -eq 0 ]]; then
-        warn "数据源的 31 个省份文件里都没有 ${ip}; 如需放行请用: $0 add-ip ${ip} b   (放行其 B 段)"
-    else
+    [[ ${#missing[@]} -gt 0 ]] && warn "以下省份数据下载失败, 未参与判断: ${missing[*]}"
+    if [[ ${#found[@]} -gt 0 ]]; then
         info "数据源归属: ${found[*]}"
         info "如归属与实际不符, 可放行该 IP 所在 B 段: $0 add-ip ${ip} b, 直接放行上面的网段: $0 add-ip <网段>, 或把该省加入白名单: $0 add-province <省份>"
+    elif [[ ${#missing[@]} -gt 0 ]]; then
+        warn "已下载的省份文件里没有 ${ip}, 但有省份数据缺失, 无法断定归属; 请稍后重试"
+    else
+        warn "数据源的 ${#PROVINCE_CODES[@]} 个省份文件里都没有 ${ip}; 如需放行请用: $0 add-ip ${ip} b   (放行其 B 段)"
     fi
-}
-
-# 从 stdin 的 CIDR 列表里找出包含指定 IP 的网段 (纯 bash 位运算)
-cidr_containing() {
-    local ip=$1 cidr net bits ipn netn mask
-    ipn=$(ip_to_int "$ip")
-    while read -r cidr; do
-        net=${cidr%/*}; bits=${cidr#*/}
-        netn=$(ip_to_int "$net")
-        mask=$(( bits == 0 ? 0 : (0xFFFFFFFF << (32 - bits)) & 0xFFFFFFFF ))
-        (( (ipn & mask) == (netn & mask) )) && printf '%s ' "$cidr"
-    done
-    echo
 }
 
 cmd_uninstall() {
@@ -874,10 +930,11 @@ main_menu() {
 cmd=${1:-menu}
 shift 2>/dev/null || true
 
-# 已安装的机器上用新版脚本跑任何管理命令时, 先把副本和 systemd 单元升级到当前版本
+# 已安装的机器上用新版脚本跑管理命令时, 先把副本和 systemd 单元升级到当前版本
+# (只对合法的管理命令触发; install 自己会同步, restore-rules/uninstall 和拼错的命令不碰)
 case "$cmd" in
-    install|restore-rules|uninstall) ;;
-    *) upgrade_installed ;;
+    menu|update|status|add-province|del-province|add-ip|del-ip|check-ip|auto-update|pause|resume)
+        upgrade_installed ;;
 esac
 
 case "$cmd" in
