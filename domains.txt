@@ -34,3 +34,4 @@ DOMAIN-KEYWORD,highendnetwork
 DOMAIN-KEYWORD,vmrack
 DOMAIN-KEYWORD,boil.network
 DOMAIN-KEYWORD,moonvm
+DOMAIN-KEYWORD,tamago.network
