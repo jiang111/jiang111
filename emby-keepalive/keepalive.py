@@ -243,6 +243,16 @@ def run_all(cfg):
                 return
             except urllib.error.HTTPError as e:
                 err = f"HTTP {e.code} {e.reason}"
+                try:
+                    detail = e.read().decode(errors="replace")[:200]
+                    if detail:
+                        err += f" {detail}"
+                except Exception:
+                    pass
+                if e.code in (401, 403):
+                    # 账号密码错误时重试只会触发服务器的登录限流
+                    log(f"[{name}] ❌ 登录被拒绝，不再重试：{err}")
+                    break
             except Exception as e:
                 err = str(e)
             log(f"[{name}] ❌ 第 {attempt} 次失败：{err}")
