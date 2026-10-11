@@ -22,6 +22,12 @@
 
 日志：`docker logs -f emby-keepalive`（或在 1Panel 容器列表里点日志）。
 
+手动执行一轮（成功后下次自动执行从今天重新算 `interval_days` 天）：
+```bash
+docker exec emby-keepalive python3 -u /data/keepalive.py --once
+```
+也可以在 1Panel → 容器 → `emby-keepalive` → 终端 里执行 `python3 -u /data/keepalive.py --once`。
+
 ## 配置说明
 
 | 字段 | 说明 |

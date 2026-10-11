@@ -277,10 +277,18 @@ def main():
     with open(args.config) as f:
         cfg = json.load(f)
     set_tz(cfg.get("settings", {}))
-    if args.once:
-        sys.exit(0 if run_all(cfg) else 1)
-
     state_path = os.path.join(os.path.dirname(os.path.abspath(args.config)), "state.json")
+    if args.once:
+        ok = run_all(cfg)
+        if ok:
+            # 手动执行成功也记录下来，自动执行从今天重新计算间隔
+            state = load_state(state_path)
+            state["last_success_date"] = datetime.now(TZ).date().isoformat()
+            state.pop("last_attempt", None)
+            state.pop("last_success", None)
+            save_state(state_path, state)
+        sys.exit(0 if ok else 1)
+
     log("常驻模式启动")
     first_run = not os.path.exists(state_path)
     shown = None
