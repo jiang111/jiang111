@@ -1,6 +1,8 @@
 {
   "settings": {
-    "interval_days": 7,
+    "run_at": "04:00",
+    "interval_days": 1,
+    "utc_offset": 8,
     "watch_minutes": [6, 9],
     "report_interval": 10,
     "stream_kbps": 0,

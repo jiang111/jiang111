@@ -18,15 +18,24 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
-from datetime import datetime
+from datetime import date, datetime, timedelta, timezone
+from datetime import time as dtime
 
 TICKS_PER_SECOND = 10_000_000
 CLIENT = "Emby Web"
 CLIENT_VERSION = "4.8.10.0"
+RETRY_GAP = 2 * 3600
+# 默认台湾时间 UTC+8（台湾没有夏令时），不依赖容器的 tzdata
+TZ = timezone(timedelta(hours=8))
+
+
+def set_tz(settings):
+    global TZ
+    TZ = timezone(timedelta(hours=settings.get("utc_offset", 8)))
 
 
 def log(msg):
-    print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] {msg}", flush=True)
+    print(f"[{datetime.now(TZ):%Y-%m-%d %H:%M:%S}] {msg}", flush=True)
 
 
 class EmbyClient:
@@ -267,33 +276,53 @@ def main():
 
     with open(args.config) as f:
         cfg = json.load(f)
+    set_tz(cfg.get("settings", {}))
     if args.once:
         sys.exit(0 if run_all(cfg) else 1)
 
     state_path = os.path.join(os.path.dirname(os.path.abspath(args.config)), "state.json")
     log("常驻模式启动")
+    first_run = not os.path.exists(state_path)
+    shown = None
     while True:
         with open(args.config) as f:
             cfg = json.load(f)
         settings = cfg.get("settings", {})
-        interval = settings.get("interval_days", 7) * 86400
-        retry_gap = 6 * 3600
+        set_tz(settings)
+        interval_days = settings.get("interval_days", 1)
+        hh, mm = (int(x) for x in settings.get("run_at", "04:00").split(":"))
         state = load_state(state_path)
-        last_ok = state.get("last_success", 0)
-        last_try = state.get("last_attempt", 0)
-        now = time.time()
-        due = last_ok + interval
-        if now >= due and now - last_try >= retry_gap:
-            state["last_attempt"] = now
+        now = datetime.now(TZ)
+
+        if first_run:
+            # 没有 state.json（首次安装或手动删除）时立即执行一轮
+            next_run = now
+        else:
+            last_date = state.get("last_success_date")
+            if not last_date and state.get("last_success"):
+                last_date = datetime.fromtimestamp(state["last_success"], TZ).date().isoformat()
+            day = (date.fromisoformat(last_date) + timedelta(days=interval_days)
+                   if last_date else now.date())
+            next_run = datetime.combine(day, dtime(hh, mm), TZ)
+            if state.get("last_attempt"):
+                # 失败后 2 小时再试
+                next_run = max(next_run, datetime.fromtimestamp(state["last_attempt"], TZ)
+                               + timedelta(seconds=RETRY_GAP))
+
+        if now >= next_run:
+            first_run = False
+            state["last_attempt"] = time.time()
             save_state(state_path, state)
             if run_all(cfg):
-                # 加一点随机，避免每次都在同一时刻
-                state["last_success"] = time.time() + random.uniform(-3, 3) * 3600
+                state["last_success_date"] = datetime.now(TZ).date().isoformat()
+                state.pop("last_attempt", None)
+                state.pop("last_success", None)
             save_state(state_path, state)
             continue
-        wait_until = max(due, last_try + retry_gap)
-        log(f"下次执行时间：{datetime.fromtimestamp(wait_until):%Y-%m-%d %H:%M}")
-        time.sleep(min(max(wait_until - now, 60), 3600))
+        if next_run != shown:
+            log(f"下次执行时间：{next_run:%Y-%m-%d %H:%M}")
+            shown = next_run
+        time.sleep(min(max((next_run - now).total_seconds(), 1), 300))
 
 
 if __name__ == "__main__":
