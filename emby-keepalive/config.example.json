@@ -9,7 +9,7 @@
     "retries": 3,
     "verify_ssl": true,
     "web": {
-      "port": 8686,
+      "port": 55656,
       "password": "CHANGE_ME"
     },
     "telegram": {

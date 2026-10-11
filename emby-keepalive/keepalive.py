@@ -346,7 +346,7 @@ def start_web(settings):
     if not password or password == WEB_PLACEHOLDER:
         log("网页面板未启用（config.json 里 web.password 未设置）")
         return
-    port = int(web.get("port", 8686))
+    port = int(web.get("port", 55656))
 
     class Handler(http.server.BaseHTTPRequestHandler):
         def log_message(self, *a):

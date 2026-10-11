@@ -4,7 +4,7 @@ services:
     container_name: emby-keepalive
     restart: unless-stopped
     ports:
-      - "8686:8686"
+      - "55656:55656"
     environment:
       - TZ=Asia/Taipei
     volumes:
