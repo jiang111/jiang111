@@ -8,6 +8,12 @@
     "stream_kbps": 0,
     "retries": 3,
     "verify_ssl": true,
+    "client": {
+      "name": "SenPlayer",
+      "version": "6.2.2",
+      "device": "iPhone",
+      "user_agent": "SenPlayer/6.2.2"
+    },
     "web": {
       "port": 55656,
       "password": "CHANGE_ME"

@@ -15,6 +15,7 @@ import http.server
 import json
 import os
 import random
+import re
 import ssl
 import sys
 import threading
@@ -27,8 +28,14 @@ from datetime import date, datetime, timedelta, timezone
 from datetime import time as dtime
 
 TICKS_PER_SECOND = 10_000_000
-CLIENT = "Emby Web"
-CLIENT_VERSION = "4.8.10.0"
+# 默认伪装成 SenPlayer（iOS）。部分服务器只允许白名单客户端登录，
+# 可用网页面板的「抓取客户端身份」拿到真实值后写进 config.json 的 client。
+DEFAULT_CLIENT = {
+    "name": "SenPlayer",
+    "version": "6.2.2",
+    "device": "iPhone",
+    "user_agent": "SenPlayer/6.2.2",
+}
 RETRY_GAP = 2 * 3600
 # 默认台湾时间 UTC+8（台湾没有夏令时），不依赖容器的 tzdata
 TZ = timezone(timedelta(hours=8))
@@ -45,6 +52,8 @@ LOG_BUF = collections.deque(maxlen=300)
 STATUS = {"running": False, "next_run": None, "last_success_date": None,
           "last_summary": None, "last_finished": None}
 MANUAL = threading.Event()
+# 抓取到的客户端请求头（网页面板 /capture）
+CAPTURED = collections.deque(maxlen=5)
 
 
 def log(msg):
@@ -54,18 +63,19 @@ def log(msg):
 
 
 class EmbyClient:
-    def __init__(self, base_url, device_id, device_name, verify_ssl=True, timeout=30):
+    def __init__(self, base_url, device_id, client, verify_ssl=True, timeout=30):
         self.base = base_url.rstrip("/")
         self.device_id = device_id
-        self.device_name = device_name
+        self.client = client
         self.token = None
         self.user_id = None
         self.timeout = timeout
         self.ctx = None if verify_ssl else ssl._create_unverified_context()
 
     def _auth_header(self):
-        h = (f'MediaBrowser Client="{CLIENT}", Device="{self.device_name}", '
-             f'DeviceId="{self.device_id}", Version="{CLIENT_VERSION}"')
+        c = self.client
+        h = (f'MediaBrowser Client="{c["name"]}", Device="{c["device"]}", '
+             f'DeviceId="{self.device_id}", Version="{c["version"]}"')
         if self.token:
             h += f', Token="{self.token}"'
         return h
@@ -77,8 +87,7 @@ class EmbyClient:
         headers = {
             "X-Emby-Authorization": self._auth_header(),
             "Accept": "application/json",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                          "(KHTML, like Gecko) Chrome/129.0 Safari/537.36",
+            "User-Agent": self.client["user_agent"],
         }
         if self.token:
             headers["X-Emby-Token"] = self.token
@@ -155,9 +164,11 @@ def stream_reader(client, item_id, media_source_id, stop_event, kbps):
 
 def watch(acc, settings):
     name = acc.get("name") or acc["username"]
-    device_id = acc.get("device_id") or uuid.uuid5(
-        uuid.NAMESPACE_URL, acc["server"] + acc["username"]).hex
-    c = EmbyClient(acc["server"], device_id, acc.get("device_name", "Chrome Windows"),
+    # 每个账号固定一个 iOS 风格的设备 ID（大写 UUID）
+    device_id = acc.get("device_id") or str(uuid.uuid5(
+        uuid.NAMESPACE_URL, acc["server"] + acc["username"])).upper()
+    client = {**DEFAULT_CLIENT, **(settings.get("client") or {}), **(acc.get("client") or {})}
+    c = EmbyClient(acc["server"], device_id, client,
                    verify_ssl=settings.get("verify_ssl", True))
     lo, hi = settings.get("watch_minutes", [6, 9])
     seconds = int(random.uniform(lo, hi) * 60)
@@ -179,7 +190,7 @@ def watch(acc, settings):
         log(f"[{name}] 开始播放《{title}》，从 {start // 60} 分开始，计划看 {seconds // 60} 分 {seconds % 60} 秒")
 
         base = {"ItemId": item_id, "MediaSourceId": media_source_id,
-                "PlaySessionId": play_session, "PlayMethod": "DirectStream",
+                "PlaySessionId": play_session, "PlayMethod": "DirectPlay",
                 "CanSeek": True, "IsPaused": False, "IsMuted": False,
                 "VolumeLevel": 100, "PlaybackRate": 1, "RepeatMode": "RepeatNone"}
 
@@ -312,6 +323,9 @@ button:disabled{opacity:.5;cursor:default}
 .badge{font-weight:600}.on{color:var(--accent)}.ok{color:var(--ok)}.bad{color:var(--bad)}
 pre{margin:0;white-space:pre-wrap;word-break:break-all;font:12px/1.5 ui-monospace,Menlo,Consolas,monospace}
 #summary{white-space:pre-wrap}
+.hint{color:var(--muted);font-size:13px;margin:6px 0 10px}
+code{font:12px ui-monospace,Menlo,Consolas,monospace;word-break:break-all}
+.cap{background:var(--bg);border-radius:8px;padding:12px}
 #log{background:var(--log);color:var(--logfg);border-radius:8px;padding:12px;max-height:420px;overflow:auto}
 </style></head><body><main>
 <h1>Emby 保号</h1>
@@ -323,6 +337,12 @@ pre{margin:0;white-space:pre-wrap;word-break:break-all;font:12px/1.5 ui-monospac
 <div class="card"><button id="run">立即执行</button></div>
 <div class="card"><div class="row"><span>最近一次结果</span><span id="fin"></span></div><div id="summary">—</div></div>
 <div class="card"><pre id="log"></pre></div>
+<div class="card">
+<div class="row"><span>抓取客户端身份</span></div>
+<div class="hint">在 SenPlayer 里添加 Emby 服务器，地址填 <code id="capurl"></code>，用户名密码随便填，点登录（会提示失败，正常）。
+几秒后这里会显示它发送的身份，把下面的 <code>client</code> 复制到 config.json 的 settings 里。</div>
+<pre id="cap" class="cap">还没有抓到</pre>
+</div>
 </main><script>
 const $=id=>document.getElementById(id);
 async function refresh(){
@@ -338,6 +358,9 @@ async function refresh(){
     $('run').textContent=s.running?'执行中，约 6～9 分钟…':(s.queued?'即将开始…':'立即执行');
     const log=$('log'),bottom=log.scrollHeight-log.scrollTop-log.clientHeight<40;
     log.textContent=s.log.join('\n');if(bottom)log.scrollTop=log.scrollHeight;
+    if(s.captured.length){const c=s.captured[s.captured.length-1];
+      $('cap').textContent=c.time+'  '+c.method+' '+c.path+'\n\nUser-Agent: '+c.user_agent+'\n'+c.auth_header+': '+c.auth+
+        '\n\n"client": '+JSON.stringify(c.client,null,2);}
   }catch(e){$('state').textContent='连接失败';$('state').className='badge bad'}
 }
 $('run').onclick=async()=>{
@@ -346,6 +369,7 @@ $('run').onclick=async()=>{
   await fetch('api/run',{method:'POST',headers:{'X-Requested-With':'fetch'}});
   refresh();
 };
+$('capurl').textContent=location.protocol+'//'+location.host+'/capture';
 refresh();setInterval(refresh,3000);
 </script></body></html>"""
 
@@ -385,7 +409,39 @@ def start_web(settings):
             self.end_headers()
             self.wfile.write(b)
 
+        def _capture(self):
+            """假装成 Emby 服务器，记录客户端发来的身份信息，不校验密码。"""
+            path = self.path.split("?")[0]
+            n = int(self.headers.get("Content-Length") or 0)
+            if n:
+                self.rfile.read(min(n, 65536))  # 丢弃请求体（不记录密码）
+            if path.endswith("/System/Info/Public"):
+                return self._send(200, json.dumps({
+                    "ServerName": "capture", "Version": "4.9.5.0", "Id": "0" * 32,
+                    "LocalAddress": f"http://{self.headers.get('Host', '')}/capture",
+                    "StartupWizardCompleted": True}))
+            if path.endswith("/Users/Public"):
+                return self._send(200, "[]")
+            auth_name = next((h for h in ("X-Emby-Authorization", "Authorization")
+                              if self.headers.get(h, "").startswith(("MediaBrowser", "Emby"))), None)
+            if auth_name or path.endswith("/AuthenticateByName"):
+                auth = self.headers.get(auth_name, "") if auth_name else ""
+                fields = dict(re.findall(r'(\w+)="([^"]*)"', auth))
+                ua = self.headers.get("User-Agent", "")
+                CAPTURED.append({
+                    "time": f"{datetime.now(TZ):%H:%M:%S}", "method": self.command,
+                    "path": path[:120], "user_agent": ua[:300],
+                    "auth_header": auth_name or "(无)", "auth": auth[:400],
+                    "client": {"name": fields.get("Client", ""), "version": fields.get("Version", ""),
+                               "device": fields.get("Device", ""), "user_agent": ua[:300]}})
+                log(f"抓到客户端身份：Client={fields.get('Client')} Version={fields.get('Version')} UA={ua[:80]}")
+            if path.endswith("/AuthenticateByName"):
+                return self._send(401, '{"ErrorCode":"invalid_credentials"}')
+            self._send(404, "{}")
+
         def do_GET(self):
+            if self.path.startswith("/capture"):
+                return self._capture()
             if not self._authed():
                 return
             path = self.path.split("?")[0]
@@ -393,11 +449,14 @@ def start_web(settings):
                 self._send(200, PAGE, "text/html; charset=utf-8")
             elif path == "/api/status":
                 self._send(200, json.dumps({**STATUS, "queued": MANUAL.is_set(),
+                                            "captured": list(CAPTURED),
                                             "log": list(LOG_BUF)[-150:]}, ensure_ascii=False))
             else:
                 self._send(404, "{}")
 
         def do_POST(self):
+            if self.path.startswith("/capture"):
+                return self._capture()
             if not self._authed():
                 return
             # 自定义请求头可防止跨站伪造请求

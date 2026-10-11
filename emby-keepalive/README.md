@@ -30,6 +30,13 @@
 - 需要在 1Panel → 主机 → 防火墙 放行 55656 端口；也可以不开端口，在 1Panel → 网站 里用反向代理 `http://127.0.0.1:55656` 挂上 HTTPS 域名。
 - `web.password` 为空或 `CHANGE_ME` 时不启用面板。
 
+## 抓取客户端身份
+
+有的服务器只允许特定客户端登录（其他客户端能登、脚本却提示 401）。这时在手机客户端（如 SenPlayer）里添加一个
+Emby 服务器，地址填 `http://服务器IP:55656/capture`，用户名密码随便填并点登录。网页面板底部会显示该客户端真实发送的
+User-Agent 和 X-Emby-Authorization，并生成对应的 `client` 配置，复制到 config.json 的 `settings` 里即可。
+（抓取接口不记录密码。）
+
 ## 手动执行
 
 网页上点「立即执行」，或者命令行（成功后下次自动执行从今天重新算 `interval_days` 天）：
@@ -50,6 +57,7 @@ docker exec emby-keepalive python3 -u /data/keepalive.py --once
 | `stream_kbps` | >0 时同时真实拉取视频流（kbps），服务器按流量判定时再开，如 `500` |
 | `retries` | 失败重试次数；整轮失败后 2 小时再试 |
 | `verify_ssl` | 服务器证书有问题时改为 `false` |
+| `client` | 伪装的客户端身份（Client / Version / Device / User-Agent），默认 SenPlayer；也可以写在单个账号里覆盖 |
 | `web` | 网页面板端口和密码 |
 | `telegram` | 填 bot_token 和 chat_id 后每次执行完推送结果 |
 | `accounts[].server` | 服务器地址，带端口，如 `https://emby.xxx.com:443`；如果登录 404，试试在末尾加 `/emby` |
