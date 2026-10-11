@@ -289,7 +289,7 @@ def main():
             cfg = json.load(f)
         settings = cfg.get("settings", {})
         set_tz(settings)
-        interval_days = settings.get("interval_days", 1)
+        interval_days = settings.get("interval_days", 10)
         hh, mm = (int(x) for x in settings.get("run_at", "04:00").split(":"))
         state = load_state(state_path)
         now = datetime.now(TZ)

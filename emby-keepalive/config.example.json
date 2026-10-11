@@ -1,7 +1,7 @@
 {
   "settings": {
     "run_at": "04:00",
-    "interval_days": 1,
+    "interval_days": 10,
     "utc_offset": 8,
     "watch_minutes": [6, 9],
     "report_interval": 10,
