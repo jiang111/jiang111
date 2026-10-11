@@ -10,9 +10,9 @@
     "verify_ssl": true,
     "client": {
       "name": "SenPlayer",
-      "version": "6.2.2",
-      "device": "iPhone",
-      "user_agent": "SenPlayer/6.2.2"
+      "version": "6.2.1",
+      "device": "Mac",
+      "user_agent": "SenPlayer/6.2.1"
     },
     "web": {
       "port": 55656,

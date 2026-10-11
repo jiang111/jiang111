@@ -28,13 +28,13 @@ from datetime import date, datetime, timedelta, timezone
 from datetime import time as dtime
 
 TICKS_PER_SECOND = 10_000_000
-# 默认伪装成 SenPlayer（iOS）。部分服务器只允许白名单客户端登录，
+# 默认伪装成 SenPlayer（取自真实抓包）。部分服务器只允许白名单客户端登录，
 # 可用网页面板的「抓取客户端身份」拿到真实值后写进 config.json 的 client。
 DEFAULT_CLIENT = {
     "name": "SenPlayer",
-    "version": "6.2.2",
-    "device": "iPhone",
-    "user_agent": "SenPlayer/6.2.2",
+    "version": "6.2.1",
+    "device": "Mac",
+    "user_agent": "SenPlayer/6.2.1",
 }
 RETRY_GAP = 2 * 3600
 # 默认台湾时间 UTC+8（台湾没有夏令时），不依赖容器的 tzdata
@@ -65,6 +65,9 @@ def log(msg):
 class EmbyClient:
     def __init__(self, base_url, device_id, client, verify_ssl=True, timeout=30):
         self.base = base_url.rstrip("/")
+        # 和官方/SenPlayer 客户端一样走 /emby 前缀
+        if not self.base.lower().endswith("/emby"):
+            self.base += "/emby"
         self.device_id = device_id
         self.client = client
         self.token = None
@@ -74,8 +77,11 @@ class EmbyClient:
 
     def _auth_header(self):
         c = self.client
-        h = (f'MediaBrowser Client="{c["name"]}", Device="{c["device"]}", '
-             f'DeviceId="{self.device_id}", Version="{c["version"]}"')
+        h = "MediaBrowser "
+        if self.user_id:
+            h += f'UserId="{self.user_id}", '
+        h += (f'Client="{c["name"]}", Device="{c["device"]}", '
+              f'DeviceId="{self.device_id}", Version="{c["version"]}"')
         if self.token:
             h += f', Token="{self.token}"'
         return h
@@ -140,19 +146,23 @@ class EmbyClient:
                                      "MaxStreamingBitrate": 140000000},
                              body={"DeviceProfile": {}})
             src = (r.get("MediaSources") or [{}])[0]
-            return r.get("PlaySessionId") or uuid.uuid4().hex, src.get("Id") or item_id
+            return (r.get("PlaySessionId") or uuid.uuid4().hex, src.get("Id") or item_id,
+                    (src.get("Container") or "mkv").split(",")[0])
         except Exception as e:
             log(f"  PlaybackInfo 失败（忽略，继续）：{e}")
-            return uuid.uuid4().hex, item_id
+            return uuid.uuid4().hex, item_id, "mkv"
 
 
-def stream_reader(client, item_id, media_source_id, stop_event, kbps):
+def stream_reader(client, item_id, media_source_id, play_session, container, stop_event, kbps):
     """真实拉取少量视频流，模拟客户端在下载。kbps<=0 时不运行。"""
-    params = {"static": "true", "MediaSourceId": media_source_id,
-              "DeviceId": client.device_id, "api_key": client.token}
+    # 和 SenPlayer 直接播放时请求的地址一致
+    params = {"DeviceId": client.device_id, "MediaSourceId": media_source_id,
+              "PlaySessionId": play_session, "api_key": client.token,
+              "X-Emby-Token": client.token}
     chunk = max(int(kbps * 1024 / 8), 4096)  # 每秒读取的字节数
     try:
-        resp = client.request("GET", f"/Videos/{item_id}/stream", params=params, raw=True)
+        resp = client.request("GET", f"/videos/{item_id}/original.{container}",
+                              params=params, raw=True)
         with resp:
             while not stop_event.is_set():
                 if not resp.read(chunk):
@@ -186,7 +196,7 @@ def watch(acc, settings):
         start = 0
         if total > seconds + 120:
             start = random.randint(0, min(total - seconds - 60, 1800))
-        play_session, media_source_id = c.playback_info(item_id)
+        play_session, media_source_id, container = c.playback_info(item_id)
         log(f"[{name}] 开始播放《{title}》，从 {start // 60} 分开始，计划看 {seconds // 60} 分 {seconds % 60} 秒")
 
         base = {"ItemId": item_id, "MediaSourceId": media_source_id,
@@ -198,7 +208,8 @@ def watch(acc, settings):
         t = None
         if settings.get("stream_kbps", 0) > 0:
             t = threading.Thread(target=stream_reader, daemon=True,
-                                 args=(c, item_id, media_source_id, stop, settings["stream_kbps"]))
+                                 args=(c, item_id, media_source_id, play_session, container,
+                                       stop, settings["stream_kbps"]))
             t.start()
 
         c.request("POST", "/Sessions/Playing",
