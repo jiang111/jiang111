@@ -8,6 +8,10 @@
     "stream_kbps": 0,
     "retries": 3,
     "verify_ssl": true,
+    "web": {
+      "port": 8686,
+      "password": "CHANGE_ME"
+    },
     "telegram": {
       "bot_token": "",
       "chat_id": ""

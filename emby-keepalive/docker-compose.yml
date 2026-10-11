@@ -3,6 +3,8 @@ services:
     image: python:3.12-alpine
     container_name: emby-keepalive
     restart: unless-stopped
+    ports:
+      - "8686:8686"
     environment:
       - TZ=Asia/Taipei
     volumes:

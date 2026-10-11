@@ -29,7 +29,10 @@ fetch keepalive.py "$DIR/keepalive.py"
 fetch docker-compose.yml "$DIR/docker-compose.yml"
 if [ ! -f "$DIR/config.json" ]; then
     fetch config.example.json "$DIR/config.json"
+    WEB_PW=$(head -c 32 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 12)
+    sed -i "s/\"password\": \"CHANGE_ME\"/\"password\": \"$WEB_PW\"/" "$DIR/config.json"
     echo -e "${GREEN}已生成配置文件 $DIR/config.json，请先填入你的账号${NC}"
+    echo -e "网页面板：http://服务器IP:8686  密码：${GREEN}$WEB_PW${NC}（用户名随便填，可在 config.json 的 web.password 修改）"
     echo "编辑完成后执行："
     echo "  cd $DIR && docker compose up -d"
     echo "立即测试一次："

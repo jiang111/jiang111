@@ -5,8 +5,13 @@
 用法：
   python3 keepalive.py --config /data/config.json --once   # 立即对所有账号跑一次
   python3 keepalive.py --config /data/config.json          # 常驻，按 interval_days 周期执行
+常驻模式下若配置了 web.password，会在 web.port 提供网页面板（状态、日志、立即执行按钮）。
 """
 import argparse
+import base64
+import collections
+import hmac
+import http.server
 import json
 import os
 import random
@@ -34,8 +39,18 @@ def set_tz(settings):
     TZ = timezone(timedelta(hours=settings.get("utc_offset", 8)))
 
 
+WEB_PLACEHOLDER = "CHANGE_ME"
+LOG_BUF = collections.deque(maxlen=300)
+# 常驻模式的运行状态，供网页面板读取
+STATUS = {"running": False, "next_run": None, "last_success_date": None,
+          "last_summary": None, "last_finished": None}
+MANUAL = threading.Event()
+
+
 def log(msg):
-    print(f"[{datetime.now(TZ):%Y-%m-%d %H:%M:%S}] {msg}", flush=True)
+    line = f"[{datetime.now(TZ):%Y-%m-%d %H:%M:%S}] {msg}"
+    LOG_BUF.append(line)
+    print(line, flush=True)
 
 
 class EmbyClient:
@@ -249,6 +264,8 @@ def run_all(cfg):
     summary = "Emby 保号" + ("全部成功 ✅" if ok else "有失败 ❌") + "\n" + \
               "\n".join(("✅ " if r[0] else "❌ ") + r[1] for r in results)
     log(summary.replace("\n", " | "))
+    STATUS["last_summary"] = summary
+    STATUS["last_finished"] = f"{datetime.now(TZ):%Y-%m-%d %H:%M}"
     notify(settings, summary)
     return ok
 
@@ -268,6 +285,134 @@ def save_state(path, state):
     os.replace(tmp, path)
 
 
+PAGE = r"""<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Emby 保号</title>
+<style>
+:root{--bg:#f5f6f8;--card:#fff;--fg:#1f2329;--muted:#6b7280;--accent:#2563eb;--ok:#16a34a;--bad:#dc2626;--log:#0f172a;--logfg:#e2e8f0}
+@media (prefers-color-scheme:dark){:root{--bg:#0b0d10;--card:#16191e;--fg:#e5e7eb;--muted:#9ca3af;--log:#05070a}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 -apple-system,system-ui,"PingFang TC","Microsoft JhengHei",sans-serif}
+main{max-width:760px;margin:0 auto;padding:16px}
+h1{font-size:20px;margin:4px 0 16px}
+.card{background:var(--card);border-radius:12px;padding:16px;margin-bottom:12px;box-shadow:0 1px 3px rgba(0,0,0,.08)}
+.row{display:flex;justify-content:space-between;gap:12px;padding:4px 0}.row span:first-child{color:var(--muted)}
+button{width:100%;padding:14px;border:0;border-radius:10px;background:var(--accent);color:#fff;font-size:16px;font-weight:600;cursor:pointer}
+button:disabled{opacity:.5;cursor:default}
+.badge{font-weight:600}.on{color:var(--accent)}.ok{color:var(--ok)}.bad{color:var(--bad)}
+pre{margin:0;white-space:pre-wrap;word-break:break-all;font:12px/1.5 ui-monospace,Menlo,Consolas,monospace}
+#summary{white-space:pre-wrap}
+#log{background:var(--log);color:var(--logfg);border-radius:8px;padding:12px;max-height:420px;overflow:auto}
+</style></head><body><main>
+<h1>Emby 保号</h1>
+<div class="card">
+<div class="row"><span>状态</span><span id="state" class="badge">…</span></div>
+<div class="row"><span>上次成功</span><span id="last">…</span></div>
+<div class="row"><span>下次执行</span><span id="next">…</span></div>
+</div>
+<div class="card"><button id="run">立即执行</button></div>
+<div class="card"><div class="row"><span>最近一次结果</span><span id="fin"></span></div><div id="summary">—</div></div>
+<div class="card"><pre id="log"></pre></div>
+</main><script>
+const $=id=>document.getElementById(id);
+async function refresh(){
+  try{
+    const s=await (await fetch('api/status',{cache:'no-store'})).json();
+    $('state').textContent=s.running?'执行中…':'等待中';
+    $('state').className='badge '+(s.running?'on':'ok');
+    $('last').textContent=s.last_success_date||'—';
+    $('next').textContent=s.running?'—':(s.next_run||'—');
+    $('fin').textContent=s.last_finished||'';
+    $('summary').textContent=s.last_summary||'—';
+    $('run').disabled=s.running||s.queued;
+    $('run').textContent=s.running?'执行中，约 6～9 分钟…':(s.queued?'即将开始…':'立即执行');
+    const log=$('log'),bottom=log.scrollHeight-log.scrollTop-log.clientHeight<40;
+    log.textContent=s.log.join('\n');if(bottom)log.scrollTop=log.scrollHeight;
+  }catch(e){$('state').textContent='连接失败';$('state').className='badge bad'}
+}
+$('run').onclick=async()=>{
+  if(!confirm('立即对所有账号执行一轮保号？'))return;
+  $('run').disabled=true;
+  await fetch('api/run',{method:'POST',headers:{'X-Requested-With':'fetch'}});
+  refresh();
+};
+refresh();setInterval(refresh,3000);
+</script></body></html>"""
+
+
+def start_web(settings):
+    web = settings.get("web") or {}
+    password = str(web.get("password") or "")
+    if not password or password == WEB_PLACEHOLDER:
+        log("网页面板未启用（config.json 里 web.password 未设置）")
+        return
+    port = int(web.get("port", 8686))
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def _authed(self):
+            h = self.headers.get("Authorization", "")
+            if h.startswith("Basic "):
+                try:
+                    pw = base64.b64decode(h[6:]).decode().split(":", 1)[1]
+                    if hmac.compare_digest(pw.encode(), password.encode()):
+                        return True
+                except Exception:
+                    pass
+            self.send_response(401)
+            self.send_header("WWW-Authenticate", 'Basic realm="emby-keepalive"')
+            self.end_headers()
+            return False
+
+        def _send(self, code, body, ctype="application/json; charset=utf-8"):
+            b = body.encode() if isinstance(body, str) else body
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(b)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(b)
+
+        def do_GET(self):
+            if not self._authed():
+                return
+            path = self.path.split("?")[0]
+            if path == "/":
+                self._send(200, PAGE, "text/html; charset=utf-8")
+            elif path == "/api/status":
+                self._send(200, json.dumps({**STATUS, "queued": MANUAL.is_set(),
+                                            "log": list(LOG_BUF)[-150:]}, ensure_ascii=False))
+            else:
+                self._send(404, "{}")
+
+        def do_POST(self):
+            if not self._authed():
+                return
+            # 自定义请求头可防止跨站伪造请求
+            if self.path != "/api/run" or self.headers.get("X-Requested-With") != "fetch":
+                return self._send(400, "{}")
+            if STATUS["running"]:
+                return self._send(409, '{"msg":"正在执行中"}')
+            log("网页面板触发手动执行")
+            MANUAL.set()
+            self._send(200, '{"msg":"ok"}')
+
+    srv = http.server.ThreadingHTTPServer(("0.0.0.0", port), Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    log(f"网页面板已启动：http://服务器IP:{port}")
+
+
+def record_success(state_path):
+    state = load_state(state_path)
+    state["last_success_date"] = datetime.now(TZ).date().isoformat()
+    state.pop("last_attempt", None)
+    state.pop("last_success", None)
+    save_state(state_path, state)
+    STATUS["last_success_date"] = state["last_success_date"]
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="/data/config.json")
@@ -282,14 +427,11 @@ def main():
         ok = run_all(cfg)
         if ok:
             # 手动执行成功也记录下来，自动执行从今天重新计算间隔
-            state = load_state(state_path)
-            state["last_success_date"] = datetime.now(TZ).date().isoformat()
-            state.pop("last_attempt", None)
-            state.pop("last_success", None)
-            save_state(state_path, state)
+            record_success(state_path)
         sys.exit(0 if ok else 1)
 
     log("常驻模式启动")
+    start_web(cfg.get("settings", {}))
     first_run = not os.path.exists(state_path)
     shown = None
     while True:
@@ -302,13 +444,14 @@ def main():
         state = load_state(state_path)
         now = datetime.now(TZ)
 
+        last_date = state.get("last_success_date")
+        if not last_date and state.get("last_success"):
+            last_date = datetime.fromtimestamp(state["last_success"], TZ).date().isoformat()
+        STATUS["last_success_date"] = last_date
         if first_run:
             # 没有 state.json（首次安装或手动删除）时立即执行一轮
             next_run = now
         else:
-            last_date = state.get("last_success_date")
-            if not last_date and state.get("last_success"):
-                last_date = datetime.fromtimestamp(state["last_success"], TZ).date().isoformat()
             day = (date.fromisoformat(last_date) + timedelta(days=interval_days)
                    if last_date else now.date())
             next_run = datetime.combine(day, dtime(hh, mm), TZ)
@@ -316,21 +459,30 @@ def main():
                 # 失败后 2 小时再试
                 next_run = max(next_run, datetime.fromtimestamp(state["last_attempt"], TZ)
                                + timedelta(seconds=RETRY_GAP))
+        STATUS["next_run"] = f"{next_run:%Y-%m-%d %H:%M}"
 
-        if now >= next_run:
+        manual = MANUAL.is_set()
+        if manual or now >= next_run:
             first_run = False
-            state["last_attempt"] = time.time()
-            save_state(state_path, state)
-            if run_all(cfg):
-                state["last_success_date"] = datetime.now(TZ).date().isoformat()
-                state.pop("last_attempt", None)
-                state.pop("last_success", None)
-            save_state(state_path, state)
+            STATUS["running"] = True
+            MANUAL.clear()
+            if not manual:
+                state["last_attempt"] = time.time()
+                save_state(state_path, state)
+            try:
+                ok = run_all(cfg)
+            except Exception as e:
+                log(f"执行出错：{e}")
+                ok = False
+            finally:
+                STATUS["running"] = False
+            if ok:
+                record_success(state_path)
             continue
         if next_run != shown:
             log(f"下次执行时间：{next_run:%Y-%m-%d %H:%M}")
             shown = next_run
-        time.sleep(min(max((next_run - now).total_seconds(), 1), 300))
+        MANUAL.wait(min(max((next_run - now).total_seconds(), 1), 300))
 
 
 if __name__ == "__main__":

@@ -22,7 +22,17 @@
 
 日志：`docker logs -f emby-keepalive`（或在 1Panel 容器列表里点日志）。
 
-手动执行一轮（成功后下次自动执行从今天重新算 `interval_days` 天）：
+## 网页面板
+
+浏览器打开 `http://服务器IP:8686`，用户名随便填，密码是 config.json 里的 `web.password`
+（安装时自动生成并打印）。可以看到上次成功/下次执行时间、实时日志，并有「立即执行」按钮。
+
+- 需要在 1Panel → 主机 → 防火墙 放行 8686 端口；也可以不开端口，在 1Panel → 网站 里用反向代理 `http://127.0.0.1:8686` 挂上 HTTPS 域名。
+- `web.password` 为空或 `CHANGE_ME` 时不启用面板。
+
+## 手动执行
+
+网页上点「立即执行」，或者命令行（成功后下次自动执行从今天重新算 `interval_days` 天）：
 ```bash
 docker exec emby-keepalive python3 -u /data/keepalive.py --once
 ```
@@ -40,6 +50,7 @@ docker exec emby-keepalive python3 -u /data/keepalive.py --once
 | `stream_kbps` | >0 时同时真实拉取视频流（kbps），服务器按流量判定时再开，如 `500` |
 | `retries` | 失败重试次数；整轮失败后 2 小时再试 |
 | `verify_ssl` | 服务器证书有问题时改为 `false` |
+| `web` | 网页面板端口和密码 |
 | `telegram` | 填 bot_token 和 chat_id 后每次执行完推送结果 |
 | `accounts[].server` | 服务器地址，带端口，如 `https://emby.xxx.com:443`；如果登录 404，试试在末尾加 `/emby` |
 | `accounts[].enabled` | `false` 可临时停用某个账号 |
