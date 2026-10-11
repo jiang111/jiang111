@@ -1,0 +1,29 @@
+{
+  "settings": {
+    "interval_days": 7,
+    "watch_minutes": [6, 9],
+    "report_interval": 10,
+    "stream_kbps": 0,
+    "retries": 3,
+    "verify_ssl": true,
+    "telegram": {
+      "bot_token": "",
+      "chat_id": ""
+    }
+  },
+  "accounts": [
+    {
+      "name": "服务器A",
+      "server": "https://emby.example.com:443",
+      "username": "your_user",
+      "password": "your_password"
+    },
+    {
+      "name": "服务器B",
+      "server": "http://1.2.3.4:8096",
+      "username": "your_user",
+      "password": "your_password",
+      "enabled": true
+    }
+  ]
+}

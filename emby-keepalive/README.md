@@ -1,0 +1,39 @@
+# Emby 保号
+
+每隔 `interval_days` 天，自动登录每个 Emby 账号，随机选一部电影/剧集，模拟播放 `watch_minutes` 分钟
+（向服务器上报 开始播放 → 每 10 秒进度 → 停止播放），在服务端的「活动/播放记录」中留下观看记录。
+
+## 安装（1Panel）
+
+1. 1Panel → 终端（或 SSH）执行：
+   ```bash
+   bash <(curl -fsSL https://raw.githubusercontent.com/jiang111/jiang111/master/emby-keepalive/install.sh)
+   ```
+2. 1Panel → 文件 → 打开 `/opt/emby-keepalive/config.json`，填入账号。
+3. 先测试一次（会真的看 6~9 分钟，结束后打印结果）：
+   ```bash
+   docker run --rm -v /opt/emby-keepalive:/data python:3.12-alpine python3 -u /data/keepalive.py --once
+   ```
+4. 测试成功后启动常驻容器：
+   ```bash
+   cd /opt/emby-keepalive && docker compose up -d
+   ```
+   也可以在 1Panel → 容器 → 编排 → 创建编排，粘贴 `docker-compose.yml` 的内容。
+
+日志：`docker logs -f emby-keepalive`（或在 1Panel 容器列表里点日志）。
+
+## 配置说明
+
+| 字段 | 说明 |
+| --- | --- |
+| `interval_days` | 多少天执行一次，默认 7（要求 15 天，留出余量） |
+| `watch_minutes` | 每次观看时长范围（分钟），在范围内随机 |
+| `report_interval` | 进度上报间隔（秒） |
+| `stream_kbps` | >0 时同时真实拉取视频流（kbps），服务器按流量判定时再开，如 `500` |
+| `retries` | 失败重试次数；整轮失败后 6 小时再试 |
+| `verify_ssl` | 服务器证书有问题时改为 `false` |
+| `telegram` | 填 bot_token 和 chat_id 后每次执行完推送结果 |
+| `accounts[].server` | 服务器地址，带端口，如 `https://emby.xxx.com:443`；如果登录 404，试试在末尾加 `/emby` |
+| `accounts[].enabled` | `false` 可临时停用某个账号 |
+
+修改 config.json 后无需重启，下一轮自动读取。执行状态保存在 `state.json`，删除它并重启容器即可立即重新执行一轮。

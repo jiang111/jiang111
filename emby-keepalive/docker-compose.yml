@@ -1,0 +1,15 @@
+services:
+  emby-keepalive:
+    image: python:3.12-alpine
+    container_name: emby-keepalive
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Taipei
+    volumes:
+      - /opt/emby-keepalive:/data
+    command: ["python3", "-u", "/data/keepalive.py", "--config", "/data/config.json"]
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
