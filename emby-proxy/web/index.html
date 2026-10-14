@@ -142,7 +142,8 @@ td.p{white-space:normal;word-break:break-all;min-width:240px;font-family:ui-mono
       <div class="f" style="margin-top:10px"><label>推流域名白名单</label><textarea name="stream_hosts" placeholder="每行一个，如 https://stream.example.com 或 *.example.com"></textarea><small>播放时自动学习，一般不用手动填。只有列表里的域名才允许经本机中转。</small></div>
       <div class="f"><label>客户端访问地址（可选）</label><input type="text" name="public_url" placeholder="留空自动识别，如 https://emby.mydomain.com/hk"><small>前面套了 CDN/反代且没传 X-Forwarded-* 头时才需要填写。</small></div>
       <div class="f"><label>覆盖 User-Agent（可选）</label><input type="text" name="user_agent" placeholder="留空则透传客户端自己的 UA"></div>
-      <div class="f"><label>自定义请求头（可选）</label><textarea name="headers" placeholder="每行一个，如&#10;X-Custom: value"></textarea></div>
+      <div class="f"><label>自定义请求头（可选）</label><textarea name="headers" placeholder="每行一个，如&#10;MagpieCDN: {public_base}"></textarea><small>值里可用占位符：<code>{public_base}</code> 客户端访问地址（含路径前缀）、<code>{public_origin}</code> 不含路径、<code>{client_ip}</code> 客户端 IP。</small></div>
+      <div class="f"><label>额外转发规则（可选）</label><textarea name="routes" placeholder="每行一个：路径 => 目标，如&#10;/magpiecdn => https://{arg.load}.example.com"></textarea><small>服务器自带推流路径时使用：匹配该路径的请求（路径和参数原样）转发到目标。<code>{arg.名称}</code> 取请求参数，只允许字母数字和 -。</small></div>
       <label class="chk"><input type="checkbox" name="forward_ip"><span>把客户端真实 IP 传给上游（X-Forwarded-For / X-Real-IP）。默认不传，上游只看到本机 IP。</span></label>
       <label class="chk"><input type="checkbox" name="insecure_tls"><span>不校验上游 HTTPS 证书（自签证书、证书过期时使用）</span></label>
       <div class="f"><label>备注</label><input type="text" name="remark"></div>
@@ -341,11 +342,12 @@ function openForm(s) {
   for (const k of ['name', 'upstream', 'port', 'path', 'host', 'public_url', 'user_agent', 'remark']) f[k].value = v[k] ?? '';
   f.stream_hosts.value = (v.stream_hosts || []).join('\n');
   f.headers.value = Object.entries(v.headers || {}).map(([k, x]) => `${k}: ${x}`).join('\n');
+  f.routes.value = (v.routes || []).map(r => `${r.path} => ${r.target}`).join('\n');
   f.forward_ip.checked = !!v.forward_ip; f.insecure_tls.checked = !!v.insecure_tls; f.enabled.checked = v.enabled !== false;
   f.querySelector(`input[name=mode][value=${v.mode}]`).checked = true;
   f.querySelector(`input[name=stream_mode][value=${v.stream_mode || 'proxy'}]`).checked = true;
   if (!v.port && v.mode !== 'port') f.port.value = nextPort();
-  f.querySelector('details').open = !!(v.public_url || v.user_agent || v.forward_ip || v.insecure_tls || (v.headers && Object.keys(v.headers).length));
+  f.querySelector('details').open = !!(v.public_url || v.user_agent || v.forward_ip || v.insecure_tls || (v.headers && Object.keys(v.headers).length) || (v.routes && v.routes.length));
   syncMode();
   $('#mask').classList.add('show');
   setTimeout(() => f.name.focus(), 50);
@@ -377,6 +379,7 @@ $('#form').onsubmit = async e => {
     stream_hosts: f.stream_hosts.value.split('\n').map(x => x.trim()).filter(Boolean),
     forward_ip: f.forward_ip.checked, insecure_tls: f.insecure_tls.checked, user_agent: f.user_agent.value,
     headers, remark: f.remark.value, enabled: f.enabled.checked,
+    routes: f.routes.value.split('\n').map(l => l.split('=>')).filter(p => p.length === 2).map(([p, t]) => ({path: p.trim(), target: t.trim()})),
   };
   try {
     const r = editing ? await api('PUT', '/api/sites/' + editing, body) : await api('POST', '/api/sites', body);

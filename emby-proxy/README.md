@@ -50,6 +50,23 @@ proxy_read_timeout 86400s;
   避免部分播放器跟随跳转时丢 Range 导致「播放几秒卡住 / 无法拖动 / Exo 提示不支持」。跳到与上游无关的第三方域名时不会带上 Emby 凭据。
 - **客户端直连推流**：只代理 API，播放时让客户端直接连推流服务器，省服务器流量。
 
+## 服务器自带推流路径（按 nginx 模板配置）
+
+有的服务器提供 nginx 反代模板，要求带一个特殊请求头，并把某个路径转发到推流节点，例如：
+
+```nginx
+proxy_set_header MagpieCDN "$scheme://$server_name:$server_port";
+location /magpiecdn { proxy_pass https://$arg_load.example.com; ... }
+```
+
+在站点「高级选项」里对应填：
+
+- 自定义请求头：`MagpieCDN: {public_base}`
+- 额外转发规则：`/magpiecdn => https://{arg.load}.example.com`
+
+`{public_base}` 会替换成客户端实际访问的地址（https 由前置反代的 `X-Forwarded-Proto` 判断）；
+`{arg.load}` 取请求参数，只允许字母数字和 `-`，不能借此转发到任意主机。
+
 ## 服务器有 IP 规则时
 
 有的服务器按客户端 IP 做限制（例如禁止日本 IP / VPN），默认情况下上游看到的是**反代服务器的 IP**，

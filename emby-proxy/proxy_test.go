@@ -257,3 +257,53 @@ func TestMaskURI(t *testing.T) {
 		t.Fatalf("not masked: %s", got)
 	}
 }
+
+// 模拟 023168 这类服务器：上游根据 MagpieCDN 头生成推流地址 {MagpieCDN}/magpiecdn?load=节点，
+// 反代需要把 /magpiecdn 转发到 https://{load}.域名。
+func TestMagpieStyleRoute(t *testing.T) {
+	node := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/magpiecdn" || r.URL.Query().Get("id") != "1" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "video/mp4")
+		http.ServeContent(w, r, "a.mp4", time.Time{}, bytes.NewReader(bytes.Repeat([]byte("ab"), 500)))
+	}))
+	defer node.Close()
+	_, nodePort, _ := net.SplitHostPort(strings.TrimPrefix(node.URL, "http://"))
+
+	var gotHeader string
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHeader = r.Header.Get("MagpieCDN")
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"DirectStreamUrl":"%s/magpiecdn?load=%s&id=1"}`, gotHeader, nodePort)
+	}))
+	defer up.Close()
+
+	site := &Site{ID: "m", Name: "magpie", Enabled: true, Upstream: up.URL, Mode: "path", Path: "mp", StreamMode: "proxy",
+		Headers: map[string]string{"MagpieCDN": "{public_base}"},
+		Routes:  []Route{{Path: "/magpiecdn", Target: "http://127.0.0.1:{arg.load}"}}}
+	cfg := &Config{Listen: ":0", AdminListen: ":0", Sites: []*Site{site}}
+	if err := validateSite(cfg, site); err != nil {
+		t.Fatal(err)
+	}
+	m := NewManager(filepath.Join(t.TempDir(), "c.json"), cfg)
+	m.mu.Lock()
+	m.reload()
+	m.mu.Unlock()
+	entry := httptest.NewServer(m)
+	defer entry.Close()
+
+	_, body := get(t, entry.URL+"/mp/emby/Items/1/PlaybackInfo", "X-Forwarded-Proto", "https", "X-Forwarded-Host", "p.example.com")
+	if gotHeader != "https://p.example.com/mp" || !strings.Contains(body, "https://p.example.com/mp/magpiecdn?load=") {
+		t.Fatalf("MagpieCDN header %q body %s", gotHeader, body)
+	}
+	resp, b := get(t, entry.URL+"/mp/magpiecdn?load="+nodePort+"&id=1", "Range", "bytes=0-3")
+	if resp.StatusCode != 206 || b != "abab" {
+		t.Fatalf("route failed: %d %q", resp.StatusCode, b)
+	}
+	resp, _ = get(t, entry.URL+"/mp/magpiecdn?load=evil.com&id=1")
+	if resp.StatusCode != 400 {
+		t.Fatalf("route arg injection not blocked: %d", resp.StatusCode)
+	}
+}

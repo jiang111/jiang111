@@ -34,7 +34,8 @@ type Site struct {
 	ForwardIP   bool              `json:"forward_ip"`   // 把客户端真实 IP 传给上游
 	InsecureTLS bool              `json:"insecure_tls"` // 不校验上游证书
 	UserAgent   string            `json:"user_agent,omitempty"`
-	Headers     map[string]string `json:"headers,omitempty"`
+	Headers     map[string]string `json:"headers,omitempty"` // 值支持 {public_base} {public_origin} {client_ip}
+	Routes      []Route           `json:"routes,omitempty"`
 	Remark      string            `json:"remark,omitempty"`
 }
 
@@ -194,6 +195,11 @@ func validateSite(cfg *Config, s *Site) error {
 	if _, err := parseUpstream(s.Upstream); err != nil {
 		return err
 	}
+	routes, err := validateRoutes(s.Routes)
+	if err != nil {
+		return err
+	}
+	s.Routes = routes
 	if s.PublicURL != "" {
 		u, err := url.Parse(s.PublicURL)
 		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {

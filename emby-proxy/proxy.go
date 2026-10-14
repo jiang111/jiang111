@@ -137,6 +137,16 @@ func (s *SiteRT) learnHost(key string) {
 }
 
 // allowedEP 判断 /__ep/ 目标是否允许：只允许上游自己跳转/返回过的推流域名，或手动添加的域名，避免成为开放代理。
+// learnRouteHost 把路由目标加入内存白名单（不写入配置，避免节点名把配置刷满）。
+func (s *SiteRT) learnRouteHost(u *url.URL) {
+	h, p := splitHP(u.Host, u.Scheme)
+	s.hostsMu.Lock()
+	if len(s.hosts) < 1000 {
+		s.hosts[hostKey(u.Scheme, h, p)] = true
+	}
+	s.hostsMu.Unlock()
+}
+
 func (s *SiteRT) allowedEP(scheme, host, port string) bool {
 	if s.isUpstream(scheme, host, port) {
 		return true
@@ -309,6 +319,15 @@ func (s *SiteRT) serve(w http.ResponseWriter, r *http.Request, prefix string) {
 			return
 		}
 		target, outPath, rest, rc.ep = t, remainder, remainder, true
+	} else if t, matched, err := s.matchRoute(rest, r); matched {
+		if err != nil {
+			cw.status = http.StatusBadRequest
+			http.Error(w, "bad route", http.StatusBadRequest)
+			return
+		}
+		// 路由目标当作推流域名处理：路径原样转发，响应里指向它的地址改写回 /__ep/
+		s.learnRouteHost(t)
+		target, outPath = t, rest
 	}
 	rc.target = target
 	unescOut, err := url.PathUnescape(outPath)
@@ -353,7 +372,7 @@ func (s *SiteRT) serve(w http.ResponseWriter, r *http.Request, prefix string) {
 				if v == "" {
 					h.Del(k)
 				} else {
-					h.Set(k, v)
+					h.Set(k, rc.expandHeader(v, ip))
 				}
 			}
 		},
@@ -449,6 +468,9 @@ func (rc *reqCtx) rewriteAbs(raw string, allowExternal bool) string {
 	}
 	host, port := splitHP(hostport, scheme)
 	s := rc.s
+	if rc.isSelf(scheme, host, port) {
+		return raw // 已经是反代自己的地址（如上游按 MagpieCDN / X-Forwarded-Host 生成的）
+	}
 	if s.isUpstream(scheme, host, port) {
 		t := s.stripBase(tail)
 		if t == "/" && tail == "" {
@@ -476,6 +498,21 @@ func (rc *reqCtx) rewriteAbs(raw string, allowExternal bool) string {
 	}
 	s.learnHost(hostKey(scheme, host, port))
 	return rc.publicBase + "/__ep/" + scheme + "/" + host + "/" + port + tail
+}
+
+func (rc *reqCtx) isSelf(scheme, host, port string) bool {
+	pb := rc.publicBase
+	i := strings.Index(pb, "://")
+	if i < 0 {
+		return false
+	}
+	ps := pb[:i]
+	hp := pb[i+3:]
+	if j := strings.IndexByte(hp, '/'); j >= 0 {
+		hp = hp[:j]
+	}
+	h, p := splitHP(hp, ps)
+	return h == host && p == port && ps == scheme
 }
 
 // countWriter 统计下行流量；实现 Unwrap 以便 ReverseProxy 能 Flush / Hijack（WebSocket）。
