@@ -19,6 +19,8 @@ import (
 
 const cookieName = "emby_proxy_session"
 
+const testUA = "SenPlayer/6.2.1 (iPhone; iOS 18.0; Scale/3.00)"
+
 type Admin struct {
 	m        *Manager
 	failMu   sync.Mutex
@@ -334,12 +336,8 @@ func (a *Admin) test(w http.ResponseWriter, r *http.Request) {
 	client := &http.Client{
 		Transport: a.m.transport(body.InsecureTLS),
 		Timeout:   15 * time.Second,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 5 {
-				return errors.New("重定向次数过多")
-			}
-			return nil
-		},
+		// 不跟随跳转：很多服务器把被拦截的请求 302 到错误页
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
 	base := u.Scheme + "://" + u.Host + u.EscapedPath()
 	var lastErr string
@@ -347,9 +345,12 @@ func (a *Admin) test(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 		req, _ := http.NewRequestWithContext(ctx, "GET", base+p, nil)
 		req.Header.Set("Accept", "application/json")
-		if body.UserAgent != "" {
-			req.Header.Set("User-Agent", body.UserAgent)
+		// 不少服务器会拦截浏览器 / curl / Go 默认 UA，测试时模拟播放器
+		ua := body.UserAgent
+		if ua == "" {
+			ua = testUA
 		}
+		req.Header.Set("User-Agent", ua)
 		start := time.Now()
 		resp, err := client.Do(req)
 		if err != nil {
@@ -368,6 +369,10 @@ func (a *Admin) test(w http.ResponseWriter, r *http.Request) {
 				"id": info["Id"], "final_url": resp.Request.URL.String(),
 			})
 			return
+		}
+		if loc := resp.Header.Get("Location"); resp.StatusCode >= 300 && resp.StatusCode < 400 && loc != "" {
+			lastErr = "被重定向到 " + loc + "（服务器可能拦截了本机 IP 或 User-Agent，或地址填错）"
+			continue
 		}
 		lastErr = "HTTP " + strconv.Itoa(resp.StatusCode) + "（不是 Emby 的响应？）"
 	}

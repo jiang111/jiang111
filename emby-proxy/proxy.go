@@ -416,9 +416,10 @@ func (rc *reqCtx) rewriteLocation(v string) string {
 	lv := strings.ToLower(v)
 	switch {
 	case strings.HasPrefix(lv, "http://"), strings.HasPrefix(lv, "https://"):
-		return rc.rewriteAbs(v, true)
+		return rc.rewriteAbs(v, rc.externalRedirectOK(v))
 	case strings.HasPrefix(v, "//"):
-		return rc.rewriteAbs(rc.target.Scheme+":"+v, true)
+		v = rc.target.Scheme + ":" + v
+		return rc.rewriteAbs(v, rc.externalRedirectOK(v))
 	case strings.HasPrefix(v, "/"):
 		if rc.ep {
 			return rc.prefix + epSegment(rc.target) + v
@@ -426,6 +427,21 @@ func (rc *reqCtx) rewriteLocation(v string) string {
 		return rc.prefix + rc.s.stripBase(v)
 	}
 	return v
+}
+
+// externalRedirectOK 判断跳到外部域名的 Location 是否当作推流分离处理：
+// 只有播放请求的跳转，或跳到与上游同一主域名的地址才算；
+// 否则（如被拦截时跳到错误页）保持原样，不记为推流域名。
+func (rc *reqCtx) externalRedirectOK(loc string) bool {
+	if rc.ep || isMediaPath(rc.matchPath) {
+		return true
+	}
+	u, err := url.Parse(loc)
+	if err != nil {
+		return false
+	}
+	h, _ := splitHP(u.Host, u.Scheme)
+	return parentDomain(h) == parentDomain(rc.s.upHost)
 }
 
 func (s *SiteRT) stripBase(tail string) string {

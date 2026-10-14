@@ -29,7 +29,9 @@ func fakeEmby(t *testing.T, streamURL *string) *httptest.Server {
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprintf(w, `{"MediaSources":[{"DirectStreamUrl":"%s/emby/videos/1/stream?api_key=x","Path":"%s/v/1.mkv"}],"Host":%q,"XFF":%q,"OriginOK":%v}`,
 				self.URL, *streamURL, r.Host, r.Header.Get("X-Forwarded-For"), r.Header.Get("Origin") == self.URL)
-		case r.URL.Path == "/emby/videos/1/stream", r.URL.Path == "/emby/redir":
+		case r.URL.Path == "/blocked":
+			http.Redirect(w, r, "https://errors.example.net/", http.StatusFound)
+		case r.URL.Path == "/emby/videos/1/stream", r.URL.Path == "/emby/videos/1/redir":
 			// 模拟 NoxEmby 等推流分离：播放请求 307 到推流节点
 			http.Redirect(w, r, *streamURL+"/v/1.mkv?sign=1", http.StatusTemporaryRedirect)
 		case r.URL.Path == "/emby/web/":
@@ -144,7 +146,7 @@ func TestPathModeFlow(t *testing.T) {
 	}
 
 	// 非播放请求的跳转 → Location 改写到 /__ep/
-	resp, _ = get(t, base+"/emby/redir")
+	resp, _ = get(t, base+"/emby/videos/1/redir")
 	if loc := resp.Header.Get("Location"); loc != epURL+"?sign=1" {
 		t.Fatalf("location = %q, want %q", loc, epURL+"?sign=1")
 	}
@@ -165,6 +167,12 @@ func TestPathModeFlow(t *testing.T) {
 	_, body = get(t, base+"/__ep/http/"+h+"/"+p+"/v/master.m3u8")
 	if !strings.Contains(body, base+"/__ep/http/"+h+"/"+p+"/seg/0.ts") || !strings.Contains(body, "\nseg/1.ts") {
 		t.Fatalf("m3u8 not rewritten: %s", body)
+	}
+
+	// 非播放请求跳到无关域名（如被拦截跳错误页）：保持原样，不学习
+	resp, _ = get(t, base+"/blocked")
+	if loc := resp.Header.Get("Location"); loc != "https://errors.example.net/" {
+		t.Fatalf("blocked redirect rewritten: %q", loc)
 	}
 
 	// 未学习过的域名不允许经 /__ep/ 代理

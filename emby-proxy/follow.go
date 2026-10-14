@@ -28,6 +28,20 @@ func isDirectStreamPath(p string) bool {
 	return strings.Contains(p, "/items/") && strings.HasSuffix(p, "/download")
 }
 
+// isMediaPath 判断是否为播放相关请求（直链、HLS 播放列表和分片、字幕等）。
+func isMediaPath(p string) bool {
+	p = strings.ToLower(p)
+	if strings.Contains(p, "/videos/") || strings.Contains(p, "/audio/") || strings.Contains(p, "/hls") {
+		return true
+	}
+	for _, ext := range []string{".m3u8", ".ts", ".m4s", ".mp4", ".mkv"} {
+		if strings.HasSuffix(p, ext) {
+			return true
+		}
+	}
+	return strings.Contains(p, "/items/") && strings.HasSuffix(p, "/download")
+}
+
 func shouldFollow(req *http.Request) bool {
 	if req.Method != http.MethodGet && req.Method != http.MethodHead {
 		return false
