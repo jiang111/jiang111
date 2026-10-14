@@ -6,7 +6,8 @@ Go 编写的单个程序，无第三方依赖，Docker 部署。
 
 **主要功能**
 
-- 一个服务一个端口（也支持路径前缀 / 独立域名），nginx 做 HTTPS，配置由面板一键生成
+- 一个服务一个端口（也支持路径前缀 / 独立域名），nginx 做 HTTPS，配置自动生成并自动应用
+- 多台服务器用同一个域名负载均衡：主节点自动同步站点、设置和证书到各从节点
 - WebSocket、Range 拖动、推流分离自动识别与中转、302 / PlaybackInfo / m3u8 地址改写
 - 网页上传证书，支持忽略证书过期；配置导入 / 导出
 - 实时连接数、播放数、流量图、访问日志
@@ -71,18 +72,19 @@ bash <(curl -fsSL https://raw.githubusercontent.com/jiang111/jiang111/master/emb
 
 保存后卡片上的地址就是客户端要填的地址。其它服务器重复添加即可。
 
-### 第 4 步：生成并启用 nginx 配置
+### 第 4 步：nginx 配置（自动）
 
-「设置」页 → **生成 nginx 配置** → 复制，保存到服务器：
+安装脚本检测到 nginx 和 systemd 时，会自动开启「nginx 自动应用」：
 
-```bash
-nano /etc/nginx/conf.d/emby-proxy.conf   # 粘贴后保存
-nginx -t && nginx -s reload
-```
+- 面板里每次新增 / 修改站点、更换证书，程序都会重新生成 nginx 配置；
+- 宿主机上的定时任务约 15 秒内执行 `nginx -t`，**通过才 reload**；不通过就保留上一份配置，nginx 照常运行，面板「设置 → Nginx」里会显示错误原因。
 
-- 每次新增 / 修改站点后，重新生成一次并 reload。
-- 服务器有 IPv6 的话，把配置里 `# listen [::]:端口 ssl;` 的注释去掉。
-- 配置里如果出现「跳过」或「注意」开头的注释，按提示修改站点（比如没填客户端访问地址、证书不含该域名）。
+所以这一步什么都不用做。「设置 → Nginx → 自动应用」显示「nginx 已自动应用最新配置」即可。
+
+- 服务器有 IPv6：在「设置 → Nginx」勾选「同时监听 IPv6」。
+- 配置里出现「跳过」或「注意」开头的注释（「生成 nginx 配置」按钮可查看），按提示修改站点，比如没填客户端访问地址、证书不含该域名。
+- 安装时还没装 nginx：装好后重新执行一次安装命令，就会开启自动应用。
+- 不想让程序管 nginx：安装前执行 `export EMBY_PROXY_NO_NGINX=1`，再用「生成 nginx 配置」手动复制到 `/etc/nginx/conf.d/`。
 
 ### 第 5 步：防火墙
 
@@ -129,12 +131,111 @@ bash <(curl -fsSL https://raw.githubusercontent.com/jiang111/jiang111/master/emb
 docker logs -f emby-proxy
 
 # 卸载
-cd /opt/emby-proxy && docker compose down && rm -rf /opt/emby-proxy
-rm /etc/nginx/conf.d/emby-proxy.conf && nginx -s reload
+systemctl disable --now emby-proxy-nginx.timer
+rm -f /etc/systemd/system/emby-proxy-nginx.{service,timer} /etc/nginx/conf.d/emby-proxy.conf
+systemctl daemon-reload && nginx -s reload
+cd /opt/emby-proxy && docker compose down && cd / && rm -rf /opt/emby-proxy
 ```
 
 **备份 / 迁移**：「设置 → 导入 / 导出配置」导出 JSON，新服务器装好后导入即可（「合并」按站点 ID 覆盖、其余追加；「替换全部」删除现有站点）。
 导入前会整体校验，有问题不会改动任何配置。导出文件**不含面板密码**，但**包含各服务器的上游地址，请勿公开分享**；证书不在导出范围内，迁移后要重新上传。
+
+---
+
+## 教程：多台服务器 + 一个域名负载均衡（Cloudflare）
+
+客户端都填 `https://emby.example.com:8001`，DNS 把用户分到不同的服务器上；一台做**主节点**管理配置，其余**从节点**自动同步。
+
+```
+                        ┌─▶ 服务器 1（主节点）─┐
+emby.example.com ──DNS──┼─▶ 服务器 2（从节点）─┼──▶ 上游 Emby
+                        └─▶ 服务器 3（从节点）─┘
+master.example.com ─────▶ 服务器 1 的面板（从节点从这里同步）
+```
+
+同步内容：站点、设置、推流签名密钥、上传的证书。各节点独立：面板密码、监听端口、统计和日志。
+推流中转地址带签名，任何一个节点生成的地址在其它节点上都能用，用户被分到哪台都能正常播放。
+
+> ⚠️ **先确认对方是否允许多 IP。** 用户的请求会在几台服务器之间切换，上游看到的是同一个账号从多个 IP 访问，
+> 不少公益服会当作账号共享处理（限制或封号），有的还按 IP 限制登录次数。每台服务器的 IP 也都必须符合对方规则。
+> 反代自己的 Emby 没有这个问题。
+
+### 第 1 步：每台服务器都安装
+
+每台都按上面单机教程的「准备」装好 Docker 和 nginx，然后执行同一条安装命令。
+
+### 第 2 步：申请通配符证书（主节点）
+
+多台服务器共用一个域名，Let's Encrypt 的 HTTP 验证可能被别的服务器接到，所以用 **Cloudflare DNS 验证**申请
+`example.com` + `*.example.com` 的通配符证书，并直接装到程序的数据目录，之后自动续期、自动同步到所有从节点：
+
+1. Cloudflare 控制台 → 我的个人资料 → API 令牌 → 创建令牌 → 模板「编辑区域 DNS」，区域选你的域名，复制令牌。
+2. 在主节点执行（把邮箱、域名、令牌换成你的）：
+   ```bash
+   curl https://get.acme.sh | sh -s email=you@example.com
+   export CF_Token="你的 Cloudflare API 令牌"
+   ~/.acme.sh/acme.sh --issue --dns dns_cf -d example.com -d '*.example.com' --server letsencrypt
+   mkdir -p /opt/emby-proxy/data/ssl
+   ~/.acme.sh/acme.sh --install-cert -d example.com --ecc \
+     --fullchain-file /opt/emby-proxy/data/ssl/fullchain.pem \
+     --key-file /opt/emby-proxy/data/ssl/privkey.pem
+   ```
+3. 一分钟内面板「设置 → Nginx → HTTPS 证书」会显示这张证书（不要再填「服务器上已有的证书路径」）。
+   acme.sh 每 60 天自动续期并写回这两个文件，程序发现后自动 reload nginx，并同步给从节点。
+
+不想用 acme.sh 的话，也可以在面板里手动上传通配符证书，同样会同步给从节点。
+
+### 第 3 步：配置主节点
+
+主节点面板（`http://主节点IP:55660`）→「设置」：
+
+1. **Nginx**：独立端口监听地址选「仅本机 127.0.0.1」，保存。
+2. **多服务器同步**：本机角色选「主节点」；本机面板 HTTPS 地址填 `https://master.example.com:8443`，保存。
+   页面会显示**同步令牌**，复制备用。
+3. 编辑 `/opt/emby-proxy/data/config.json`，把 `"admin_listen": ":55660"` 改成 `"admin_listen": "127.0.0.1:55660"`，
+   执行 `docker restart emby-proxy`。之后主节点面板改用 `https://master.example.com:8443` 访问。
+4. 「站点」页按单机教程第 3 步添加站点，客户端访问地址填 `https://emby.example.com:8001`、`:8002`……
+
+### 第 4 步：配置从节点
+
+每台从节点面板（`http://从节点IP:55660`）→「设置 → 多服务器同步」：
+
+- 本机角色：从节点
+- 主节点面板地址：`https://master.example.com:8443`
+- 同步令牌：第 3 步复制的令牌
+- 本机名称：随意，如 `tokyo-1`
+
+保存后几秒内站点、证书就同步过来，nginx 自动应用。主节点「多服务器同步」里能看到每个从节点和「已是最新」状态。
+之后从节点的站点和设置只能查看，修改都在主节点上做。从节点面板也建议照第 3 步第 3 点改成只监听本机。
+
+### 第 5 步：Cloudflare DNS
+
+Cloudflare → 你的域名 → DNS → 记录：
+
+| 类型 | 名称 | 内容 | 代理状态 | TTL |
+| --- | --- | --- | --- | --- |
+| A | `master` | 主节点 IP | **仅 DNS（灰云）** | 自动 |
+| A | `emby` | 服务器 1 IP | **仅 DNS（灰云）** | 1 分钟 |
+| A | `emby` | 服务器 2 IP | **仅 DNS（灰云）** | 1 分钟 |
+| A | `emby` | 服务器 3 IP | **仅 DNS（灰云）** | 1 分钟 |
+
+- 同一个名称加多条 A 记录，Cloudflare 会轮流返回，用户就被分到不同服务器上。主节点也可以同时作为普通节点放进 `emby` 记录。
+- **必须是灰云**：小黄云只代理 443、8443、2053 等少数端口，8001 这类端口过不去，而且 Cloudflare 条款限制普通代理传大量视频。
+- 免费版没有健康检查：某台服务器挂了，要手动删掉它的 A 记录（TTL 1 分钟，几分钟内生效）。
+  需要自动摘除故障节点，可以用 Cloudflare 付费的 **Load Balancing**：健康检查选 HTTPS、端口 `8001`、
+  路径 `/emby/System/Info/Public`、期望 200，池里加入各节点 IP，代理状态保持「仅 DNS」。
+
+### 第 6 步：防火墙和验证
+
+每台服务器放行 nginx 对外端口（8001、8002…）；主节点另外放行 8443（面板有密码、同步接口有令牌；更稳妥的做法是只对各从节点 IP 和你自己常用的 IP 放行）。
+
+逐台验证（把 `1.2.3.4` 换成每台的 IP）：
+
+```bash
+curl --resolve emby.example.com:8001:1.2.3.4 https://emby.example.com:8001/emby/System/Info/Public
+```
+
+每台都返回服务器信息 JSON 就说明正常，然后在客户端里实际播放、拖动测试。
 
 ---
 
@@ -148,7 +249,9 @@ rm /etc/nginx/conf.d/emby-proxy.conf && nginx -s reload
 | 播放几秒卡住 / 不能拖动 | nginx 配置是否为面板生成（必须有 `proxy_buffering off`）；日志里播放请求应为 206 |
 | 登录返回 429 | 对方按 IP 限制登录次数，经反代所有人共用服务器 IP，别反复输错密码，稍后再试 |
 | nginx -t 报 `Address already in use` | 对外端口和站点端口用了同一个数字，改成不同的 |
-| nginx -t 报 `Address family not supported` | 服务器没有 IPv6，保持 `listen [::]` 那行注释 |
+| 面板显示「nginx 检查未通过」 | 看下面的错误输出：`Address family not supported` 是没有 IPv6 却勾选了「监听 IPv6」；`cannot load certificate` 是证书路径不对。nginx 会继续用上一份配置 |
+| 从节点「同步失败」 | 主节点面板地址能否从从节点访问（`curl https://master.example.com:8443`）、8443 是否放行、令牌是否已重新生成 |
+| 从节点站点显示「端口监听失败」 | 从节点上该端口被其它程序占用，或与本机面板 / 入口端口冲突 |
 | 浏览器打开反代地址被拦 / 跳错误页 | 部分服务器禁止网页端，只允许 App，属正常 |
 
 ---

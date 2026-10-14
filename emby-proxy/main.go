@@ -36,13 +36,17 @@ func main() {
 	m.reload()
 	m.mu.Unlock()
 
-	admin := &Admin{m: m, failures: map[string][]time.Time{}}
+	cluster := newCluster(m)
+	go cluster.run()
+	admin := &Admin{m: m, cluster: cluster, failures: map[string][]time.Time{}}
 	go serve("面板", cfg.AdminListen, admin.Handler())
 	go serve("入口(路径/域名模式)", cfg.Listen, m)
 
+	m.writeNginxConf()
 	go func() {
 		for range time.Tick(time.Minute) {
 			m.saveStats()
+			m.writeNginxConf() // 证书被外部续期（如 acme.sh 写入数据目录）后，配置里的指纹变化会触发 nginx reload
 		}
 	}()
 

@@ -102,6 +102,8 @@ td.p{white-space:normal;word-break:break-all;min-width:240px;font-family:ui-mono
 .certpick small{display:block;font-weight:400;color:var(--muted);font-size:11px;margin:2px 0 6px}
 .certpick input{width:100%;font-size:12px}
 @media (max-width:520px){.certpick{grid-template-columns:1fr}}
+.notice{background:color-mix(in srgb,var(--primary) 10%,var(--card));border:1px solid color-mix(in srgb,var(--primary) 35%,var(--line));border-radius:8px;padding:10px 12px;margin-bottom:14px;font-size:13px;max-width:none}
+pre.out{white-space:pre-wrap;word-break:break-all;background:var(--chip);border-radius:6px;padding:8px;font-size:12px;margin:6px 0 0;max-height:160px;overflow:auto}
 .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:#111827;color:#fff;padding:8px 16px;border-radius:8px;z-index:50;font-size:13px;display:none;max-width:90vw}
 .login{max-width:340px;margin:12vh auto;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:24px}
 .login h2{margin:0 0 16px;font-size:18px;text-align:center}
@@ -269,7 +271,8 @@ function renderSites() {
     <div class="tot"><b>${fmtBytes(recent / 300)}/s</b><span>近 5 分钟平均速度</span></div>
     <div class="tot"><b>${fmtBytes(tot.b)}</b><span>累计流量 · ${tot.r} 次请求</span></div>
   </div>
-  <div class="row" style="margin-bottom:12px"><div class="sp"></div><button class="btn pri" id="btnAdd">＋ 添加站点</button></div>`;
+  ${isNode() ? `<div class="notice">这台服务器是<b>从节点</b>，站点和设置由主节点 <code>${esc(S.cluster.master_url)}</code> 同步，只能查看。${syncLine()}</div>`
+    : `<div class="row" style="margin-bottom:12px"><div class="sp"></div><button class="btn pri" id="btnAdd">＋ 添加站点</button></div>`}`;
   if (!sites.length) {
     html += `<div class="empty">还没有站点。点「添加站点」，填入上游 Emby 地址即可生成一个反代地址。</div>`;
   } else {
@@ -279,7 +282,7 @@ function renderSites() {
       const hosts = s.stream_hosts || [];
       return `<div class="card ${s.enabled ? '' : 'off'}" data-id="${esc(s.id)}">
         <div class="ch"><span class="dot ${esc(s.status)}" title="${esc(s.status)}"></span><h3 title="${esc(s.name)}">${esc(s.name)}</h3>
-          <label class="toggle" title="启用/停用"><input type="checkbox" data-act="toggle" ${s.enabled ? 'checked' : ''}><span></span></label></div>
+          ${isNode() ? '' : `<label class="toggle" title="启用/停用"><input type="checkbox" data-act="toggle" ${s.enabled ? 'checked' : ''}><span></span></label>`}</div>
         <div class="chips"><span class="chip">${esc(modeTxt)}</span>
           <span class="chip ${s.stream_mode === 'proxy' ? 'g' : 'w'}">${s.stream_mode === 'proxy' ? '推流中转' : '推流直连'}</span>
           ${hosts.length ? `<span class="chip" title="${esc(hosts.join('\n'))}">推流域名 ${hosts.length}</span>` : ''}
@@ -291,14 +294,14 @@ function renderSites() {
         <div class="nums"><div><b>${s.stats.streams}</b>播放中</div><div><b>${s.stats.active}</b>连接</div><div><b>${fmtBytes(s.stats.bytes)}</b>流量</div><div><b>${s.stats.requests}</b>请求</div></div>
         ${spark(s.stats.series || new Array(60).fill(0))}
         <div class="kv">最近访问 ${fmtAgo(s.stats.last_access)}${s.stats.errors ? ` · <span class="bad">${s.stats.errors} 次上游错误</span>` : ''}</div>
-        <div class="acts"><button class="btn sm" data-act="test">测试上游</button><button class="btn sm" data-act="edit">编辑</button>
-          <button class="btn sm" data-act="logs">日志</button><button class="btn sm" data-act="clear">清零统计</button><div class="sp"></div><button class="btn sm dan" data-act="del">删除</button></div>
+        <div class="acts"><button class="btn sm" data-act="test">测试上游</button>${isNode() ? '' : '<button class="btn sm" data-act="edit">编辑</button>'}
+          <button class="btn sm" data-act="logs">日志</button><button class="btn sm" data-act="clear">清零统计</button><div class="sp"></div>${isNode() ? '' : '<button class="btn sm dan" data-act="del">删除</button>'}</div>
         <div class="test" data-res>${testRes[s.id] || ''}</div>
       </div>`;
     }).join('') + '</div>';
   }
   $('#main').innerHTML = html;
-  $('#btnAdd').onclick = () => openForm(null);
+  if ($('#btnAdd')) $('#btnAdd').onclick = () => openForm(null);
   $('#main').querySelectorAll('[data-act]').forEach(el => el.onclick = e => siteAction(el, e));
 }
 
@@ -437,8 +440,89 @@ function certStatus(st) {
   return '<span class="bad">● 还没有证书</span>，请选择证书和私钥文件上传';
 }
 
+function isNode() { return S.cluster && S.cluster.role === 'node'; }
+function syncLine() {
+  const st = S.cluster.status || {};
+  if (st.error) return ` <span class="bad">同步失败：${esc(st.error)}</span>`;
+  if (st.last_ok) return ` <span class="ok">上次同步 ${fmtAgo(st.last_ok)}</span>`;
+  return ' 等待首次同步…';
+}
+function nginxLine() {
+  const n = S.nginx || {};
+  if (!n.installed) return '<span class="kv" style="white-space:normal">宿主机未安装自动应用（没有 nginx/systemd，或安装时跳过）。可点「生成 nginx 配置」手动复制。</span>';
+  if (n.ok && n.applied) return `<span class="ok">● nginx 已自动应用最新配置</span>（${fmtAgo(n.time)}）`;
+  if (!n.ok) return `<span class="bad">● nginx 检查未通过，仍在使用上一份配置</span>（${fmtAgo(n.time)}）<pre class="out">${esc(n.output || '')}</pre>`;
+  return '<span class="kv">● 配置已更新，等待 nginx 应用（约 15 秒）…</span>';
+}
+
+function renderCluster() {
+  const c = S.cluster || {role: ''};
+  const role = c.role || '';
+  let detail = '';
+  if (role === 'master') {
+    const nodes = c.nodes || [];
+    detail = `<div class="f"><label>同步令牌</label><div class="row"><input type="text" readonly value="${esc(c.token)}" id="clToken"><button type="button" class="btn" id="btnCopyToken">复制</button><button type="button" class="btn" id="btnNewToken">重新生成</button></div>
+        <small>在每台从节点上填写本机的「面板 HTTPS 地址」和这个令牌。重新生成后，旧令牌立即失效。</small></div>
+      <div class="f"><label>从节点（${nodes.length}）</label>${nodes.length ? `<table><thead><tr><th>名称</th><th>IP</th><th>最近同步</th><th>状态</th></tr></thead><tbody>${nodes.map(n =>
+        `<tr><td>${esc(n.name)}</td><td>${esc(n.ip)}</td><td>${fmtAgo(n.last_seen)}</td><td>${n.last_seen < Date.now()/1000 - 120 ? '<span class="bad">失联</span>' : n.current ? '<span class="ok">已是最新</span>' : '<span class="kv">同步中</span>'}</td></tr>`).join('')}</tbody></table>`
+        : '<div class="kv">还没有从节点连接</div>'}</div>`;
+  } else if (role === 'node') {
+    detail = `<div class="f"><label>主节点面板地址</label><input type="text" name="master_url" value="${esc(c.master_url)}" placeholder="https://master.example.com:8443"></div>
+      <div class="f"><label>同步令牌</label><input type="text" name="token" placeholder="${c.token ? '已保存（' + esc(c.token) + '），留空不修改' : '主节点「设置 → 多服务器同步」里复制'}"></div>
+      <div class="f"><label>本机名称</label><input type="text" name="node_name" value="${esc(c.node_name)}" placeholder="在主节点上显示，例如 tokyo-1，留空用主机名"></div>
+      <div class="kv" style="white-space:normal">${syncLine()}</div>`;
+  }
+  return `<form class="panel" id="cf"><h3>多服务器同步</h3>
+    <div class="help" style="margin-bottom:10px">多台服务器用同一个域名做负载均衡时：一台设为<b>主节点</b>，其余设为<b>从节点</b>。从节点每 30 秒从主节点同步站点、设置和证书，nginx 配置自动更新。</div>
+    <div class="f"><label>本机角色</label><div class="seg">
+      <label><input type="radio" name="role" value="" ${role === '' ? 'checked' : ''}>单机</label>
+      <label><input type="radio" name="role" value="master" ${role === 'master' ? 'checked' : ''}>主节点</label>
+      <label><input type="radio" name="role" value="node" ${role === 'node' ? 'checked' : ''}>从节点</label></div></div>
+    <div class="f"><label>本机面板 HTTPS 地址</label><input type="text" name="panel_url" value="${esc(c.panel_url)}" placeholder="https://master.example.com:8443">
+      <small>填写后自动生成面板的 nginx 配置。主节点必须填写（从节点通过它同步），并把 config.json 的 admin_listen 改为 127.0.0.1:${portOf(S.settings.admin_listen)}。
+      这个域名只解析到本机，不要和负载均衡的域名相同。</small></div>
+    ${detail}
+    <div class="foot">${role === 'node' ? '<button type="button" class="btn" id="btnSyncNow">立即同步</button>' : ''}<button class="btn pri">保存</button></div></form>`;
+}
+
+function bindCluster() {
+  const f = $('#cf');
+  f.querySelectorAll('input[name=role]').forEach(r => r.onchange = () => {
+    S.cluster = {...S.cluster, role: r.value}; const html = renderCluster();
+    f.outerHTML = html; bindCluster();
+  });
+  f.onsubmit = async e => {
+    e.preventDefault();
+    const role = f.querySelector('input[name=role]:checked').value;
+    if (role === 'node' && S.cluster.role !== 'node' && !confirm('设为从节点后，本机的站点和设置会被主节点的配置整体覆盖，确定？')) return;
+    const body = {role, panel_url: f.panel_url.value};
+    if (role === 'node') Object.assign(body, {master_url: f.master_url.value, token: f.token.value, node_name: f.node_name.value});
+    try { await api('PUT', '/api/cluster', body); await load(); toast('已保存'); } catch (err) { toast(err.message); }
+  };
+  if ($('#btnCopyToken')) $('#btnCopyToken').onclick = async () => {
+    try { await navigator.clipboard.writeText($('#clToken').value); toast('已复制令牌'); } catch (e) { $('#clToken').select(); }
+  };
+  if ($('#btnNewToken')) $('#btnNewToken').onclick = async () => {
+    if (!confirm('重新生成后所有从节点都要更新令牌，确定？')) return;
+    await api('PUT', '/api/cluster', {role: 'master', new_token: true, panel_url: f.panel_url.value}); await load(); toast('已生成新令牌');
+  };
+  if ($('#btnSyncNow')) $('#btnSyncNow').onclick = async () => {
+    await api('POST', '/api/cluster/sync-now'); toast('已开始同步'); setTimeout(load, 1500);
+  };
+}
+
 function renderSettings() {
   const st = S.settings;
+  if (isNode()) {
+    $('#main').innerHTML = `<div class="notice">这台服务器是从节点，其它设置由主节点同步。${syncLine()}</div>` + renderCluster() + `
+    <div class="panel"><h3>Nginx</h3><div>${nginxLine()}</div></div>
+    <form class="panel" id="pf"><h3>修改本机面板密码</h3>
+    <div class="f"><label>原密码</label><input type="password" name="old" autocomplete="current-password"></div>
+    <div class="f"><label>新密码</label><input type="password" name="new" autocomplete="new-password" minlength="6"></div>
+    <div class="foot"><button class="btn pri">修改</button></div></form>`;
+    bindCluster(); bindPassword();
+    return;
+  }
   $('#main').innerHTML = `<form class="panel" id="sf"><h3>客户端地址显示</h3>
     <div class="f"><label>入口公网地址（路径 / 域名模式）</label><input type="text" name="entry_url" value="${esc(st.entry_url)}" placeholder="例如 https://emby.mydomain.com，留空为 http://本机:${portOf(st.listen)}">
       <small>入口端口 ${esc(st.listen)}。如果用 1Panel/Nginx 给入口端口套了 HTTPS 域名，这里填那个域名。</small></div>
@@ -452,6 +536,8 @@ function renderSettings() {
     <div class="f"><label>独立端口监听地址</label>
       <select name="port_bind"><option value="">所有网卡（客户端直接连，http）</option><option value="127.0.0.1">仅本机 127.0.0.1（前面有 nginx 做 HTTPS）</option></select>
       <small>选「仅本机」后站点端口只有 nginx 能访问，外部无法绕过 HTTPS。nginx 对外端口要和站点端口不同（如对外 8001 → 站点 18001）。修改后会重新监听，正在播放的连接会断开。</small></div>
+    <label class="chk"><input type="checkbox" name="nginx_ipv6" ${st.nginx_ipv6 ? 'checked' : ''}><span>同时监听 IPv6（服务器有 IPv6 地址时勾选，没有 IPv6 的服务器勾选会导致 nginx 检查不通过）</span></label>
+    <div class="f"><label>自动应用</label><div style="font-size:13px">${nginxLine()}</div></div>
     <div class="f"><label>HTTPS 证书</label>
       <div class="kv" style="white-space:normal;margin-bottom:8px">${certStatus(st)}</div>
       <div class="certpick">
@@ -460,7 +546,7 @@ function renderSettings() {
       </div>
       <label class="chk" style="margin-top:8px"><input type="checkbox" id="allowExpired"><span>允许上传已过期的证书（nginx 能用，但客户端可能提示证书过期，需要在客户端里允许）</span></label>
       <div class="row"><button type="button" class="btn" id="btnCert">上传证书</button><span class="test" id="certRes"></span></div>
-      <small>证书和私钥会校验是否匹配，保存在服务器 <code>数据目录/ssl/</code>（权限 600），生成的 nginx 配置会自动引用。证书到期后重新上传，再 <code>nginx -s reload</code>。</small>
+      <small>证书和私钥会校验是否匹配，保存在服务器 <code>数据目录/ssl/</code>（权限 600），生成的 nginx 配置会自动引用。证书到期后重新上传即可（开启了自动应用时 nginx 会自动 reload）。</small>
     </div>
     <details ${st.cert && st.cert.uploaded ? '' : (st.nginx_cert ? 'open' : '')}><summary>改用服务器上已有的证书路径（如 certbot 自动续期）</summary>
       <div class="f" style="margin-top:10px"><label>证书路径</label><input type="text" name="nginx_cert" value="${esc(st.nginx_cert)}" placeholder="/etc/letsencrypt/live/你的域名/fullchain.pem"></div>
@@ -468,8 +554,9 @@ function renderSettings() {
     </details>
     <div class="foot"><button type="button" class="btn" id="btnNginx">生成 nginx 配置</button><button class="btn pri">保存</button></div>
     <div id="nginxOut" style="display:none;margin-top:12px">
-      <div class="row" style="margin-bottom:6px"><span class="kv">保存为 /etc/nginx/conf.d/emby-proxy.conf，然后执行 <code>nginx -t && nginx -s reload</code></span><div class="sp"></div><button type="button" class="btn sm" id="btnNginxCopy">复制</button></div>
+      <div class="row" style="margin-bottom:6px"><span class="kv">${S.nginx && S.nginx.installed ? '已自动应用，无需手动操作；以下仅供查看' : '保存为 /etc/nginx/conf.d/emby-proxy.conf，然后执行 <code>nginx -t && nginx -s reload</code>'}</span><div class="sp"></div><button type="button" class="btn sm" id="btnNginxCopy">复制</button></div>
       <textarea id="nginxText" readonly style="min-height:360px;font-size:12px"></textarea></div></form>
+    ${renderCluster()}
     <div class="panel"><h3>导入 / 导出配置</h3>
       <div class="help" style="margin-bottom:10px">导出全部站点和设置（不含面板密码），可用于备份或迁移到另一台服务器。也可以导入服务器上的 <code>config.json</code>。<br><span class="bad">导出文件包含各服务器的上游地址，请勿公开分享。</span></div>
       <div class="row" style="flex-wrap:wrap;gap:10px">
@@ -490,7 +577,7 @@ function renderSettings() {
   $('#nf').onsubmit = async e => {
     e.preventDefault();
     const f = e.target;
-    try { await api('PUT', '/api/settings', {port_bind: f.port_bind.value, nginx_cert: f.nginx_cert.value, nginx_key: f.nginx_key.value}); await load(); toast('已保存'); }
+    try { await api('PUT', '/api/settings', {port_bind: f.port_bind.value, nginx_cert: f.nginx_cert.value, nginx_key: f.nginx_key.value, nginx_ipv6: f.nginx_ipv6.checked}); await load(); toast('已保存'); }
     catch (err) { toast(err.message); }
   };
   $('#btnImport').onclick = async () => {
@@ -535,6 +622,10 @@ function renderSettings() {
     try { await navigator.clipboard.writeText($('#nginxText').value); toast('已复制'); }
     catch (err) { $('#nginxText').select(); toast('请手动复制'); }
   };
+  bindPassword(); bindCluster();
+}
+
+function bindPassword() {
   $('#pf').onsubmit = async e => {
     e.preventDefault();
     try { await api('PUT', '/api/settings', {old_password: e.target.old.value, new_password: e.target.new.value}); toast('密码已修改，请重新登录'); S = null; renderLogin(); }

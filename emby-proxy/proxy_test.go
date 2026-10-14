@@ -118,7 +118,8 @@ func get(t *testing.T, url string, hdr ...string) (*http.Response, string) {
 }
 
 func TestPathModeFlow(t *testing.T) {
-	_, entry, up, st := setup(t, Site{Mode: "path", Path: "hk", StreamMode: "proxy"})
+	m, entry, up, st := setup(t, Site{Mode: "path", Path: "hk", StreamMode: "proxy"})
+	rt := m.sites["s1"]
 	base := entry.URL + "/hk"
 
 	// System/Info/Public：内外网地址改成反代地址
@@ -139,7 +140,8 @@ func TestPathModeFlow(t *testing.T) {
 	}
 	stHost := strings.TrimPrefix(st.URL, "http://")
 	h, p, _ := net.SplitHostPort(stHost)
-	epURL := base + "/__ep/http/" + h + "/" + p + "/v/1.mkv"
+	epBase := base + rt.epPath("http", h, p)
+	epURL := epBase + "/v/1.mkv"
 	if !strings.Contains(body, epURL) {
 		t.Fatalf("stream host not rewritten: %s", body)
 	}
@@ -177,8 +179,8 @@ func TestPathModeFlow(t *testing.T) {
 	}
 
 	// m3u8 里的绝对地址改写
-	_, body = get(t, base+"/__ep/http/"+h+"/"+p+"/v/master.m3u8")
-	if !strings.Contains(body, base+"/__ep/http/"+h+"/"+p+"/seg/0.ts") || !strings.Contains(body, "\nseg/1.ts") {
+	_, body = get(t, epBase+"/v/master.m3u8")
+	if !strings.Contains(body, epBase+"/seg/0.ts") || !strings.Contains(body, "\nseg/1.ts") {
 		t.Fatalf("m3u8 not rewritten: %s", body)
 	}
 
@@ -188,10 +190,16 @@ func TestPathModeFlow(t *testing.T) {
 		t.Fatalf("blocked redirect rewritten: %q", loc)
 	}
 
-	// 未学习过的域名不允许经 /__ep/ 代理
-	resp, _ = get(t, base+"/__ep/https/example.com/443/")
-	if resp.StatusCode != 403 {
-		t.Fatalf("open proxy! status %d", resp.StatusCode)
+	// 未学习过的域名不允许经 /__ep/ 代理（无签名 / 伪造签名都不行）
+	for _, bad := range []string{"/__ep/https/example.com/443/", "/__ep/AAAAAAAAAAAAAAAA/https/example.com/443/",
+		strings.Replace(rt.epPath("http", h, p), "/http/", "/https/", 1) + "/"} {
+		if resp, _ = get(t, base+bad); resp.StatusCode != 403 {
+			t.Fatalf("open proxy via %s! status %d", bad, resp.StatusCode)
+		}
+	}
+	// 旧格式（无签名）对已学习的域名仍然可用，兼容升级前客户端缓存的地址
+	if resp, body = get(t, base+"/__ep/http/"+h+"/"+p+"/v/1.mkv", "Range", "bytes=0-3"); resp.StatusCode != 206 || body != "0123" {
+		t.Fatalf("legacy ep: %d %q", resp.StatusCode, body)
 	}
 
 	// 未匹配路径
@@ -356,7 +364,7 @@ func TestNginxConfig(t *testing.T) {
 		{Name: "c", Mode: "port", Port: 8003, PublicURL: "https://e.example.com:8003", Upstream: "https://u"},
 		{Name: "d", Mode: "path", Path: "x", Upstream: "https://u"},
 	}}
-	out := nginxConfig(cfg, nil)
+	out := nginxConfig(cfg, "", "", nil)
 	for _, want := range []string{"listen 8001 ssl;", "server_name e.example.com;", "proxy_pass http://127.0.0.1:18001;", "ssl_certificate     /c.pem;"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing %q in:\n%s", want, out)
@@ -385,7 +393,7 @@ func TestCertUpload(t *testing.T) {
 	cfg := &Config{AdminPassword: "pw123456", Secret: "s", AdminListen: ":0", Sites: []*Site{
 		{Name: "a", Mode: "port", Port: 18001, PublicURL: "https://other.example.com:8001", Upstream: "https://u", Enabled: true}}}
 	m := NewManager(filepath.Join(dir, "config.json"), cfg)
-	a := &Admin{m: m, failures: map[string][]time.Time{}}
+	a := &Admin{m: m, cluster: newCluster(m), failures: map[string][]time.Time{}}
 	srv := httptest.NewServer(a.Handler())
 	defer srv.Close()
 	cookie := adminLogin(t, srv.URL, "pw123456")
@@ -467,8 +475,11 @@ func newAdmin(t *testing.T, cfg *Config) (*Manager, *httptest.Server, *http.Cook
 		cfg.AdminPassword = "pw123456"
 	}
 	cfg.Secret, cfg.AdminListen, cfg.Listen = "s", ":1", ":2"
+	if cfg.ClusterSecret == "" {
+		cfg.ClusterSecret = randHex(16)
+	}
 	m := NewManager(filepath.Join(t.TempDir(), "config.json"), cfg)
-	a := &Admin{m: m, failures: map[string][]time.Time{}}
+	a := &Admin{m: m, cluster: newCluster(m), failures: map[string][]time.Time{}}
 	srv := httptest.NewServer(a.Handler())
 	t.Cleanup(srv.Close)
 	return m, srv, adminLogin(t, srv.URL, cfg.AdminPassword)
@@ -624,6 +635,7 @@ func TestGzipPassthroughAndRoutes(t *testing.T) {
 	m.mu.Unlock()
 	entry := httptest.NewServer(m)
 	defer entry.Close()
+	rtG := m.sites["g"]
 	tr := &http.Transport{DisableCompression: true}
 	cl := &http.Client{Transport: tr, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	do := func(path string, gzipOK bool) (*http.Response, []byte) {
@@ -662,7 +674,7 @@ func TestGzipPassthroughAndRoutes(t *testing.T) {
 		t.Fatalf("js should stay compressed: enc=%q len=%d", resp.Header.Get("Content-Encoding"), len(b))
 	}
 	resp, _ = do("/g/cdn?p="+nodePort, false)
-	want := "/g/__ep/http/127.0.0.1/" + nodePort + "/stream/abc"
+	want := "/g" + rtG.epPath("http", "127.0.0.1", nodePort) + "/stream/abc"
 	if loc := resp.Header.Get("Location"); loc != want {
 		t.Fatalf("route relative redirect = %q want %q", loc, want)
 	}
@@ -823,4 +835,141 @@ func TestIgnoreExpiredThroughProxy(t *testing.T) {
 		t.Fatalf("ignore_expired through proxy: %d %s", resp.StatusCode, body)
 	}
 	checkWS(t, base, "/e")
+}
+
+// 多台服务器部署同一个域名：A 机生成的推流地址，在从没学习过该推流域名的 B 机上也能用（共享集群密钥）；
+// 密钥不同则拒绝。
+func TestSignedEPAcrossNodes(t *testing.T) {
+	stream := fakeStream(t)
+	defer stream.Close()
+	h, p, _ := net.SplitHostPort(strings.TrimPrefix(stream.URL, "http://"))
+	node := func(secret string) (*Manager, string) {
+		site := &Site{ID: "s1", Name: "n", Enabled: true, Upstream: "https://up.example.com", Mode: "path", Path: "hk", StreamMode: "proxy"}
+		cfg := &Config{Listen: ":0", AdminListen: ":0", ClusterSecret: secret, Sites: []*Site{site}}
+		if err := validateSite(cfg, site); err != nil {
+			t.Fatal(err)
+		}
+		m := NewManager(filepath.Join(t.TempDir(), "c.json"), cfg)
+		m.mu.Lock()
+		m.reload()
+		m.mu.Unlock()
+		e := httptest.NewServer(m)
+		t.Cleanup(e.Close)
+		return m, e.URL
+	}
+	mA, _ := node("shared-secret")
+	_, urlB := node("shared-secret")
+	_, urlC := node("other-secret")
+	path := "/hk" + mA.sites["s1"].epPath("http", h, p) + "/v/1.mkv"
+	if resp, body := get(t, urlB+path, "Range", "bytes=0-4"); resp.StatusCode != 206 || body != "01234" {
+		t.Fatalf("node B should accept A's signed url: %d %q", resp.StatusCode, body)
+	}
+	if resp, _ := get(t, urlC+path); resp.StatusCode != 403 {
+		t.Fatalf("node with different secret must reject: %d", resp.StatusCode)
+	}
+}
+
+func TestClusterSync(t *testing.T) {
+	// 主节点
+	master, srvM, cM := newAdmin(t, &Config{EntryURL: "https://emby.example.com", PortBind: "127.0.0.1"})
+	mc := newCluster(master)
+	srvM.Config.Handler = (&Admin{m: master, cluster: mc, failures: map[string][]time.Time{}}).Handler()
+	if code, out := adminDo(t, srvM, cM, "PUT", "/api/cluster", `{"role":"master","panel_url":"https://master.example.com:8443"}`, csrfHeader, "1"); code != 200 {
+		t.Fatalf("set master: %s", out)
+	}
+	token := master.cfg.Cluster.Token
+	if len(token) != 32 {
+		t.Fatalf("token = %q", token)
+	}
+	cert, key := genCert(t, "*.example.com", time.Now().Add(60*24*time.Hour))
+	os.MkdirAll(master.sslDir(), 0o700)
+	os.WriteFile(filepath.Join(master.sslDir(), "fullchain.pem"), cert, 0o600)
+	os.WriteFile(filepath.Join(master.sslDir(), "privkey.pem"), key, 0o600)
+	if code, out := adminDo(t, srvM, cM, "POST", "/api/sites", `{"name":"A","upstream":"https://a.example.net","mode":"port","port":18001,"public_url":"https://emby.example.com:8001","enabled":true}`, csrfHeader, "1"); code != 200 {
+		t.Fatal(out)
+	}
+
+	// 测试里主从在同一台机器上，先关掉主节点的站点端口，让从节点能监听同一个端口
+	master.mu.Lock()
+	for port, srv := range master.listeners {
+		srv.Close()
+		delete(master.listeners, port)
+	}
+	master.mu.Unlock()
+
+	// 从节点（用不同的签名密钥和端口启动）
+	node, srvN, cN := newAdmin(t, &Config{})
+	nc := newCluster(node)
+	srvN.Config.Handler = (&Admin{m: node, cluster: nc, failures: map[string][]time.Time{}}).Handler()
+	t.Cleanup(func() { node.mu.Lock(); node.cfg.Sites = nil; node.reload(); node.mu.Unlock() })
+	if code, out := adminDo(t, srvN, cN, "PUT", "/api/cluster", `{"role":"node","master_url":"`+srvM.URL+`","token":"`+token+`"}`, csrfHeader, "1"); code != 400 || !strings.Contains(out, "https") {
+		t.Fatalf("plain http master must be refused by default: %d %s", code, out)
+	}
+	node.mu.Lock()
+	node.cfg.Cluster = ClusterConfig{Role: "node", MasterURL: srvM.URL, Token: "wrong", NodeName: "tokyo-1"}
+	node.mu.Unlock()
+	if err := nc.pull(); err == nil || !strings.Contains(err.Error(), "令牌") {
+		t.Fatalf("wrong token: %v", err)
+	}
+	node.mu.Lock()
+	node.cfg.Cluster.Token = token
+	node.mu.Unlock()
+	if err := nc.pull(); err != nil {
+		t.Fatal(err)
+	}
+	if len(node.cfg.Sites) != 1 || node.cfg.Sites[0].Name != "A" || node.cfg.ClusterSecret != master.cfg.ClusterSecret ||
+		node.cfg.EntryURL != "https://emby.example.com" || node.cfg.PortBind != "127.0.0.1" {
+		t.Fatalf("not synced: %+v", node.cfg)
+	}
+	if b, _ := os.ReadFile(filepath.Join(node.sslDir(), "privkey.pem")); !bytes.Equal(b, key) {
+		t.Fatal("cert not synced")
+	}
+	if node.sites[node.cfg.Sites[0].ID] == nil {
+		t.Fatalf("synced site not running: %v", node.siteErr)
+	}
+	// 从节点的 nginx 配置已自动生成，引用本机数据目录下的证书
+	if conf, err := os.ReadFile(node.nginxConfPath()); err != nil || !strings.Contains(string(conf), "listen 8001 ssl;") {
+		t.Fatalf("node nginx conf: %v\n%s", err, conf)
+	}
+	v1 := nc.status.Version
+	if nodes := mc.nodeList(v1); len(nodes) != 1 || nodes[0].Current {
+		t.Fatalf("before confirming, node should not be current: %+v", nodes)
+	}
+	if err := nc.pull(); err != nil || nc.status.Version != v1 { // 304
+		t.Fatalf("unchanged pull: %v", err)
+	}
+	// 主节点上能看到从节点，且是最新
+	if nodes := mc.nodeList(v1); len(nodes) != 1 || nodes[0].Name != "tokyo-1" || !nodes[0].Current {
+		t.Fatalf("master node list: %+v", nodes)
+	}
+	// 主节点修改 → 从节点下次同步拿到
+	adminDo(t, srvM, cM, "POST", "/api/sites", `{"name":"B","upstream":"https://b.example.net","mode":"port","port":18002,"public_url":"https://emby.example.com:8002"}`, csrfHeader, "1")
+	if err := nc.pull(); err != nil || len(node.cfg.Sites) != 2 || nc.status.Version == v1 {
+		t.Fatalf("second sync: %v %d", err, len(node.cfg.Sites))
+	}
+	// 从节点只读
+	if code, _ := adminDo(t, srvN, cN, "POST", "/api/sites", `{"name":"x","upstream":"https://x.example.net","mode":"path","path":"x"}`, csrfHeader, "1"); code != 409 {
+		t.Fatalf("node should be read-only: %d", code)
+	}
+	if code, _ := adminDo(t, srvN, cN, "PUT", "/api/settings", `{"port_bind":""}`, csrfHeader, "1"); code != 409 {
+		t.Fatalf("node settings should be read-only: %d", code)
+	}
+	if code, _ := adminDo(t, srvN, cN, "PUT", "/api/settings", `{"old_password":"pw123456","new_password":"nodepass1"}`, csrfHeader, "1"); code != 200 {
+		t.Fatalf("node may change its own password: %d", code)
+	}
+	// 主节点面板 HTTPS 地址写进了 nginx 配置
+	if conf, _ := os.ReadFile(master.nginxConfPath()); !strings.Contains(string(conf), "server_name master.example.com;") || !strings.Contains(string(conf), "listen 8443 ssl;") {
+		t.Fatalf("master panel block missing:\n%s", conf)
+	}
+}
+
+func TestNginxIPv6Option(t *testing.T) {
+	cfg := &Config{AdminListen: ":55660", Sites: []*Site{{Name: "a", Mode: "port", Port: 18001, PublicURL: "https://e.example.com:8001", Upstream: "https://u", Enabled: true}}}
+	if out := nginxConfig(cfg, "", "", nil); !strings.Contains(out, "    # listen [::]:8001 ssl;") {
+		t.Fatalf("ipv6 should be commented by default:\n%s", out)
+	}
+	cfg.NginxIPv6 = true
+	if out := nginxConfig(cfg, "", "", nil); !strings.Contains(out, "    listen [::]:8001 ssl;\n") {
+		t.Fatalf("ipv6 should be enabled:\n%s", out)
+	}
 }

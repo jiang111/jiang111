@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"net"
@@ -14,8 +17,10 @@ import (
 	"time"
 )
 
-// epPrefix 是推流分离域名的代理路径：/__ep/{scheme}/{host}/{port}/{path}
+// epPrefix 是推流分离域名的代理路径：/__ep/{签名}/{scheme}/{host}/{port}/{path}
 // 上游 302 跳转到别的推流域名时，Location 会被改写成这个格式，流量继续经过本机。
+// 签名用集群共享密钥计算，多台服务器部署同一个域名时，任何一台都能验证并放行，
+// 不依赖「是不是这台机器学到的推流域名」。旧的无签名格式 /__ep/{scheme}/... 仍按白名单放行。
 const epPrefix = "/__ep/"
 
 type SiteRT struct {
@@ -26,6 +31,7 @@ type SiteRT struct {
 	upPort   string
 	upBase   string // 上游 base path（已转义），如 /emby-base
 	stats    *Stats
+	epKey    []byte // 推流地址签名密钥（集群共享）
 
 	hostsMu    sync.Mutex
 	hosts      map[string]bool // 学习到的推流源（scheme://host:port），允许经 /__ep/ 代理
@@ -252,7 +258,12 @@ func clientIP(r *http.Request) string {
 }
 
 func (s *SiteRT) parseEP(rest string) (*url.URL, string, bool) {
-	parts := strings.SplitN(rest[len(epPrefix):], "/", 4)
+	body := rest[len(epPrefix):]
+	sig := ""
+	if first, after, ok := strings.Cut(body, "/"); ok && first != "http" && first != "https" {
+		sig, body = first, after
+	}
+	parts := strings.SplitN(body, "/", 4)
 	if len(parts) < 3 {
 		return nil, "", false
 	}
@@ -264,7 +275,14 @@ func (s *SiteRT) parseEP(rest string) (*url.URL, string, bool) {
 		return nil, "", false
 	}
 	host = strings.Trim(host, "[]")
-	if host == "" || !s.allowedEP(scheme, host, port) {
+	if host == "" {
+		return nil, "", false
+	}
+	if sig != "" {
+		if !hmac.Equal([]byte(sig), []byte(s.epSig(scheme, host, port))) {
+			return nil, "", false
+		}
+	} else if !s.allowedEP(scheme, host, port) {
 		return nil, "", false
 	}
 	remainder := "/"
@@ -274,9 +292,21 @@ func (s *SiteRT) parseEP(rest string) (*url.URL, string, bool) {
 	return &url.URL{Scheme: scheme, Host: joinHP(scheme, host, port)}, remainder, true
 }
 
-func epSegment(u *url.URL) string {
+// epSig 是推流目标的签名（站点 ID + 目标），16 个字符。
+func (s *SiteRT) epSig(scheme, host, port string) string {
+	mac := hmac.New(sha256.New, s.epKey)
+	mac.Write([]byte(s.cfg.ID + "|" + scheme + "|" + host + "|" + port))
+	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))[:16]
+}
+
+// epPath 生成带签名的推流代理路径 /__ep/{签名}/{scheme}/{host}/{port}
+func (s *SiteRT) epPath(scheme, host, port string) string {
+	return epPrefix + s.epSig(scheme, host, port) + "/" + scheme + "/" + host + "/" + port
+}
+
+func (s *SiteRT) epSegment(u *url.URL) string {
 	h, p := splitHP(u.Host, u.Scheme)
-	return "/__ep/" + u.Scheme + "/" + h + "/" + p
+	return s.epPath(u.Scheme, h, p)
 }
 
 var stripReqHeaders = []string{
@@ -458,7 +488,7 @@ func (rc *reqCtx) rewriteLocation(v string) string {
 		return rc.rewriteAbs(v, rc.externalRedirectOK(v))
 	case strings.HasPrefix(v, "/"):
 		if rc.ep {
-			return rc.prefix + epSegment(rc.target) + v
+			return rc.prefix + rc.s.epSegment(rc.target) + v
 		}
 		return rc.prefix + rc.s.stripBase(v)
 	}
@@ -529,7 +559,7 @@ func (rc *reqCtx) rewriteAbs(raw string, allowExternal bool) string {
 	if rc.ep {
 		th, tp := splitHP(rc.target.Host, rc.target.Scheme)
 		if host == th && port == tp && scheme == rc.target.Scheme {
-			return rc.publicBase + epSegment(rc.target) + tail
+			return rc.publicBase + s.epSegment(rc.target) + tail
 		}
 	}
 	if !allowExternal || s.cfg.StreamMode != "proxy" {
@@ -545,7 +575,7 @@ func (rc *reqCtx) rewriteAbs(raw string, allowExternal bool) string {
 		return raw
 	}
 	s.learnHost(hostKey(scheme, host, port))
-	return rc.publicBase + "/__ep/" + scheme + "/" + host + "/" + port + tail
+	return rc.publicBase + s.epPath(scheme, host, port) + tail
 }
 
 func (rc *reqCtx) isSelf(scheme, host, port string) bool {

@@ -12,7 +12,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -25,6 +24,7 @@ const testUA = "SenPlayer/6.2.1 (iPhone; iOS 18.0; Scale/3.00)"
 
 type Admin struct {
 	m        *Manager
+	cluster  *Cluster
 	failMu   sync.Mutex
 	failures map[string][]time.Time
 }
@@ -43,25 +43,24 @@ func (a *Admin) Handler() http.Handler {
 	})
 	mux.HandleFunc("GET /api/state", a.auth(a.state))
 	mux.HandleFunc("GET /api/logs", a.auth(a.logsAPI))
-	mux.HandleFunc("POST /api/sites", a.auth(a.saveSite))
-	mux.HandleFunc("PUT /api/sites/{id}", a.auth(a.saveSite))
-	mux.HandleFunc("DELETE /api/sites/{id}", a.auth(a.deleteSite))
+	mux.HandleFunc("POST /api/sites", a.auth(a.nodeReadOnly(a.saveSite)))
+	mux.HandleFunc("PUT /api/sites/{id}", a.auth(a.nodeReadOnly(a.saveSite)))
+	mux.HandleFunc("DELETE /api/sites/{id}", a.auth(a.nodeReadOnly(a.deleteSite)))
 	mux.HandleFunc("POST /api/sites/{id}/clear-stats", a.auth(a.clearStats))
 	mux.HandleFunc("POST /api/test", a.auth(a.test))
 	mux.HandleFunc("PUT /api/settings", a.auth(a.settings))
-	mux.HandleFunc("POST /api/cert", a.auth(a.uploadCert))
+	mux.HandleFunc("POST /api/cert", a.auth(a.nodeReadOnly(a.uploadCert)))
 	mux.HandleFunc("GET /api/export", a.auth(a.exportConfig))
-	mux.HandleFunc("POST /api/import", a.auth(a.importConfig))
+	mux.HandleFunc("POST /api/import", a.auth(a.nodeReadOnly(a.importConfig)))
+	mux.HandleFunc("GET /api/cluster/sync", a.cluster.serveSync) // 令牌鉴权，供从节点拉取
+	mux.HandleFunc("PUT /api/cluster", a.auth(a.clusterSettings))
+	mux.HandleFunc("POST /api/cluster/sync-now", a.auth(func(w http.ResponseWriter, r *http.Request) {
+		a.cluster.syncNow()
+		writeJSON(w, 200, map[string]any{"ok": true})
+	}))
 	mux.HandleFunc("GET /api/nginx", a.auth(func(w http.ResponseWriter, r *http.Request) {
-		leaf := a.m.uploadedCert()
-		a.m.mu.RLock()
-		if leaf != nil && a.m.cfg.NginxCert != filepath.Join(a.m.hostSSLDir(), "fullchain.pem") {
-			leaf = nil // 用的是手动填写的路径，无法确认证书内容
-		}
-		conf := nginxConfig(a.m.cfg, leaf)
-		a.m.mu.RUnlock()
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.Write([]byte(conf))
+		w.Write([]byte(a.m.nginxConf()))
 	}))
 	return securityHeaders(mux)
 }
@@ -86,21 +85,23 @@ func securityHeaders(h http.Handler) http.Handler {
 	})
 }
 
-// sameOrigin：带了 Origin 头时，必须与面板自己的地址一致（含端口）。
+// sameOrigin：带了 Origin 头时，必须与面板自己的地址一致（主机名和端口，默认端口按 Origin 的协议补全）。
 func sameOrigin(r *http.Request) bool {
 	o := r.Header.Get("Origin")
 	if o == "" {
 		return true
 	}
 	u, err := url.Parse(o)
-	if err != nil {
+	if err != nil || u.Host == "" {
 		return false
 	}
 	host := firstHeader(r, "X-Forwarded-Host")
 	if host == "" {
 		host = r.Host
 	}
-	return strings.EqualFold(u.Host, host)
+	oh, op := splitHP(u.Host, u.Scheme)
+	hh, hp := splitHP(host, u.Scheme)
+	return oh == hh && op == hp
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
@@ -231,6 +232,9 @@ type siteView struct {
 
 func (a *Admin) state(w http.ResponseWriter, r *http.Request) {
 	m := a.m
+	// 这两项内部会自己加锁，必须在持有读锁之前算好（读锁嵌套在有写者等待时会死锁）
+	cluster := a.cluster.view()
+	ngx := m.nginxStatus()
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	views := []siteView{}
@@ -250,10 +254,12 @@ func (a *Admin) state(w http.ResponseWriter, r *http.Request) {
 		"settings": map[string]any{
 			"listen": m.cfg.Listen, "admin_listen": m.cfg.AdminListen,
 			"entry_url": m.cfg.EntryURL, "public_host": m.cfg.PublicHost,
-			"port_bind": m.cfg.PortBind, "nginx_cert": m.cfg.NginxCert, "nginx_key": m.cfg.NginxKey,
+			"port_bind": m.cfg.PortBind, "nginx_cert": m.cfg.NginxCert, "nginx_key": m.cfg.NginxKey, "nginx_ipv6": m.cfg.NginxIPv6,
 			"cert": m.certInfo(),
 		},
 		"sites":   views,
+		"nginx":   ngx,
+		"cluster": cluster,
 		"uptime":  int64(time.Since(m.started).Seconds()),
 		"version": version,
 	})
@@ -360,6 +366,7 @@ func (a *Admin) settings(w http.ResponseWriter, r *http.Request) {
 		PortBind    *string `json:"port_bind"`
 		NginxCert   *string `json:"nginx_cert"`
 		NginxKey    *string `json:"nginx_key"`
+		NginxIPv6   *bool   `json:"nginx_ipv6"`
 		OldPassword string  `json:"old_password"`
 		NewPassword string  `json:"new_password"`
 	}
@@ -374,6 +381,10 @@ func (a *Admin) settings(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 400, "监听地址必须是 IP，例如 127.0.0.1，留空表示所有网卡")
 			return
 		}
+	}
+	if a.m.isNode() && (body.EntryURL != nil || body.PublicHost != nil || body.PortBind != nil || body.NginxCert != nil || body.NginxKey != nil || body.NginxIPv6 != nil) {
+		writeErr(w, http.StatusConflict, "这台服务器是从节点，这些设置由主节点同步，请到主节点上修改")
+		return
 	}
 	if body.NewPassword != "" && len(body.NewPassword) < 6 {
 		writeErr(w, 400, "新密码至少 6 位")
@@ -401,6 +412,9 @@ func (a *Admin) settings(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.NginxKey != nil {
 		m.cfg.NginxKey = strings.TrimSpace(*body.NginxKey)
+	}
+	if body.NginxIPv6 != nil {
+		m.cfg.NginxIPv6 = *body.NginxIPv6
 	}
 	if body.PortBind != nil && bind != m.cfg.PortBind {
 		m.cfg.PortBind = bind

@@ -17,6 +17,7 @@ type exportSettings struct {
 	PortBind   string `json:"port_bind,omitempty"`
 	NginxCert  string `json:"nginx_cert,omitempty"`
 	NginxKey   string `json:"nginx_key,omitempty"`
+	NginxIPv6  bool   `json:"nginx_ipv6,omitempty"`
 }
 
 type exportFile struct {
@@ -34,7 +35,7 @@ func (a *Admin) exportConfig(w http.ResponseWriter, r *http.Request) {
 		App: "emby-proxy", Version: 1, Exported: time.Now().Format(time.RFC3339),
 		Settings: &exportSettings{
 			EntryURL: m.cfg.EntryURL, PublicHost: m.cfg.PublicHost, PortBind: m.cfg.PortBind,
-			NginxCert: m.cfg.NginxCert, NginxKey: m.cfg.NginxKey,
+			NginxCert: m.cfg.NginxCert, NginxKey: m.cfg.NginxKey, NginxIPv6: m.cfg.NginxIPv6,
 		},
 		Sites: m.cfg.Sites,
 	}
@@ -145,6 +146,9 @@ func (a *Admin) importConfig(w http.ResponseWriter, r *http.Request) {
 		if f.v != "" {
 			*f.dst = f.v
 		}
+	}
+	if set.NginxIPv6 {
+		m.cfg.NginxIPv6 = true
 	}
 	if bind != "" && bind != m.cfg.PortBind {
 		m.cfg.PortBind = bind

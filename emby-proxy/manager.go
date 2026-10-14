@@ -175,6 +175,7 @@ func (m *Manager) reload() {
 			siteErr[sc.ID] = err.Error()
 			continue
 		}
+		rt.epKey = []byte(m.cfg.ClusterSecret)
 		sites[sc.ID] = rt
 		switch sc.Mode {
 		case "port":
@@ -291,7 +292,11 @@ func (m *Manager) save() error {
 	if err != nil {
 		return err
 	}
-	return writeFileAtomic(m.path, data)
+	if err := writeFileAtomic(m.path, data); err != nil {
+		return err
+	}
+	m.writeNginxConf()
+	return nil
 }
 
 func (m *Manager) persistStreamHost(id, key string) {

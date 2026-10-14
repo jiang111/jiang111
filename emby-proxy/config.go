@@ -42,16 +42,20 @@ type Site struct {
 }
 
 type Config struct {
-	Listen        string  `json:"listen"`       // 路径/域名模式共用的入口
-	AdminListen   string  `json:"admin_listen"` // 管理面板
-	AdminPassword string  `json:"admin_password"`
-	Secret        string  `json:"secret"`
-	EntryURL      string  `json:"entry_url,omitempty"`   // 入口的公网地址（仅用于面板显示客户端地址）
-	PublicHost    string  `json:"public_host,omitempty"` // 端口模式显示用的服务器 IP/域名
-	PortBind      string  `json:"port_bind,omitempty"`   // 独立端口站点的监听地址，空=所有网卡，127.0.0.1=仅本机（前面有 nginx 时）
-	NginxCert     string  `json:"nginx_cert,omitempty"`  // 生成 nginx 配置用的证书路径
-	NginxKey      string  `json:"nginx_key,omitempty"`
-	Sites         []*Site `json:"sites"`
+	Listen        string        `json:"listen"`       // 路径/域名模式共用的入口
+	AdminListen   string        `json:"admin_listen"` // 管理面板
+	AdminPassword string        `json:"admin_password"`
+	Secret        string        `json:"secret"`
+	ClusterSecret string        `json:"cluster_secret"`        // 推流地址签名密钥，多台服务器通过同步共享
+	EntryURL      string        `json:"entry_url,omitempty"`   // 入口的公网地址（仅用于面板显示客户端地址）
+	PublicHost    string        `json:"public_host,omitempty"` // 端口模式显示用的服务器 IP/域名
+	PortBind      string        `json:"port_bind,omitempty"`   // 独立端口站点的监听地址，空=所有网卡，127.0.0.1=仅本机（前面有 nginx 时）
+	NginxCert     string        `json:"nginx_cert,omitempty"`  // 生成 nginx 配置用的证书路径
+	NginxKey      string        `json:"nginx_key,omitempty"`
+	NginxIPv6     bool          `json:"nginx_ipv6,omitempty"` // nginx 同时监听 IPv6
+	PanelURL      string        `json:"panel_url,omitempty"`  // 本机面板的 HTTPS 地址（生成 nginx 面板配置；从节点用它连接主节点）
+	Cluster       ClusterConfig `json:"cluster"`
+	Sites         []*Site       `json:"sites"`
 }
 
 func randHex(n int) string {
@@ -79,6 +83,7 @@ func LoadConfig(path string) (*Config, bool, error) {
 			AdminListen:   envOr("ADMIN_LISTEN", ":55660"),
 			AdminPassword: envOr("ADMIN_PASSWORD", randPassword(12)),
 			Secret:        randHex(32),
+			ClusterSecret: randHex(32),
 			Sites:         []*Site{},
 		}
 		return cfg, true, SaveConfig(path, cfg)
@@ -102,6 +107,9 @@ func LoadConfig(path string) (*Config, bool, error) {
 	}
 	if cfg.Secret == "" {
 		cfg.Secret, changed = randHex(32), true
+	}
+	if cfg.ClusterSecret == "" {
+		cfg.ClusterSecret, changed = randHex(32), true
 	}
 	for _, s := range cfg.Sites {
 		if s.ID == "" {
