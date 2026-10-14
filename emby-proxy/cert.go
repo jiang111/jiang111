@@ -124,8 +124,8 @@ func (a *Admin) uploadCert(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	if time.Now().After(leaf.NotAfter) {
-		writeErr(w, 400, "证书已过期（"+leaf.NotAfter.Format("2006-01-02")+"）")
+	if time.Now().After(leaf.NotAfter) && r.FormValue("allow_expired") != "1" {
+		writeErr(w, 400, "证书已过期（"+leaf.NotAfter.Format("2006-01-02")+"），如仍要使用请勾选「允许上传已过期的证书」")
 		return
 	}
 	m := a.m

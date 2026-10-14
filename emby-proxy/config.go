@@ -32,12 +32,13 @@ type Site struct {
 	StreamMode  string   `json:"stream_mode"`            // proxy：推流也走本机；direct：推流 302 让客户端直连
 	StreamHosts []string `json:"stream_hosts,omitempty"` // 推流分离域名（自动学习 + 手动添加）
 
-	ForwardIP   bool              `json:"forward_ip"`   // 把客户端真实 IP 传给上游
-	InsecureTLS bool              `json:"insecure_tls"` // 不校验上游证书
-	UserAgent   string            `json:"user_agent,omitempty"`
-	Headers     map[string]string `json:"headers,omitempty"` // 值支持 {public_base} {public_origin} {client_ip}
-	Routes      []Route           `json:"routes,omitempty"`
-	Remark      string            `json:"remark,omitempty"`
+	ForwardIP     bool              `json:"forward_ip"`               // 把客户端真实 IP 传给上游
+	InsecureTLS   bool              `json:"insecure_tls"`             // 不校验上游证书
+	IgnoreExpired bool              `json:"ignore_expired,omitempty"` // 上游证书过期仍连接（仍校验域名和签发链）
+	UserAgent     string            `json:"user_agent,omitempty"`
+	Headers       map[string]string `json:"headers,omitempty"` // 值支持 {public_base} {public_origin} {client_ip}
+	Routes        []Route           `json:"routes,omitempty"`
+	Remark        string            `json:"remark,omitempty"`
 }
 
 type Config struct {

@@ -27,6 +27,7 @@ nav button.on{background:var(--chip);color:var(--text);font-weight:600}
 main{max-width:1200px;margin:0 auto;padding:16px}
 .btn{border:1px solid var(--line);background:var(--card);color:var(--text);padding:6px 12px;border-radius:6px;cursor:pointer;font-size:13px;white-space:nowrap}
 .btn:hover{border-color:var(--muted)}
+a.btn{text-decoration:none;display:inline-block}
 .btn.pri{background:var(--primary);border-color:var(--primary);color:#fff}
 .btn.pri:hover{background:var(--primary-2)}
 .btn.dan{color:var(--danger)}
@@ -150,7 +151,8 @@ td.p{white-space:normal;word-break:break-all;min-width:240px;font-family:ui-mono
       <div class="f"><label>自定义请求头（可选）</label><textarea name="headers" placeholder="每行一个，如&#10;MagpieCDN: {public_base}"></textarea><small>值里可用占位符：<code>{public_base}</code> 客户端访问地址（含路径前缀）、<code>{public_origin}</code> 不含路径、<code>{client_ip}</code> 客户端 IP。</small></div>
       <div class="f"><label>额外转发规则（可选）</label><textarea name="routes" placeholder="每行一个：路径 => 目标，如&#10;/magpiecdn => https://{arg.load}.example.com"></textarea><small>服务器自带推流路径时使用：匹配该路径的请求（路径和参数原样）转发到目标。<code>{arg.名称}</code> 取请求参数，只允许字母数字和 -。</small></div>
       <label class="chk"><input type="checkbox" name="forward_ip"><span>把客户端真实 IP 传给上游（X-Forwarded-For / X-Real-IP）。默认不传，上游只看到本机 IP。</span></label>
-      <label class="chk"><input type="checkbox" name="insecure_tls"><span>不校验上游 HTTPS 证书（自签证书、证书过期时使用）</span></label>
+      <label class="chk"><input type="checkbox" name="ignore_expired"><span>上游证书过期仍然连接（仍校验域名和签发机构，比「不校验证书」安全）</span></label>
+      <label class="chk"><input type="checkbox" name="insecure_tls"><span>完全不校验上游 HTTPS 证书（自签证书等）</span></label>
       <div class="f"><label>备注</label><input type="text" name="remark"></div>
     </details>
     <label class="chk"><input type="checkbox" name="enabled"><span>启用</span></label>
@@ -281,7 +283,7 @@ function renderSites() {
         <div class="chips"><span class="chip">${esc(modeTxt)}</span>
           <span class="chip ${s.stream_mode === 'proxy' ? 'g' : 'w'}">${s.stream_mode === 'proxy' ? '推流中转' : '推流直连'}</span>
           ${hosts.length ? `<span class="chip" title="${esc(hosts.join('\n'))}">推流域名 ${hosts.length}</span>` : ''}
-          ${s.forward_ip ? '<span class="chip">传真实IP</span>' : ''}${s.insecure_tls ? '<span class="chip w">不校验证书</span>' : ''}</div>
+          ${s.forward_ip ? '<span class="chip">传真实IP</span>' : ''}${s.insecure_tls ? '<span class="chip w">不校验证书</span>' : s.ignore_expired ? '<span class="chip w">忽略证书过期</span>' : ''}</div>
         <div class="addr"><code title="${esc(addr)}">${esc(addr)}</code><button class="btn sm" data-act="copy" data-v="${esc(addr)}">复制</button></div>
         <div class="kv">上游 <b>${esc(s.upstream)}</b></div>
         ${s.remark ? `<div class="kv">${esc(s.remark)}</div>` : ''}
@@ -321,7 +323,7 @@ async function siteAction(el, e) {
   } else if (act === 'test') {
     const res = card.querySelector('[data-res]');
     res.className = 'test'; res.textContent = '测试中…'; el.disabled = true;
-    testRes[id] = await testUpstream({upstream: s.upstream, insecure_tls: s.insecure_tls, user_agent: s.user_agent});
+    testRes[id] = await testUpstream({upstream: s.upstream, insecure_tls: s.insecure_tls, ignore_expired: s.ignore_expired, user_agent: s.user_agent});
     res.innerHTML = testRes[id]; el.disabled = false;
   }
 }
@@ -352,11 +354,11 @@ function openForm(s) {
   f.stream_hosts.value = (v.stream_hosts || []).join('\n');
   f.headers.value = Object.entries(v.headers || {}).map(([k, x]) => `${k}: ${x}`).join('\n');
   f.routes.value = (v.routes || []).map(r => `${r.path} => ${r.target}`).join('\n');
-  f.forward_ip.checked = !!v.forward_ip; f.insecure_tls.checked = !!v.insecure_tls; f.enabled.checked = v.enabled !== false;
+  f.forward_ip.checked = !!v.forward_ip; f.insecure_tls.checked = !!v.insecure_tls; f.ignore_expired.checked = !!v.ignore_expired; f.enabled.checked = v.enabled !== false;
   f.querySelector(`input[name=mode][value=${v.mode}]`).checked = true;
   f.querySelector(`input[name=stream_mode][value=${v.stream_mode || 'proxy'}]`).checked = true;
   if (!v.port && v.mode !== 'port') f.port.value = nextPort();
-  f.querySelector('details').open = !!(v.public_url || v.user_agent || v.forward_ip || v.insecure_tls || (v.headers && Object.keys(v.headers).length) || (v.routes && v.routes.length));
+  f.querySelector('details').open = !!(v.public_url || v.user_agent || v.forward_ip || v.insecure_tls || v.ignore_expired || (v.headers && Object.keys(v.headers).length) || (v.routes && v.routes.length));
   syncMode();
   $('#mask').classList.add('show');
   setTimeout(() => f.name.focus(), 50);
@@ -373,7 +375,7 @@ document.addEventListener('keydown', e => { if (e.key === 'Escape') closeForm();
 $('#btnTest').onclick = async () => {
   const f = $('#form');
   $('#testRes').innerHTML = '测试中…';
-  $('#testRes').innerHTML = await testUpstream({upstream: f.upstream.value, insecure_tls: f.insecure_tls.checked, user_agent: f.user_agent.value});
+  $('#testRes').innerHTML = await testUpstream({upstream: f.upstream.value, insecure_tls: f.insecure_tls.checked, ignore_expired: f.ignore_expired.checked, user_agent: f.user_agent.value});
 };
 $('#form').onsubmit = async e => {
   e.preventDefault();
@@ -387,7 +389,7 @@ $('#form').onsubmit = async e => {
     stream_mode: f.querySelector('input[name=stream_mode]:checked').value,
     stream_hosts: f.stream_hosts.value.split('\n').map(x => x.trim()).filter(Boolean),
     stream_hosts_base: formHostsBase,
-    forward_ip: f.forward_ip.checked, insecure_tls: f.insecure_tls.checked, user_agent: f.user_agent.value,
+    forward_ip: f.forward_ip.checked, insecure_tls: f.insecure_tls.checked, ignore_expired: f.ignore_expired.checked, user_agent: f.user_agent.value,
     headers, remark: f.remark.value, enabled: f.enabled.checked,
     routes: f.routes.value.split('\n').map(l => l.split('=>')).filter(p => p.length === 2).map(([p, t]) => ({path: p.trim(), target: t.trim()})),
   };
@@ -456,7 +458,8 @@ function renderSettings() {
         <label>证书文件<small>fullchain.pem / .crt / .cer</small><input type="file" id="certFile" accept=".pem,.crt,.cer,.txt"></label>
         <label>私钥文件<small>privkey.pem / .key</small><input type="file" id="keyFile" accept=".pem,.key,.txt"></label>
       </div>
-      <div class="row" style="margin-top:8px"><button type="button" class="btn" id="btnCert">上传证书</button><span class="test" id="certRes"></span></div>
+      <label class="chk" style="margin-top:8px"><input type="checkbox" id="allowExpired"><span>允许上传已过期的证书（nginx 能用，但客户端可能提示证书过期，需要在客户端里允许）</span></label>
+      <div class="row"><button type="button" class="btn" id="btnCert">上传证书</button><span class="test" id="certRes"></span></div>
       <small>证书和私钥会校验是否匹配，保存在服务器 <code>数据目录/ssl/</code>（权限 600），生成的 nginx 配置会自动引用。证书到期后重新上传，再 <code>nginx -s reload</code>。</small>
     </div>
     <details ${st.cert && st.cert.uploaded ? '' : (st.nginx_cert ? 'open' : '')}><summary>改用服务器上已有的证书路径（如 certbot 自动续期）</summary>
@@ -467,6 +470,16 @@ function renderSettings() {
     <div id="nginxOut" style="display:none;margin-top:12px">
       <div class="row" style="margin-bottom:6px"><span class="kv">保存为 /etc/nginx/conf.d/emby-proxy.conf，然后执行 <code>nginx -t && nginx -s reload</code></span><div class="sp"></div><button type="button" class="btn sm" id="btnNginxCopy">复制</button></div>
       <textarea id="nginxText" readonly style="min-height:360px;font-size:12px"></textarea></div></form>
+    <div class="panel"><h3>导入 / 导出配置</h3>
+      <div class="help" style="margin-bottom:10px">导出全部站点和设置（不含面板密码），可用于备份或迁移到另一台服务器。也可以导入服务器上的 <code>config.json</code>。<br><span class="bad">导出文件包含各服务器的上游地址，请勿公开分享。</span></div>
+      <div class="row" style="flex-wrap:wrap;gap:10px">
+        <a class="btn" href="/api/export" download>导出配置</a>
+        <input type="file" id="impFile" accept=".json,application/json" style="max-width:240px">
+        <div class="seg" style="min-width:220px"><label><input type="radio" name="impMode" value="merge" checked>合并</label><label><input type="radio" name="impMode" value="replace">替换全部</label></div>
+        <button type="button" class="btn pri" id="btnImport">导入</button>
+      </div>
+      <small class="kv" style="display:block;white-space:normal;margin-top:6px">合并：ID 相同的站点覆盖，其余追加。替换全部：删除现有站点，只保留文件里的。导入前会整体校验，有问题不会改动任何配置。</small>
+      <div class="test" id="impRes" style="white-space:pre-wrap"></div></div>
     <div class="panel"><h3>端口</h3><div class="help">面板：<code>${esc(st.admin_listen)}</code>　入口：<code>${esc(st.listen)}</code><br>修改这两个端口需要编辑 config.json 中的 <code>admin_listen</code> / <code>listen</code> 后重启容器。</div></div>`;
   $('#sf').onsubmit = async e => {
     e.preventDefault();
@@ -480,10 +493,27 @@ function renderSettings() {
     try { await api('PUT', '/api/settings', {port_bind: f.port_bind.value, nginx_cert: f.nginx_cert.value, nginx_key: f.nginx_key.value}); await load(); toast('已保存'); }
     catch (err) { toast(err.message); }
   };
+  $('#btnImport').onclick = async () => {
+    const file = $('#impFile').files[0], res = $('#impRes');
+    if (!file) { res.innerHTML = '<span class="bad">请先选择配置文件</span>'; return; }
+    const mode = document.querySelector('input[name=impMode]:checked').value;
+    let data;
+    try { data = JSON.parse(await file.text()); } catch (e) { res.innerHTML = '<span class="bad">文件不是有效的 JSON</span>'; return; }
+    const n = (data.sites || []).length;
+    if (mode === 'replace' && !confirm(`将删除现有 ${S.sites.length} 个站点，替换为文件中的 ${n} 个站点，确定？`)) return;
+    res.textContent = '导入中…';
+    try {
+      const r = await api('POST', '/api/import', {mode, data});
+      await load(); tab = 'settings'; render();
+      $('#impRes').innerHTML = `<span class="ok">✓ 导入完成：新增 ${r.added} 个，覆盖 ${r.updated} 个，现共 ${r.total} 个站点</span>` +
+        (r.warnings && r.warnings.length ? `\n<span class="bad">${esc(r.warnings.join('\n'))}</span>` : '');
+    } catch (err) { res.innerHTML = `<span class="bad">${esc(err.message)}</span>`; }
+  };
   $('#btnCert').onclick = async () => {
     const cf = $('#certFile').files[0], kf = $('#keyFile').files[0];
     if (!cf || !kf) { $('#certRes').innerHTML = '<span class="bad">请同时选择证书文件和私钥文件</span>'; return; }
     const fd = new FormData(); fd.append('cert', cf); fd.append('key', kf);
+    if ($('#allowExpired').checked) fd.append('allow_expired', '1');
     $('#certRes').textContent = '上传中…';
     try {
       const r = await fetch('/api/cert', {method: 'POST', headers: {'X-Emby-Proxy': '1'}, body: fd});

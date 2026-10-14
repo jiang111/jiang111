@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"log"
 	"net"
 	"net/http"
@@ -28,11 +30,10 @@ type Manager struct {
 	listeners map[int]*http.Server
 	stats     map[string]*Stats
 
-	logs    *LogRing
-	tr      *http.Transport
-	trInsec *http.Transport
-	saveMu  sync.Mutex
-	bg      sync.WaitGroup // 后台保存（发现推流域名时）
+	logs   *LogRing
+	trs    [3]*http.Transport // 按 tlsVerify / tlsIgnoreExpired / tlsInsecure
+	saveMu sync.Mutex
+	bg     sync.WaitGroup // 后台保存（发现推流域名时）
 
 	certMu   sync.Mutex
 	certKey  string
@@ -40,9 +41,57 @@ type Manager struct {
 	started  time.Time
 }
 
-func newTransport(insecure bool) *http.Transport {
+// TLS 校验方式
+const (
+	tlsVerify        = iota // 正常校验
+	tlsIgnoreExpired        // 校验域名和证书链，只忽略过期
+	tlsInsecure             // 完全不校验
+)
+
+// testRoots 仅测试用（nil 表示系统根证书）
+var testRoots *x509.CertPool
+
+func tlsConfig(mode int) *tls.Config {
+	switch mode {
+	case tlsInsecure:
+		return &tls.Config{InsecureSkipVerify: true}
+	case tlsIgnoreExpired:
+		// 走 HTTP 代理时 Transport 用这里的配置；直连时用 newTransport 里的 DialTLSContext（能拿到 IP 主机名）
+		return &tls.Config{InsecureSkipVerify: true, VerifyConnection: func(cs tls.ConnectionState) error {
+			return verifyIgnoringExpiry(cs, cs.ServerName)
+		}}
+	}
+	return &tls.Config{}
+}
+
+// verifyIgnoringExpiry 校验证书链和主机名，只是把校验时间放到证书有效期内。
+// host 为空时拒绝（不能在不知道主机名的情况下放行）。
+func verifyIgnoringExpiry(cs tls.ConnectionState, host string) error {
+	if host == "" {
+		return errors.New("无法确定上游主机名，不能只忽略过期，请改用「完全不校验证书」")
+	}
+	if len(cs.PeerCertificates) == 0 {
+		return errors.New("上游没有提供证书")
+	}
+	leaf := cs.PeerCertificates[0]
+	at := time.Now()
+	if at.After(leaf.NotAfter) {
+		at = leaf.NotAfter.Add(-time.Second)
+	}
+	if at.Before(leaf.NotBefore) {
+		at = leaf.NotBefore.Add(time.Second)
+	}
+	inter := x509.NewCertPool()
+	for _, c := range cs.PeerCertificates[1:] {
+		inter.AddCert(c)
+	}
+	_, err := leaf.Verify(x509.VerifyOptions{DNSName: host, Intermediates: inter, CurrentTime: at, Roots: testRoots})
+	return err
+}
+
+func newTransport(mode int) *http.Transport {
 	d := &net.Dialer{Timeout: 15 * time.Second, KeepAlive: 30 * time.Second}
-	return &http.Transport{
+	tr := &http.Transport{
 		Proxy:                 http.ProxyFromEnvironment,
 		DialContext:           d.DialContext,
 		ForceAttemptHTTP2:     true,
@@ -52,8 +101,34 @@ func newTransport(insecure bool) *http.Transport {
 		TLSHandshakeTimeout:   15 * time.Second,
 		ResponseHeaderTimeout: 180 * time.Second, // 转码起播可能较慢
 		ExpectContinueTimeout: time.Second,
-		TLSClientConfig:       &tls.Config{InsecureSkipVerify: insecure},
+		TLSClientConfig:       tlsConfig(mode),
 	}
+	if mode == tlsIgnoreExpired {
+		// Go 对 IP 地址不填 ServerName，自己握手才能拿到要校验的主机名。
+		// 只协商 http/1.1：自定义握手协商出 h2 会影响 WebSocket 等需要 HTTP/1 的请求。
+		tr.DialTLSContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+			host, _, err := net.SplitHostPort(addr)
+			if err != nil {
+				return nil, err
+			}
+			raw, err := d.DialContext(ctx, network, addr)
+			if err != nil {
+				return nil, err
+			}
+			cfg := &tls.Config{InsecureSkipVerify: true, NextProtos: []string{"http/1.1"},
+				VerifyConnection: func(cs tls.ConnectionState) error { return verifyIgnoringExpiry(cs, host) }}
+			if net.ParseIP(host) == nil {
+				cfg.ServerName = host
+			}
+			c := tls.Client(raw, cfg)
+			if err := c.HandshakeContext(ctx); err != nil {
+				raw.Close()
+				return nil, err
+			}
+			return c, nil
+		}
+	}
+	return tr
 }
 
 func NewManager(path string, cfg *Config) *Manager {
@@ -62,19 +137,21 @@ func NewManager(path string, cfg *Config) *Manager {
 		listeners: map[int]*http.Server{},
 		stats:     map[string]*Stats{},
 		logs:      newLogRing(1000),
-		tr:        newTransport(false),
-		trInsec:   newTransport(true),
+		trs:       [3]*http.Transport{newTransport(tlsVerify), newTransport(tlsIgnoreExpired), newTransport(tlsInsecure)},
 		started:   time.Now(),
 	}
 	m.loadStats()
 	return m
 }
 
-func (m *Manager) transport(insecure bool) http.RoundTripper {
-	if insecure {
-		return m.trInsec
+func (m *Manager) transport(insecure, ignoreExpired bool) http.RoundTripper {
+	switch {
+	case insecure:
+		return m.trs[tlsInsecure]
+	case ignoreExpired:
+		return m.trs[tlsIgnoreExpired]
 	}
-	return m.tr
+	return m.trs[tlsVerify]
 }
 
 // reload 根据当前配置重建路由表并增减端口监听。调用方需持有 m.mu 写锁。

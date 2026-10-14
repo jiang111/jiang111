@@ -50,6 +50,8 @@ func (a *Admin) Handler() http.Handler {
 	mux.HandleFunc("POST /api/test", a.auth(a.test))
 	mux.HandleFunc("PUT /api/settings", a.auth(a.settings))
 	mux.HandleFunc("POST /api/cert", a.auth(a.uploadCert))
+	mux.HandleFunc("GET /api/export", a.auth(a.exportConfig))
+	mux.HandleFunc("POST /api/import", a.auth(a.importConfig))
 	mux.HandleFunc("GET /api/nginx", a.auth(func(w http.ResponseWriter, r *http.Request) {
 		leaf := a.m.uploadedCert()
 		a.m.mu.RLock()
@@ -415,9 +417,10 @@ func (a *Admin) settings(w http.ResponseWriter, r *http.Request) {
 // test 直接请求上游的 /System/Info/Public，检查连通性。
 func (a *Admin) test(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Upstream    string `json:"upstream"`
-		InsecureTLS bool   `json:"insecure_tls"`
-		UserAgent   string `json:"user_agent"`
+		Upstream      string `json:"upstream"`
+		InsecureTLS   bool   `json:"insecure_tls"`
+		IgnoreExpired bool   `json:"ignore_expired"`
+		UserAgent     string `json:"user_agent"`
 	}
 	if err := readJSON(r, &body); err != nil {
 		writeErr(w, 400, "请求格式错误")
@@ -430,7 +433,7 @@ func (a *Admin) test(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	client := &http.Client{
-		Transport: a.m.transport(body.InsecureTLS),
+		Transport: a.m.transport(body.InsecureTLS, body.IgnoreExpired),
 		Timeout:   15 * time.Second,
 		// 不跟随跳转：很多服务器把被拦截的请求 302 到错误页
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
@@ -486,6 +489,8 @@ func simplifyNetErr(err error) string {
 		return "域名解析失败"
 	case strings.Contains(s, "connection refused"):
 		return "连接被拒绝（端口没开？）"
+	case strings.Contains(s, "expired") || strings.Contains(s, "not yet valid"):
+		return "上游证书已过期（可勾选「上游证书过期仍连接」）: " + s
 	case strings.Contains(s, "certificate"):
 		return "证书校验失败（可勾选「不校验证书」）: " + s
 	}

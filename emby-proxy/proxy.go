@@ -107,7 +107,7 @@ func newSiteRT(m *Manager, s Site, st *Stats) (*SiteRT, error) {
 }
 
 func (s *SiteRT) roundTripper() http.RoundTripper {
-	base := s.m.transport(s.cfg.InsecureTLS)
+	base := s.m.transport(s.cfg.InsecureTLS, s.cfg.IgnoreExpired)
 	if s.cfg.StreamMode == "proxy" {
 		return &followTransport{base: base, s: s}
 	}

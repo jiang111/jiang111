@@ -7,6 +7,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/json"
@@ -235,12 +236,16 @@ func TestGzipRewrite(t *testing.T) {
 
 func TestWebSocket(t *testing.T) {
 	_, entry, _, _ := setup(t, Site{Mode: "path", Path: "ws", StreamMode: "proxy"})
-	c, err := net.Dial("tcp", strings.TrimPrefix(entry.URL, "http://"))
+	checkWS(t, entry.URL, "/ws")
+}
+
+func checkWS(t *testing.T, entryURL, prefix string) {
+	c, err := net.Dial("tcp", strings.TrimPrefix(entryURL, "http://"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	fmt.Fprintf(c, "GET /ws/embywebsocket?api_key=x HTTP/1.1\r\nHost: x\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n")
+	fmt.Fprintf(c, "GET "+prefix+"/embywebsocket?api_key=x HTTP/1.1\r\nHost: x\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n")
 	br := bufio.NewReader(c)
 	resp, err := http.ReadResponse(br, nil)
 	if err != nil || resp.StatusCode != 101 {
@@ -385,9 +390,13 @@ func TestCertUpload(t *testing.T) {
 	defer srv.Close()
 	cookie := adminLogin(t, srv.URL, "pw123456")
 
+	allowExpired := false
 	upload := func(cert, key []byte) (int, string) {
 		var buf bytes.Buffer
 		mw := multipart.NewWriter(&buf)
+		if allowExpired {
+			mw.WriteField("allow_expired", "1")
+		}
 		fw, _ := mw.CreateFormFile("cert", "fullchain.pem")
 		fw.Write(cert)
 		fw, _ = mw.CreateFormFile("key", "privkey.pem")
@@ -419,6 +428,11 @@ func TestCertUpload(t *testing.T) {
 	if code, body := upload(cOld, kOld); code != 400 || !strings.Contains(body, "过期") {
 		t.Fatalf("expired: %d %s", code, body)
 	}
+	allowExpired = true
+	if code, body := upload(cOld, kOld); code != 200 {
+		t.Fatalf("expired with allow_expired: %d %s", code, body)
+	}
+	allowExpired = false
 	if code, body := upload(c1, k1); code != 200 || !strings.Contains(body, "emby.example.com") {
 		t.Fatalf("upload: %d %s", code, body)
 	}
@@ -656,4 +670,157 @@ func TestGzipPassthroughAndRoutes(t *testing.T) {
 	if string(b) != "node:/stream/abc" {
 		t.Fatalf("follow route redirect: %d %s", resp.StatusCode, b)
 	}
+}
+
+// 用测试 CA 签一张给 127.0.0.1 / 指定域名的证书
+func tlsServerWithCert(t *testing.T, notAfter time.Time, withIP bool, names ...string) (*httptest.Server, *x509.CertPool) {
+	caKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	caTpl := &x509.Certificate{SerialNumber: big.NewInt(10), Subject: pkix.Name{CommonName: "test ca"}, IsCA: true,
+		BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign, NotBefore: time.Now().Add(-1000 * time.Hour), NotAfter: time.Now().Add(1000 * time.Hour)}
+	caDER, _ := x509.CreateCertificate(rand.Reader, caTpl, caTpl, &caKey.PublicKey, caKey)
+	ca, _ := x509.ParseCertificate(caDER)
+	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	tpl := &x509.Certificate{SerialNumber: big.NewInt(11), Subject: pkix.Name{CommonName: names[0]}, DNSNames: names,
+		NotBefore: time.Now().Add(-500 * time.Hour), NotAfter: notAfter,
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
+	if withIP {
+		tpl.IPAddresses = []net.IP{net.ParseIP("127.0.0.1")}
+	}
+	der, _ := x509.CreateCertificate(rand.Reader, tpl, ca, &key.PublicKey, caKey)
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/embywebsocket" {
+			c, brw, _ := http.NewResponseController(w).Hijack()
+			defer c.Close()
+			brw.WriteString("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n")
+			brw.Flush()
+			line, _ := brw.ReadString('\n')
+			brw.WriteString("echo:" + line)
+			brw.Flush()
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{"Id": "x", "ServerName": "TLS", "Version": "4.8"})
+	}))
+	srv.TLS = &tls.Config{Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}}}
+	srv.StartTLS()
+	t.Cleanup(srv.Close)
+	pool := x509.NewCertPool()
+	pool.AddCert(ca)
+	return srv, pool
+}
+
+func TestIgnoreExpiredUpstream(t *testing.T) {
+	expired, pool := tlsServerWithCert(t, time.Now().Add(-time.Hour), true, "emby.test")
+	testRoots = pool
+	defer func() { testRoots = nil }()
+	get := func(mode int, url string) error {
+		tr := newTransport(mode)
+		tr.Proxy = nil
+		if mode == tlsVerify {
+			tr.TLSClientConfig.RootCAs = pool
+		}
+		resp, err := (&http.Client{Transport: tr}).Get(url)
+		if err == nil {
+			resp.Body.Close()
+		}
+		return err
+	}
+	if err := get(tlsVerify, expired.URL); err == nil || !strings.Contains(err.Error(), "expired") {
+		t.Fatalf("normal verify should fail on expired cert: %v", err)
+	}
+	if err := get(tlsIgnoreExpired, expired.URL); err != nil {
+		t.Fatalf("ignore expired should connect: %v", err)
+	}
+	// 只忽略过期：域名不对仍然拒绝
+	other, pool2 := tlsServerWithCert(t, time.Now().Add(-time.Hour), false, "emby.test") // 证书只含 emby.test，不含 127.0.0.1
+	testRoots = pool2
+	if err := get(tlsIgnoreExpired, other.URL); err == nil || !strings.Contains(err.Error(), "127.0.0.1") {
+		t.Fatalf("ignore expired must still verify hostname: %v", err)
+	}
+	// 签发机构不受信任仍然拒绝
+	testRoots = x509.NewCertPool()
+	if err := get(tlsIgnoreExpired, expired.URL); err == nil {
+		t.Fatalf("ignore expired must still verify issuer")
+	}
+}
+
+func TestExportImport(t *testing.T) {
+	src, srvA, cA := newAdmin(t, &Config{EntryURL: "https://a.example.com", PortBind: "127.0.0.1"})
+	for _, b := range []string{
+		`{"name":"一","upstream":"https://one.example.com","mode":"port","port":18001,"public_url":"https://a.example.com:8001","stream_hosts":["https://cdn.one.example.com:443"]}`,
+		`{"name":"二","upstream":"two.example.com","mode":"path","path":"two","headers":{"MagpieCDN":"{public_base}"},"routes":[{"path":"/magpiecdn","target":"https://{arg.load}.two.example.com"}]}`,
+	} {
+		if code, out := adminDo(t, srvA, cA, "POST", "/api/sites", b, csrfHeader, "1"); code != 200 {
+			t.Fatalf("add: %s", out)
+		}
+	}
+	code, exported := adminDo(t, srvA, cA, "GET", "/api/export", "")
+	if code != 200 || strings.Contains(exported, "pw123456") || strings.Contains(exported, `"secret"`) {
+		t.Fatalf("export leaked secrets or failed: %d %s", code, exported)
+	}
+
+	dst, srvB, cB := newAdmin(t, &Config{})
+	if code, out := adminDo(t, srvB, cB, "POST", "/api/sites", `{"name":"旧","upstream":"https://old.example.com","mode":"path","path":"old"}`, csrfHeader, "1"); code != 200 {
+		t.Fatal(out)
+	}
+	// 替换
+	code, out := adminDo(t, srvB, cB, "POST", "/api/import", `{"mode":"replace","data":`+exported+`}`, csrfHeader, "1")
+	if code != 200 || len(dst.cfg.Sites) != 2 || dst.cfg.EntryURL != "https://a.example.com" || dst.cfg.PortBind != "127.0.0.1" {
+		t.Fatalf("replace import: %d %s sites=%d entry=%q", code, out, len(dst.cfg.Sites), dst.cfg.EntryURL)
+	}
+	if dst.cfg.Sites[1].Routes[0].Target != "https://{arg.load}.two.example.com" || dst.cfg.Sites[0].StreamHosts[0] != "https://cdn.one.example.com:443" {
+		t.Fatalf("fields lost: %+v", dst.cfg.Sites)
+	}
+	// 合并：同 ID 覆盖，不重复
+	if code, out := adminDo(t, srvB, cB, "POST", "/api/import", `{"mode":"merge","data":`+exported+`}`, csrfHeader, "1"); code != 200 || len(dst.cfg.Sites) != 2 {
+		t.Fatalf("merge same ids: %d %s %d", code, out, len(dst.cfg.Sites))
+	}
+	// 冲突：新 ID 但端口重复 → 整体拒绝，不改动
+	bad := `{"mode":"merge","data":{"sites":[{"id":"new1","name":"冲突","upstream":"https://x.example.com","mode":"port","port":18001},{"id":"new2","name":"好的","upstream":"https://y.example.com","mode":"path","path":"y"}]}}`
+	code, out = adminDo(t, srvB, cB, "POST", "/api/import", bad, csrfHeader, "1")
+	if code != 400 || !strings.Contains(out, "18001") || len(dst.cfg.Sites) != 2 {
+		t.Fatalf("conflict import should be rejected atomically: %d %s %d", code, out, len(dst.cfg.Sites))
+	}
+	// 服务器上的 config.json 原文件也能导入，且不会改密码
+	raw, _ := os.ReadFile(src.path)
+	if code, out := adminDo(t, srvB, cB, "POST", "/api/import", `{"mode":"replace","data":`+string(raw)+`}`, csrfHeader, "1"); code != 200 || dst.cfg.AdminPassword != "pw123456" {
+		t.Fatalf("config.json import: %d %s", code, out)
+	}
+	if code, _ := adminDo(t, srvB, cB, "POST", "/api/import", `{"mode":"merge","data":{"foo":1}}`, csrfHeader, "1"); code != 400 {
+		t.Fatalf("non-config file should be rejected")
+	}
+}
+
+func TestIgnoreExpiredThroughProxy(t *testing.T) {
+	if err := verifyIgnoringExpiry(tls.ConnectionState{}, ""); err == nil {
+		t.Fatal("empty host must be rejected")
+	}
+	up, pool := tlsServerWithCert(t, time.Now().Add(-time.Hour), true, "emby.test")
+	testRoots = pool
+	defer func() { testRoots = nil }()
+	mk := func(ignore bool) string {
+		site := &Site{ID: "e", Name: "e", Enabled: true, Upstream: up.URL, Mode: "path", Path: "e", StreamMode: "proxy", IgnoreExpired: ignore}
+		cfg := &Config{Listen: ":0", AdminListen: ":0", Sites: []*Site{site}}
+		if err := validateSite(cfg, site); err != nil {
+			t.Fatal(err)
+		}
+		m := NewManager(filepath.Join(t.TempDir(), "c.json"), cfg)
+		for _, tr := range m.trs {
+			tr.Proxy = nil
+		}
+		m.trs[tlsVerify].TLSClientConfig.RootCAs = pool
+		m.mu.Lock()
+		m.reload()
+		m.mu.Unlock()
+		entry := httptest.NewServer(m)
+		t.Cleanup(entry.Close)
+		return entry.URL
+	}
+	if resp, _ := get(t, mk(false)+"/e/emby/System/Info/Public"); resp.StatusCode != 502 {
+		t.Fatalf("expired upstream without option should be 502, got %d", resp.StatusCode)
+	}
+	base := mk(true)
+	if resp, body := get(t, base+"/e/emby/System/Info/Public"); resp.StatusCode != 200 || !strings.Contains(body, `"TLS"`) {
+		t.Fatalf("ignore_expired through proxy: %d %s", resp.StatusCode, body)
+	}
+	checkWS(t, base, "/e")
 }
