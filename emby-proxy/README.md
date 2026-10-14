@@ -33,7 +33,9 @@ nginx 在对外端口做 HTTPS，转发给本机的站点端口。对外端口�
 
 1. 面板「设置 → Nginx」：
    - 独立端口监听地址选「仅本机 127.0.0.1」（站点端口只让 nginx 访问，外面不能绕过 HTTPS）
-   - 填证书和私钥路径（如 `/etc/letsencrypt/live/你的域名/fullchain.pem`、`privkey.pem`）
+   - 「HTTPS 证书」选择电脑上的证书文件（fullchain.pem / .crt）和私钥文件（privkey.pem / .key）上传。
+     会校验是否匹配、是否过期，保存在 `/opt/emby-proxy/data/ssl/`（权限 600），生成的 nginx 配置自动引用。
+     证书到期后重新上传再 `nginx -s reload`；用 certbot 自动续期的话，展开「改用服务器上已有的证书路径」填路径即可。
 2. 添加站点：接入方式「独立端口」填 `18001`；「高级选项 → 客户端访问地址」填 `https://你的域名:8001`。
 3. 「设置 → 生成 nginx 配置」，保存为 `/etc/nginx/conf.d/emby-proxy.conf`，然后：
    ```bash

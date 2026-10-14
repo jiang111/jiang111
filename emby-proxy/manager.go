@@ -31,6 +31,7 @@ type Manager struct {
 	tr      *http.Transport
 	trInsec *http.Transport
 	saveMu  sync.Mutex
+	bg      sync.WaitGroup // 后台保存（发现推流域名时）
 	started time.Time
 }
 

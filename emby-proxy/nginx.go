@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/x509"
 	"fmt"
 	"net"
 	"net/url"
@@ -9,7 +10,8 @@ import (
 
 // nginxConfig 为「独立端口」站点生成 nginx 配置：nginx 在公网端口终结 HTTPS，转发到本机的站点端口。
 // 站点需要填写「客户端访问地址」（如 https://emby.example.com:8001），据此决定 server_name 和对外端口。
-func nginxConfig(cfg *Config) string {
+// leaf 为当前证书（可为 nil），用于提示证书是否覆盖站点域名。
+func nginxConfig(cfg *Config, leaf *x509.Certificate) string {
 	cert, key := cfg.NginxCert, cfg.NginxKey
 	if cert == "" {
 		cert = "/etc/nginx/ssl/fullchain.pem"
@@ -56,6 +58,9 @@ ssl_session_timeout 1d;
 			fmt.Fprintf(&b, "# 注意：端口 %s 已被其它域名使用，同端口多域名需要证书都覆盖这些域名\n", port)
 		}
 		used[port] = host
+		if leaf != nil && leaf.VerifyHostname(host) != nil {
+			fmt.Fprintf(&b, "# 注意：证书不包含域名 %s，客户端会报证书错误\n", host)
+		}
 		if port == fmt.Sprint(s.Port) {
 			b.WriteString("# 跳过：对外端口不能和站点端口相同（Linux 上会端口冲突），例如对外 8001、站点 18001\n")
 			continue

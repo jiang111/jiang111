@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -47,9 +48,14 @@ func (a *Admin) Handler() http.Handler {
 	mux.HandleFunc("POST /api/sites/{id}/clear-stats", a.auth(a.clearStats))
 	mux.HandleFunc("POST /api/test", a.auth(a.test))
 	mux.HandleFunc("PUT /api/settings", a.auth(a.settings))
+	mux.HandleFunc("POST /api/cert", a.auth(a.uploadCert))
 	mux.HandleFunc("GET /api/nginx", a.auth(func(w http.ResponseWriter, r *http.Request) {
+		leaf := a.m.uploadedCert()
 		a.m.mu.RLock()
-		conf := nginxConfig(a.m.cfg)
+		if leaf != nil && a.m.cfg.NginxCert != filepath.Join(a.m.hostSSLDir(), "fullchain.pem") {
+			leaf = nil // 用的是手动填写的路径，无法确认证书内容
+		}
+		conf := nginxConfig(a.m.cfg, leaf)
 		a.m.mu.RUnlock()
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.Write([]byte(conf))
@@ -191,6 +197,7 @@ func (a *Admin) state(w http.ResponseWriter, r *http.Request) {
 			"listen": m.cfg.Listen, "admin_listen": m.cfg.AdminListen,
 			"entry_url": m.cfg.EntryURL, "public_host": m.cfg.PublicHost,
 			"port_bind": m.cfg.PortBind, "nginx_cert": m.cfg.NginxCert, "nginx_key": m.cfg.NginxKey,
+			"cert": m.certInfo(),
 		},
 		"sites":   views,
 		"uptime":  int64(time.Since(m.started).Seconds()),

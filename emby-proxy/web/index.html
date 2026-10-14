@@ -96,6 +96,11 @@ td.p{white-space:normal;word-break:break-all;min-width:240px;font-family:ui-mono
 .s2{color:var(--primary)}.s3{color:#2563eb}.s4{color:var(--warn)}.s5{color:var(--danger)}
 .panel{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px;margin-bottom:14px;max-width:720px}
 .panel h3{margin:0 0 12px;font-size:15px}
+.certpick{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.certpick label{border:1px dashed var(--line);border-radius:6px;padding:8px 10px;font-size:13px;font-weight:600;cursor:pointer;min-width:0}
+.certpick small{display:block;font-weight:400;color:var(--muted);font-size:11px;margin:2px 0 6px}
+.certpick input{width:100%;font-size:12px}
+@media (max-width:520px){.certpick{grid-template-columns:1fr}}
 .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:#111827;color:#fff;padding:8px 16px;border-radius:8px;z-index:50;font-size:13px;display:none;max-width:90vw}
 .login{max-width:340px;margin:12vh auto;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:24px}
 .login h2{margin:0 0 16px;font-size:18px;text-align:center}
@@ -413,6 +418,18 @@ async function refreshLogs() {
   }).join('') : '<tr><td colspan="9" style="text-align:center;color:var(--muted);padding:30px">暂无记录</td></tr>';
 }
 
+function certStatus(st) {
+  const c = st.cert;
+  if (c && c.uploaded) {
+    const days = Math.floor((c.not_after * 1000 - Date.now()) / 86400000);
+    const d = new Date(c.not_after * 1000).toLocaleDateString('zh-CN');
+    const cls = days < 0 ? 'bad' : days < 15 ? 'bad' : 'ok';
+    return `<span class="${cls}">● 已上传</span> ${esc(c.names.join(', '))} · ${esc(c.issuer)} · 到期 ${d}（${days < 0 ? '已过期' : '剩 ' + days + ' 天'}）`;
+  }
+  if (st.nginx_cert) return `使用服务器路径：<code>${esc(st.nginx_cert)}</code>`;
+  return '<span class="bad">● 还没有证书</span>，请选择证书和私钥文件上传';
+}
+
 function renderSettings() {
   const st = S.settings;
   $('#main').innerHTML = `<form class="panel" id="sf"><h3>客户端地址显示</h3>
@@ -428,8 +445,19 @@ function renderSettings() {
     <div class="f"><label>独立端口监听地址</label>
       <select name="port_bind"><option value="">所有网卡（客户端直接连，http）</option><option value="127.0.0.1">仅本机 127.0.0.1（前面有 nginx 做 HTTPS）</option></select>
       <small>选「仅本机」后站点端口只有 nginx 能访问，外部无法绕过 HTTPS。nginx 对外端口要和站点端口不同（如对外 8001 → 站点 18001）。修改后会重新监听，正在播放的连接会断开。</small></div>
-    <div class="f"><label>证书路径</label><input type="text" name="nginx_cert" value="${esc(st.nginx_cert)}" placeholder="/etc/letsencrypt/live/你的域名/fullchain.pem"></div>
-    <div class="f"><label>私钥路径</label><input type="text" name="nginx_key" value="${esc(st.nginx_key)}" placeholder="/etc/letsencrypt/live/你的域名/privkey.pem"></div>
+    <div class="f"><label>HTTPS 证书</label>
+      <div class="kv" style="white-space:normal;margin-bottom:8px">${certStatus(st)}</div>
+      <div class="certpick">
+        <label>证书文件<small>fullchain.pem / .crt / .cer</small><input type="file" id="certFile" accept=".pem,.crt,.cer,.txt"></label>
+        <label>私钥文件<small>privkey.pem / .key</small><input type="file" id="keyFile" accept=".pem,.key,.txt"></label>
+      </div>
+      <div class="row" style="margin-top:8px"><button type="button" class="btn" id="btnCert">上传证书</button><span class="test" id="certRes"></span></div>
+      <small>证书和私钥会校验是否匹配，保存在服务器 <code>数据目录/ssl/</code>（权限 600），生成的 nginx 配置会自动引用。证书到期后重新上传，再 <code>nginx -s reload</code>。</small>
+    </div>
+    <details ${st.cert && st.cert.uploaded ? '' : (st.nginx_cert ? 'open' : '')}><summary>改用服务器上已有的证书路径（如 certbot 自动续期）</summary>
+      <div class="f" style="margin-top:10px"><label>证书路径</label><input type="text" name="nginx_cert" value="${esc(st.nginx_cert)}" placeholder="/etc/letsencrypt/live/你的域名/fullchain.pem"></div>
+      <div class="f"><label>私钥路径</label><input type="text" name="nginx_key" value="${esc(st.nginx_key)}" placeholder="/etc/letsencrypt/live/你的域名/privkey.pem"></div>
+    </details>
     <div class="foot"><button type="button" class="btn" id="btnNginx">生成 nginx 配置</button><button class="btn pri">保存</button></div>
     <div id="nginxOut" style="display:none;margin-top:12px">
       <div class="row" style="margin-bottom:6px"><span class="kv">保存为 /etc/nginx/conf.d/emby-proxy.conf，然后执行 <code>nginx -t && nginx -s reload</code></span><div class="sp"></div><button type="button" class="btn sm" id="btnNginxCopy">复制</button></div>
@@ -447,10 +475,21 @@ function renderSettings() {
     try { await api('PUT', '/api/settings', {port_bind: f.port_bind.value, nginx_cert: f.nginx_cert.value, nginx_key: f.nginx_key.value}); await load(); toast('已保存'); }
     catch (err) { toast(err.message); }
   };
+  $('#btnCert').onclick = async () => {
+    const cf = $('#certFile').files[0], kf = $('#keyFile').files[0];
+    if (!cf || !kf) { $('#certRes').innerHTML = '<span class="bad">请同时选择证书文件和私钥文件</span>'; return; }
+    const fd = new FormData(); fd.append('cert', cf); fd.append('key', kf);
+    $('#certRes').textContent = '上传中…';
+    try {
+      const r = await fetch('/api/cert', {method: 'POST', body: fd});
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.error || 'HTTP ' + r.status);
+      await load(); toast('证书已上传：' + d.cert.names.join(', '));
+    } catch (err) { $('#certRes').innerHTML = `<span class="bad">${esc(err.message)}</span>`; }
+  };
   $('#btnNginx').onclick = async () => {
     const f = $('#nf');
     try {
-      await api('PUT', '/api/settings', {nginx_cert: f.nginx_cert.value, nginx_key: f.nginx_key.value});
       const r = await fetch('/api/nginx');
       if (!r.ok) throw new Error('HTTP ' + r.status);
       $('#nginxText').value = await r.text();

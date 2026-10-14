@@ -3,12 +3,21 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
+	"math/big"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -84,7 +93,7 @@ func setup(t *testing.T, site Site) (*Manager, *httptest.Server, *httptest.Serve
 	m.reload()
 	m.mu.Unlock()
 	entry := httptest.NewServer(m)
-	t.Cleanup(func() { entry.Close(); up.Close(); st.Close() })
+	t.Cleanup(func() { entry.Close(); up.Close(); st.Close(); m.bg.Wait() })
 	return m, entry, up, st
 }
 
@@ -339,7 +348,7 @@ func TestNginxConfig(t *testing.T) {
 		{Name: "c", Mode: "port", Port: 8003, PublicURL: "https://e.example.com:8003", Upstream: "https://u"},
 		{Name: "d", Mode: "path", Path: "x", Upstream: "https://u"},
 	}}
-	out := nginxConfig(cfg)
+	out := nginxConfig(cfg, nil)
 	for _, want := range []string{"listen 8001 ssl;", "server_name e.example.com;", "proxy_pass http://127.0.0.1:18001;", "ssl_certificate     /c.pem;"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing %q in:\n%s", want, out)
@@ -347,5 +356,81 @@ func TestNginxConfig(t *testing.T) {
 	}
 	if strings.Count(out, "\nserver {") != 1 {
 		t.Fatalf("expected exactly one server block:\n%s", out)
+	}
+}
+
+func genCert(t *testing.T, host string, notAfter time.Time) (certPEM, keyPEM []byte) {
+	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	tpl := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: host}, DNSNames: []string{host},
+		NotBefore: time.Now().Add(-48 * time.Hour), NotAfter: notAfter}
+	der, err := x509.CreateCertificate(rand.Reader, tpl, tpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kb, _ := x509.MarshalPKCS8PrivateKey(key)
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: kb})
+}
+
+func TestCertUpload(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOST_DATA_DIR", "/opt/emby-proxy/data")
+	cfg := &Config{AdminPassword: "pw123456", Secret: "s", AdminListen: ":0", Sites: []*Site{
+		{Name: "a", Mode: "port", Port: 18001, PublicURL: "https://other.example.com:8001", Upstream: "https://u", Enabled: true}}}
+	m := NewManager(filepath.Join(dir, "config.json"), cfg)
+	a := &Admin{m: m, failures: map[string][]time.Time{}}
+	srv := httptest.NewServer(a.Handler())
+	defer srv.Close()
+	jar := &http.Client{}
+	resp, _ := jar.Post(srv.URL+"/api/login", "application/json", strings.NewReader(`{"password":"pw123456"}`))
+	cookie := resp.Cookies()[0]
+
+	upload := func(cert, key []byte) (int, string) {
+		var buf bytes.Buffer
+		mw := multipart.NewWriter(&buf)
+		fw, _ := mw.CreateFormFile("cert", "fullchain.pem")
+		fw.Write(cert)
+		fw, _ = mw.CreateFormFile("key", "privkey.pem")
+		fw.Write(key)
+		mw.Close()
+		req, _ := http.NewRequest("POST", srv.URL+"/api/cert", &buf)
+		req.Header.Set("Content-Type", mw.FormDataContentType())
+		req.AddCookie(cookie)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return resp.StatusCode, string(b)
+	}
+
+	c1, k1 := genCert(t, "emby.example.com", time.Now().Add(60*24*time.Hour))
+	_, k2 := genCert(t, "emby.example.com", time.Now().Add(60*24*time.Hour))
+	cOld, kOld := genCert(t, "emby.example.com", time.Now().Add(-time.Hour))
+
+	if code, body := upload(c1, k2); code != 400 || !strings.Contains(body, "不匹配") {
+		t.Fatalf("mismatch: %d %s", code, body)
+	}
+	if code, body := upload(k1, c1); code != 400 {
+		t.Fatalf("swapped files: %d %s", code, body)
+	}
+	if code, body := upload(cOld, kOld); code != 400 || !strings.Contains(body, "过期") {
+		t.Fatalf("expired: %d %s", code, body)
+	}
+	if code, body := upload(c1, k1); code != 200 || !strings.Contains(body, "emby.example.com") {
+		t.Fatalf("upload: %d %s", code, body)
+	}
+	if fi, err := os.Stat(filepath.Join(dir, "ssl", "privkey.pem")); err != nil || fi.Mode().Perm() != 0o600 {
+		t.Fatalf("key file: %v %v", fi, err)
+	}
+	if m.cfg.NginxCert != "/opt/emby-proxy/data/ssl/fullchain.pem" {
+		t.Fatalf("nginx cert path = %q", m.cfg.NginxCert)
+	}
+	req, _ := http.NewRequest("GET", srv.URL+"/api/nginx", nil)
+	req.AddCookie(cookie)
+	resp, _ = http.DefaultClient.Do(req)
+	b, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(b), "ssl_certificate     /opt/emby-proxy/data/ssl/fullchain.pem;") || !strings.Contains(string(b), "证书不包含域名 other.example.com") {
+		t.Fatalf("nginx conf:\n%s", b)
 	}
 }

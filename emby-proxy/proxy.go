@@ -132,7 +132,11 @@ func (s *SiteRT) learnHost(key string) {
 	}
 	s.hostsMu.Unlock()
 	if !known {
-		go s.m.persistStreamHost(s.cfg.ID, key)
+		s.m.bg.Add(1)
+		go func() {
+			defer s.m.bg.Done()
+			s.m.persistStreamHost(s.cfg.ID, key)
+		}()
 	}
 }
 
