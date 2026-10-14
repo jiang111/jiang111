@@ -170,7 +170,9 @@ function toast(msg) {
   clearTimeout(t._h); t._h = setTimeout(() => t.style.display = 'none', 2200);
 }
 async function api(method, url, body) {
-  const r = await fetch(url, {method, headers: body ? {'Content-Type': 'application/json'} : {}, body: body ? JSON.stringify(body) : undefined});
+  const headers = {'X-Emby-Proxy': '1'};
+  if (body) headers['Content-Type'] = 'application/json';
+  const r = await fetch(url, {method, headers, body: body ? JSON.stringify(body) : undefined});
   let data = null; try { data = await r.json(); } catch (e) {}
   if (r.status === 401 && url !== '/api/login') { S = null; renderLogin(); throw new Error('未登录'); }
   if (!r.ok) throw new Error((data && data.error) || ('HTTP ' + r.status));
@@ -307,7 +309,7 @@ async function siteAction(el, e) {
   } else if (act === 'edit') openForm(s);
   else if (act === 'logs') { logSite = id; tab = 'logs'; render(); }
   else if (act === 'toggle') {
-    const body = {...s, enabled: el.checked}; delete body.stats; delete body.status; delete body.error;
+    const body = {...s, enabled: el.checked, stream_hosts_base: s.stream_hosts || []}; delete body.stats; delete body.status; delete body.error;
     try { const r = await api('PUT', '/api/sites/' + id, body); if (r.error) toast(r.error); await load(); }
     catch (err) { toast(err.message); el.checked = !el.checked; }
   } else if (act === 'del') {
@@ -337,8 +339,10 @@ function nextPort() {
   let p = 18001; while (used.has(p)) p++; return p;
 }
 
+let formHostsBase = [];
 function openForm(s) {
   editing = s ? s.id : null;
+  formHostsBase = (s && s.stream_hosts) || [];
   const f = $('#form');
   f.reset();
   $('#ftitle').textContent = s ? '编辑站点' : '添加站点';
@@ -382,6 +386,7 @@ $('#form').onsubmit = async e => {
     port: parseInt(f.port.value) || 0, path: f.path.value, host: f.host.value, public_url: f.public_url.value,
     stream_mode: f.querySelector('input[name=stream_mode]:checked').value,
     stream_hosts: f.stream_hosts.value.split('\n').map(x => x.trim()).filter(Boolean),
+    stream_hosts_base: formHostsBase,
     forward_ip: f.forward_ip.checked, insecure_tls: f.insecure_tls.checked, user_agent: f.user_agent.value,
     headers, remark: f.remark.value, enabled: f.enabled.checked,
     routes: f.routes.value.split('\n').map(l => l.split('=>')).filter(p => p.length === 2).map(([p, t]) => ({path: p.trim(), target: t.trim()})),
@@ -481,7 +486,7 @@ function renderSettings() {
     const fd = new FormData(); fd.append('cert', cf); fd.append('key', kf);
     $('#certRes').textContent = '上传中…';
     try {
-      const r = await fetch('/api/cert', {method: 'POST', body: fd});
+      const r = await fetch('/api/cert', {method: 'POST', headers: {'X-Emby-Proxy': '1'}, body: fd});
       const d = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(d.error || 'HTTP ' + r.status);
       await load(); toast('证书已上传：' + d.cert.names.join(', '));

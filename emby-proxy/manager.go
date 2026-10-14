@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"log"
 	"net"
@@ -32,7 +33,11 @@ type Manager struct {
 	trInsec *http.Transport
 	saveMu  sync.Mutex
 	bg      sync.WaitGroup // 后台保存（发现推流域名时）
-	started time.Time
+
+	certMu   sync.Mutex
+	certKey  string
+	certLeaf *x509.Certificate
+	started  time.Time
 }
 
 func newTransport(insecure bool) *http.Transport {
@@ -200,19 +205,16 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *Manager) save() error {
+	// saveMu 包住「序列化 + 写盘」，避免两个并发保存乱序写入、旧快照覆盖新快照
+	m.saveMu.Lock()
+	defer m.saveMu.Unlock()
 	m.mu.RLock()
 	data, err := json.MarshalIndent(m.cfg, "", "  ")
 	m.mu.RUnlock()
 	if err != nil {
 		return err
 	}
-	m.saveMu.Lock()
-	defer m.saveMu.Unlock()
-	tmp := m.path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, m.path)
+	return writeFileAtomic(m.path, data)
 }
 
 func (m *Manager) persistStreamHost(id, key string) {
@@ -279,8 +281,5 @@ func (m *Manager) saveStats() {
 	}
 	m.mu.RUnlock()
 	data, _ := json.Marshal(out)
-	tmp := m.statsPath() + ".tmp"
-	if os.WriteFile(tmp, data, 0o600) == nil {
-		os.Rename(tmp, m.statsPath())
-	}
+	writeFileAtomic(m.statsPath(), data)
 }

@@ -52,22 +52,35 @@ func (rc *reqCtx) rewriteBody(resp *http.Response, ct string) error {
 	case http.StatusNoContent, http.StatusNotModified, http.StatusPartialContent, http.StatusSwitchingProtocols:
 		return nil
 	}
-	if resp.Header.Get("Content-Encoding") != "" || resp.ContentLength > maxRewrite {
+	enc := strings.ToLower(strings.TrimSpace(resp.Header.Get("Content-Encoding")))
+	if (enc != "" && enc != "gzip" && enc != "identity") || resp.ContentLength > maxRewrite {
 		return nil
 	}
 	kind := bodyKind(ct, rc.matchPath)
 	if kind == "" {
 		return nil
 	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxRewrite+1))
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxRewrite+1))
 	if err != nil {
 		return err
 	}
-	if len(data) > maxRewrite {
-		resp.Body = readCloser{io.MultiReader(bytes.NewReader(data), resp.Body), resp.Body}
+	if len(raw) > maxRewrite {
+		resp.Body = readCloser{io.MultiReader(bytes.NewReader(raw), resp.Body), resp.Body}
 		return nil
 	}
 	resp.Body.Close()
+	data := raw
+	if enc == "gzip" {
+		zr, err := gzip.NewReader(bytes.NewReader(raw))
+		if err == nil {
+			data, err = io.ReadAll(io.LimitReader(zr, 4*maxRewrite+1))
+		}
+		if err != nil || len(data) > 4*maxRewrite {
+			// 解压失败或太大：原样转发
+			resp.Body = io.NopCloser(bytes.NewReader(raw))
+			return nil
+		}
+	}
 
 	allowExt := kind == "m3u8" || rc.ep || isPlaybackInfo(rc.matchPath)
 	out := data
@@ -82,6 +95,7 @@ func (rc *reqCtx) rewriteBody(resp *http.Response, ct string) error {
 	}
 
 	h := resp.Header
+	h.Del("Content-Encoding")
 	if rc.acceptGzip && len(out) > 1400 {
 		var buf bytes.Buffer
 		zw, _ := gzip.NewWriterLevel(&buf, gzip.BestSpeed)

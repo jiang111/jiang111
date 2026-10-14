@@ -55,10 +55,20 @@ func parentDomain(h string) string {
 		return h
 	}
 	parts := strings.Split(h, ".")
-	if len(parts) <= 2 {
+	n := 2
+	// 国家域名下的二级后缀（a.com.cn、b.co.uk、c.com.tw）要多取一段，否则不同主体会被当成同一域名
+	if len(parts) >= 3 && len(parts[len(parts)-1]) == 2 && secondLevel[parts[len(parts)-2]] {
+		n = 3
+	}
+	if len(parts) <= n {
 		return h
 	}
-	return strings.Join(parts[len(parts)-2:], ".")
+	return strings.Join(parts[len(parts)-n:], ".")
+}
+
+var secondLevel = map[string]bool{
+	"com": true, "net": true, "org": true, "edu": true, "gov": true, "co": true, "ac": true,
+	"or": true, "ne": true, "go": true, "idv": true, "ltd": true, "plc": true, "me": true,
 }
 
 var credentialHeaders = []string{"Authorization", "X-Emby-Authorization", "X-Emby-Token", "X-Mediabrowser-Token", "Cookie"}

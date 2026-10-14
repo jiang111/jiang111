@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -63,13 +64,41 @@ func (a *Admin) Handler() http.Handler {
 	return securityHeaders(mux)
 }
 
+// csrfHeader 是面板前端在所有写请求里带的自定义头。
+// 浏览器的 SameSite 不区分端口：反代出来的上游页面（同一主机的其它端口）也算同站，会带上面板 Cookie。
+// 自定义头会触发 CORS 预检，而面板不响应 CORS，因此跨源页面无法伪造写请求。
+const csrfHeader = "X-Emby-Proxy"
+
 func securityHeaders(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			if r.Header.Get(csrfHeader) != "1" || !sameOrigin(r) {
+				writeErr(w, http.StatusForbidden, "请求来源不正确")
+				return
+			}
+		}
 		h.ServeHTTP(w, r)
 	})
+}
+
+// sameOrigin：带了 Origin 头时，必须与面板自己的地址一致（含端口）。
+func sameOrigin(r *http.Request) bool {
+	o := r.Header.Get("Origin")
+	if o == "" {
+		return true
+	}
+	u, err := url.Parse(o)
+	if err != nil {
+		return false
+	}
+	host := firstHeader(r, "X-Forwarded-Host")
+	if host == "" {
+		host = r.Host
+	}
+	return strings.EqualFold(u.Host, host)
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
@@ -118,29 +147,50 @@ func (a *Admin) auth(h http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-func remoteIP(r *http.Request) string {
-	return clientIP(r)
+const (
+	loginWindow    = 10 * time.Minute
+	loginPerIP     = 5  // 单个 IP 10 分钟内最多失败次数
+	loginGlobalMax = 30 // 所有 IP 合计（防止伪造来源 IP 绕过）
+)
+
+// reserveLogin 在校验密码前先登记一次尝试；返回 false 表示已超限。
+func (a *Admin) reserveLogin(ip string) bool {
+	a.failMu.Lock()
+	defer a.failMu.Unlock()
+	now := time.Now()
+	total := 0
+	for k, ts := range a.failures {
+		recent := ts[:0]
+		for _, t := range ts {
+			if now.Sub(t) < loginWindow {
+				recent = append(recent, t)
+			}
+		}
+		if len(recent) == 0 {
+			delete(a.failures, k)
+			continue
+		}
+		a.failures[k] = recent
+		total += len(recent)
+	}
+	if len(a.failures[ip]) >= loginPerIP || total >= loginGlobalMax {
+		return false
+	}
+	a.failures[ip] = append(a.failures[ip], now)
+	return true
+}
+
+// releaseLogin 登录成功后撤销本次登记。
+func (a *Admin) releaseLogin(ip string) {
+	a.failMu.Lock()
+	if ts := a.failures[ip]; len(ts) > 0 {
+		a.failures[ip] = ts[:len(ts)-1]
+	}
+	a.failMu.Unlock()
 }
 
 func (a *Admin) login(w http.ResponseWriter, r *http.Request) {
-	ip := remoteIP(r)
-	a.failMu.Lock()
-	var recent []time.Time
-	for _, t := range a.failures[ip] {
-		if time.Since(t) < 10*time.Minute {
-			recent = append(recent, t)
-		}
-	}
-	if len(recent) == 0 {
-		delete(a.failures, ip)
-	} else {
-		a.failures[ip] = recent
-	}
-	a.failMu.Unlock()
-	if len(recent) >= 5 {
-		writeErr(w, http.StatusTooManyRequests, "失败次数过多，请 10 分钟后再试")
-		return
-	}
+	ip := clientIP(r)
 	var body struct {
 		Password string `json:"password"`
 	}
@@ -148,17 +198,19 @@ func (a *Admin) login(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "请求格式错误")
 		return
 	}
+	if !a.reserveLogin(ip) {
+		writeErr(w, http.StatusTooManyRequests, "失败次数过多，请 10 分钟后再试")
+		return
+	}
 	a.m.mu.RLock()
 	pw := a.m.cfg.AdminPassword
 	a.m.mu.RUnlock()
 	if subtle.ConstantTimeCompare([]byte(body.Password), []byte(pw)) != 1 {
-		a.failMu.Lock()
-		a.failures[ip] = append(a.failures[ip], time.Now())
-		a.failMu.Unlock()
 		time.Sleep(500 * time.Millisecond)
 		writeErr(w, http.StatusUnauthorized, "密码错误")
 		return
 	}
+	a.releaseLogin(ip)
 	exp := time.Now().Add(7 * 24 * time.Hour).Unix()
 	http.SetCookie(w, &http.Cookie{
 		Name: cookieName, Value: a.sign(exp), Path: "/", HttpOnly: true,
@@ -214,11 +266,17 @@ func (a *Admin) logsAPI(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *Admin) saveSite(w http.ResponseWriter, r *http.Request) {
-	var s Site
-	if err := readJSON(r, &s); err != nil {
+	var req struct {
+		Site
+		// 面板打开表单时看到的推流域名。之后自动学习到的域名不在其中，保存时保留，
+		// 避免用旧快照覆盖掉新学到的域名；用户在表单里删掉的域名（在 base 里但不在提交里）照常删除。
+		StreamHostsBase []string `json:"stream_hosts_base"`
+	}
+	if err := readJSON(r, &req); err != nil {
 		writeErr(w, 400, "请求格式错误")
 		return
 	}
+	s := req.Site
 	m := a.m
 	m.mu.Lock()
 	id := r.PathValue("id")
@@ -244,6 +302,7 @@ func (a *Admin) saveSite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if idx >= 0 {
+		s.StreamHosts = mergeHosts(s.StreamHosts, req.StreamHostsBase, m.cfg.Sites[idx].StreamHosts)
 		m.cfg.Sites[idx] = &s
 	} else {
 		m.cfg.Sites = append(m.cfg.Sites, &s)
@@ -306,19 +365,27 @@ func (a *Admin) settings(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "请求格式错误")
 		return
 	}
+	var bind string
+	if body.PortBind != nil {
+		bind = strings.Trim(strings.TrimSpace(*body.PortBind), "[]")
+		if !validBind(bind) {
+			writeErr(w, 400, "监听地址必须是 IP，例如 127.0.0.1，留空表示所有网卡")
+			return
+		}
+	}
+	if body.NewPassword != "" && len(body.NewPassword) < 6 {
+		writeErr(w, 400, "新密码至少 6 位")
+		return
+	}
 	m := a.m
 	m.mu.Lock()
+	if body.NewPassword != "" && subtle.ConstantTimeCompare([]byte(body.OldPassword), []byte(m.cfg.AdminPassword)) != 1 {
+		m.mu.Unlock()
+		writeErr(w, 400, "原密码错误")
+		return
+	}
+	// 以下不会再失败，统一应用
 	if body.NewPassword != "" {
-		if subtle.ConstantTimeCompare([]byte(body.OldPassword), []byte(m.cfg.AdminPassword)) != 1 {
-			m.mu.Unlock()
-			writeErr(w, 400, "原密码错误")
-			return
-		}
-		if len(body.NewPassword) < 6 {
-			m.mu.Unlock()
-			writeErr(w, 400, "新密码至少 6 位")
-			return
-		}
 		m.cfg.AdminPassword = body.NewPassword
 	}
 	if body.EntryURL != nil {
@@ -333,17 +400,9 @@ func (a *Admin) settings(w http.ResponseWriter, r *http.Request) {
 	if body.NginxKey != nil {
 		m.cfg.NginxKey = strings.TrimSpace(*body.NginxKey)
 	}
-	if body.PortBind != nil {
-		bind := strings.Trim(strings.TrimSpace(*body.PortBind), "[]")
-		if !validBind(bind) {
-			m.mu.Unlock()
-			writeErr(w, 400, "监听地址必须是 IP，例如 127.0.0.1，留空表示所有网卡")
-			return
-		}
-		if bind != m.cfg.PortBind {
-			m.cfg.PortBind = bind
-			m.rebindAll()
-		}
+	if body.PortBind != nil && bind != m.cfg.PortBind {
+		m.cfg.PortBind = bind
+		m.rebindAll()
 	}
 	m.mu.Unlock()
 	if err := m.save(); err != nil {
@@ -431,4 +490,24 @@ func simplifyNetErr(err error) string {
 		return "证书校验失败（可勾选「不校验证书」）: " + s
 	}
 	return s
+}
+
+// mergeHosts = submitted ∪ (current − base)
+func mergeHosts(submitted, base, current []string) []string {
+	inBase := map[string]bool{}
+	for _, h := range base {
+		inBase[strings.ToLower(strings.TrimSpace(h))] = true
+	}
+	out := append([]string{}, submitted...)
+	seen := map[string]bool{}
+	for _, h := range out {
+		seen[h] = true
+	}
+	for _, h := range current {
+		if !inBase[h] && !seen[h] {
+			out = append(out, h)
+			seen[h] = true
+		}
+	}
+	return out
 }

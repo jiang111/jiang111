@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -20,6 +21,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -380,9 +383,7 @@ func TestCertUpload(t *testing.T) {
 	a := &Admin{m: m, failures: map[string][]time.Time{}}
 	srv := httptest.NewServer(a.Handler())
 	defer srv.Close()
-	jar := &http.Client{}
-	resp, _ := jar.Post(srv.URL+"/api/login", "application/json", strings.NewReader(`{"password":"pw123456"}`))
-	cookie := resp.Cookies()[0]
+	cookie := adminLogin(t, srv.URL, "pw123456")
 
 	upload := func(cert, key []byte) (int, string) {
 		var buf bytes.Buffer
@@ -394,6 +395,7 @@ func TestCertUpload(t *testing.T) {
 		mw.Close()
 		req, _ := http.NewRequest("POST", srv.URL+"/api/cert", &buf)
 		req.Header.Set("Content-Type", mw.FormDataContentType())
+		req.Header.Set(csrfHeader, "1")
 		req.AddCookie(cookie)
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
@@ -428,9 +430,230 @@ func TestCertUpload(t *testing.T) {
 	}
 	req, _ := http.NewRequest("GET", srv.URL+"/api/nginx", nil)
 	req.AddCookie(cookie)
-	resp, _ = http.DefaultClient.Do(req)
+	resp, _ := http.DefaultClient.Do(req)
 	b, _ := io.ReadAll(resp.Body)
 	if !strings.Contains(string(b), "ssl_certificate     /opt/emby-proxy/data/ssl/fullchain.pem;") || !strings.Contains(string(b), "证书不包含域名 other.example.com") {
 		t.Fatalf("nginx conf:\n%s", b)
+	}
+}
+
+func adminLogin(t *testing.T, base, pw string) *http.Cookie {
+	req, _ := http.NewRequest("POST", base+"/api/login", strings.NewReader(`{"password":"`+pw+`"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(csrfHeader, "1")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil || len(resp.Cookies()) == 0 {
+		t.Fatalf("login failed: %v %v", err, resp)
+	}
+	return resp.Cookies()[0]
+}
+
+func newAdmin(t *testing.T, cfg *Config) (*Manager, *httptest.Server, *http.Cookie) {
+	if cfg.AdminPassword == "" {
+		cfg.AdminPassword = "pw123456"
+	}
+	cfg.Secret, cfg.AdminListen, cfg.Listen = "s", ":1", ":2"
+	m := NewManager(filepath.Join(t.TempDir(), "config.json"), cfg)
+	a := &Admin{m: m, failures: map[string][]time.Time{}}
+	srv := httptest.NewServer(a.Handler())
+	t.Cleanup(srv.Close)
+	return m, srv, adminLogin(t, srv.URL, cfg.AdminPassword)
+}
+
+func adminDo(t *testing.T, srv *httptest.Server, c *http.Cookie, method, path, body string, hdr ...string) (int, string) {
+	req, _ := http.NewRequest(method, srv.URL+path, strings.NewReader(body))
+	for i := 0; i+1 < len(hdr); i += 2 {
+		req.Header.Set(hdr[i], hdr[i+1])
+	}
+	if c != nil {
+		req.AddCookie(c)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	return resp.StatusCode, string(b)
+}
+
+func TestAdminCSRF(t *testing.T) {
+	_, srv, c := newAdmin(t, &Config{})
+	site := `{"name":"x","upstream":"https://a.example.com","mode":"path","path":"x"}`
+	// 跨站页面能发的「简单请求」：text/plain、无自定义头
+	if code, _ := adminDo(t, srv, c, "POST", "/api/sites", site, "Content-Type", "text/plain"); code != 403 {
+		t.Fatalf("csrf without header: %d", code)
+	}
+	// 带了自定义头但 Origin 是别的端口
+	if code, _ := adminDo(t, srv, c, "POST", "/api/sites", site, csrfHeader, "1", "Origin", "http://"+strings.TrimPrefix(srv.URL, "http://")[:9]+":8001"); code != 403 {
+		t.Fatalf("csrf cross origin: %d", code)
+	}
+	if code, b := adminDo(t, srv, c, "POST", "/api/sites", site, csrfHeader, "1", "Origin", srv.URL); code != 200 {
+		t.Fatalf("same origin should work: %d %s", code, b)
+	}
+}
+
+func TestSettingsAtomic(t *testing.T) {
+	m, srv, c := newAdmin(t, &Config{})
+	code, _ := adminDo(t, srv, c, "PUT", "/api/settings", `{"old_password":"pw123456","new_password":"newpass123","port_bind":"abc","entry_url":"https://x"}`, csrfHeader, "1")
+	if code != 400 || m.cfg.AdminPassword != "pw123456" || m.cfg.EntryURL != "" {
+		t.Fatalf("partial apply: code=%d pw=%q entry=%q", code, m.cfg.AdminPassword, m.cfg.EntryURL)
+	}
+}
+
+func TestLoginRateLimit(t *testing.T) {
+	_, srv, _ := newAdmin(t, &Config{})
+	var wg sync.WaitGroup
+	var ok429 atomic.Int32
+	for i := 0; i < 12; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if code, _ := adminDo(t, srv, nil, "POST", "/api/login", `{"password":"wrong"}`, csrfHeader, "1"); code == 429 {
+				ok429.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	if ok429.Load() < 7 { // 并发 12 次，最多 5 次进入校验
+		t.Fatalf("rate limit bypassed by concurrency: only %d got 429", ok429.Load())
+	}
+}
+
+func TestMergeHosts(t *testing.T) {
+	got := mergeHosts([]string{"https://a:443"}, []string{"https://a:443", "https://b:443"}, []string{"https://a:443", "https://b:443", "https://c:443"})
+	// b 被用户删掉，c 是之后学到的要保留
+	if strings.Join(got, ",") != "https://a:443,https://c:443" {
+		t.Fatalf("merge = %v", got)
+	}
+}
+
+func TestParentDomain(t *testing.T) {
+	for in, want := range map[string]string{
+		"emby.foo.com.cn": "foo.com.cn", "evil.bar.com.cn": "bar.com.cn", "a.b.co.uk": "b.co.uk",
+		"node1.example.com": "example.com", "example.com": "example.com", "1.2.3.4": "1.2.3.4", "x.y.com.tw": "y.com.tw",
+	} {
+		if got := parentDomain(in); got != want {
+			t.Errorf("parentDomain(%q)=%q want %q", in, got, want)
+		}
+	}
+}
+
+func TestStripPanelCookie(t *testing.T) {
+	h := http.Header{}
+	h.Add("Cookie", cookieName+"=secret; other=1")
+	stripPanelCookie(h)
+	if h.Get("Cookie") != "other=1" {
+		t.Fatalf("cookie = %q", h.Get("Cookie"))
+	}
+	h = http.Header{"Cookie": {cookieName + "=secret"}}
+	stripPanelCookie(h)
+	if _, ok := h["Cookie"]; ok {
+		t.Fatalf("cookie header should be removed: %v", h)
+	}
+}
+
+// 上游返回 gzip：需要改写的 JSON 能解压改写；不需要改写的 JS 保持压缩原样透传；面板 Cookie 不转发；
+// 路由节点返回的相对跳转仍指向该节点。
+func TestGzipPassthroughAndRoutes(t *testing.T) {
+	var gotCookie string
+	var self *httptest.Server
+	gz := func(s string) []byte {
+		var b bytes.Buffer
+		zw := gzip.NewWriter(&b)
+		zw.Write([]byte(s))
+		zw.Close()
+		return b.Bytes()
+	}
+	node := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/cdn" {
+			http.Redirect(w, r, "/stream/abc", http.StatusFound)
+			return
+		}
+		w.Write([]byte("node:" + r.URL.Path))
+	}))
+	defer node.Close()
+	_, nodePort, _ := net.SplitHostPort(strings.TrimPrefix(node.URL, "http://"))
+	self = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotCookie = r.Header.Get("Cookie")
+		ae := r.Header.Get("Accept-Encoding")
+		switch r.URL.Path {
+		case "/emby/Items":
+			w.Header().Set("Content-Type", "application/json")
+			body := strings.Repeat(`{"Url":"`+self.URL+`/emby/x"},`, 100)
+			if ae == "gzip" {
+				w.Header().Set("Content-Encoding", "gzip")
+				w.Write(gz("[" + body + "{}]"))
+			} else {
+				w.Write([]byte("[" + body + "{}]"))
+			}
+		case "/web/app.js":
+			w.Header().Set("Content-Type", "application/javascript")
+			if ae == "gzip" {
+				w.Header().Set("Content-Encoding", "gzip")
+				w.Write(gz(strings.Repeat("console.log(1);", 500)))
+			} else {
+				w.Write([]byte(strings.Repeat("console.log(1);", 500)))
+			}
+		}
+	}))
+	defer self.Close()
+	site := &Site{ID: "g", Name: "g", Enabled: true, Upstream: self.URL, Mode: "path", Path: "g", StreamMode: "proxy",
+		Routes: []Route{{Path: "/cdn", Target: "http://127.0.0.1:{arg.p}"}}}
+	cfg := &Config{Listen: ":0", AdminListen: ":0", Sites: []*Site{site}}
+	if err := validateSite(cfg, site); err != nil {
+		t.Fatal(err)
+	}
+	m := NewManager(filepath.Join(t.TempDir(), "c.json"), cfg)
+	m.mu.Lock()
+	m.reload()
+	m.mu.Unlock()
+	entry := httptest.NewServer(m)
+	defer entry.Close()
+	tr := &http.Transport{DisableCompression: true}
+	cl := &http.Client{Transport: tr, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	do := func(path string, gzipOK bool) (*http.Response, []byte) {
+		req, _ := http.NewRequest("GET", entry.URL+path, nil)
+		if gzipOK {
+			req.Header.Set("Accept-Encoding", "gzip")
+		}
+		req.Header.Set("Cookie", cookieName+"=secret; emby=1")
+		resp, err := cl.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return resp, b
+	}
+
+	resp, b := do("/g/emby/Items", true)
+	zr, err := gzip.NewReader(bytes.NewReader(b))
+	if resp.Header.Get("Content-Encoding") != "gzip" || err != nil {
+		t.Fatalf("json not gzipped: %v %v", resp.Header, err)
+	}
+	plain, _ := io.ReadAll(zr)
+	if strings.Contains(string(plain), self.URL) || !strings.Contains(string(plain), entry.URL+"/g/emby/x") {
+		t.Fatalf("gzip json not rewritten: %.200s", plain)
+	}
+	if gotCookie != "emby=1" {
+		t.Fatalf("panel cookie leaked upstream: %q", gotCookie)
+	}
+	resp, b = do("/g/emby/Items", false)
+	if resp.Header.Get("Content-Encoding") != "" || !strings.Contains(string(b), entry.URL+"/g/emby/x") {
+		t.Fatalf("identity json: %v %.100s", resp.Header, b)
+	}
+	resp, b = do("/g/web/app.js", true)
+	if resp.Header.Get("Content-Encoding") != "gzip" || len(b) > 1000 {
+		t.Fatalf("js should stay compressed: enc=%q len=%d", resp.Header.Get("Content-Encoding"), len(b))
+	}
+	resp, _ = do("/g/cdn?p="+nodePort, false)
+	want := "/g/__ep/http/127.0.0.1/" + nodePort + "/stream/abc"
+	if loc := resp.Header.Get("Location"); loc != want {
+		t.Fatalf("route relative redirect = %q want %q", loc, want)
+	}
+	resp, b = do(want, false)
+	if string(b) != "node:/stream/abc" {
+		t.Fatalf("follow route redirect: %d %s", resp.StatusCode, b)
 	}
 }

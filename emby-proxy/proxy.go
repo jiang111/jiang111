@@ -27,8 +27,9 @@ type SiteRT struct {
 	upBase   string // 上游 base path（已转义），如 /emby-base
 	stats    *Stats
 
-	hostsMu sync.Mutex
-	hosts   map[string]bool // 允许经 /__ep/ 代理的推流源（scheme://host:port）
+	hostsMu    sync.Mutex
+	hosts      map[string]bool // 学习到的推流源（scheme://host:port），允许经 /__ep/ 代理
+	routeHosts map[string]bool // 额外转发规则命中过的节点，同样允许经 /__ep/ 代理
 }
 
 func defaultPort(scheme string) string {
@@ -96,7 +97,7 @@ func newSiteRT(m *Manager, s Site, st *Stats) (*SiteRT, error) {
 	if err != nil {
 		return nil, err
 	}
-	rt := &SiteRT{m: m, cfg: s, upstream: u, stats: st, hosts: map[string]bool{}}
+	rt := &SiteRT{m: m, cfg: s, upstream: u, stats: st, hosts: map[string]bool{}, routeHosts: map[string]bool{}}
 	rt.upHost, rt.upPort = splitHP(u.Host, u.Scheme)
 	rt.upBase = u.EscapedPath()
 	for _, h := range s.StreamHosts {
@@ -144,8 +145,8 @@ func (s *SiteRT) learnHost(key string) {
 func (s *SiteRT) learnRouteHost(u *url.URL) {
 	h, p := splitHP(u.Host, u.Scheme)
 	s.hostsMu.Lock()
-	if len(s.hosts) < 1000 {
-		s.hosts[hostKey(u.Scheme, h, p)] = true
+	if len(s.routeHosts) < 1000 {
+		s.routeHosts[hostKey(u.Scheme, h, p)] = true
 	}
 	s.hostsMu.Unlock()
 }
@@ -157,7 +158,7 @@ func (s *SiteRT) allowedEP(scheme, host, port string) bool {
 	}
 	key := hostKey(scheme, host, port)
 	s.hostsMu.Lock()
-	ok := s.hosts[key]
+	ok := s.hosts[key] || s.routeHosts[key]
 	s.hostsMu.Unlock()
 	if ok {
 		return true
@@ -334,7 +335,7 @@ func (s *SiteRT) serve(w http.ResponseWriter, r *http.Request, prefix string) {
 		}
 		// 路由目标当作推流域名处理：路径原样转发，响应里指向它的地址改写回 /__ep/
 		s.learnRouteHost(t)
-		target, outPath = t, rest
+		target, outPath, rc.ep = t, rest, true
 	}
 	rc.target = target
 	unescOut, err := url.PathUnescape(outPath)
@@ -360,6 +361,7 @@ func (s *SiteRT) serve(w http.ResponseWriter, r *http.Request, prefix string) {
 			for _, k := range stripReqHeaders {
 				h.Del(k)
 			}
+			stripPanelCookie(h)
 			if s.cfg.ForwardIP {
 				h.Set("X-Forwarded-For", ip)
 				h.Set("X-Real-Ip", ip)
@@ -370,8 +372,13 @@ func (s *SiteRT) serve(w http.ResponseWriter, r *http.Request, prefix string) {
 			if h.Get("Referer") != "" {
 				h.Set("Referer", targetOrigin+"/")
 			}
-			// 交给 Transport 处理 gzip，这样可以改写响应体；Range 请求不会压缩
-			h.Del("Accept-Encoding")
+			// 只允许 gzip（需要改写的响应要能解压），客户端不支持或 Range 请求时不压缩。
+			// 显式设置后 Transport 不会自动解压，其它类型（如网页版 JS）保持压缩原样转给客户端。
+			if rc.acceptGzip && h.Get("Range") == "" {
+				h.Set("Accept-Encoding", "gzip")
+			} else {
+				h.Set("Accept-Encoding", "identity")
+			}
 			if s.cfg.UserAgent != "" {
 				h.Set("User-Agent", s.cfg.UserAgent)
 			}
@@ -389,6 +396,27 @@ func (s *SiteRT) serve(w http.ResponseWriter, r *http.Request, prefix string) {
 		ErrorHandler:   rc.errorHandler,
 	}
 	rp.ServeHTTP(cw, r)
+}
+
+// stripPanelCookie 去掉面板的登录 Cookie：浏览器会把同一主机任意端口的 Cookie 都带上，不能转发给上游。
+func stripPanelCookie(h http.Header) {
+	cs := h.Values("Cookie")
+	if len(cs) == 0 {
+		return
+	}
+	h.Del("Cookie")
+	for _, c := range cs {
+		var keep []string
+		for _, part := range strings.Split(c, ";") {
+			name, _, _ := strings.Cut(strings.TrimSpace(part), "=")
+			if name != cookieName && strings.TrimSpace(part) != "" {
+				keep = append(keep, strings.TrimSpace(part))
+			}
+		}
+		if len(keep) > 0 {
+			h.Add("Cookie", strings.Join(keep, "; "))
+		}
+	}
 }
 
 func (rc *reqCtx) errorHandler(w http.ResponseWriter, r *http.Request, err error) {
@@ -496,11 +524,7 @@ func (rc *reqCtx) rewriteAbs(raw string, allowExternal bool) string {
 		return raw // 已经是反代自己的地址（如上游按 MagpieCDN / X-Forwarded-Host 生成的）
 	}
 	if s.isUpstream(scheme, host, port) {
-		t := s.stripBase(tail)
-		if t == "/" && tail == "" {
-			t = ""
-		}
-		return rc.publicBase + t
+		return rc.publicBase + s.stripBase(tail)
 	}
 	if rc.ep {
 		th, tp := splitHP(rc.target.Host, rc.target.Scheme)

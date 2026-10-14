@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -65,18 +66,27 @@ func certInfoOf(leaf *x509.Certificate) *CertInfo {
 	return &CertInfo{Names: names, NotAfter: leaf.NotAfter.Unix(), Issuer: issuer}
 }
 
-// uploadedCert 读取已上传的证书（没有则返回 nil）。
+// uploadedCert 读取已上传的证书（没有则返回 nil）。按文件修改时间缓存，面板每 3 秒轮询不必每次解析。
 func (m *Manager) uploadedCert() *x509.Certificate {
-	c, err1 := os.ReadFile(filepath.Join(m.sslDir(), "fullchain.pem"))
-	k, err2 := os.ReadFile(filepath.Join(m.sslDir(), "privkey.pem"))
+	cp, kp := filepath.Join(m.sslDir(), "fullchain.pem"), filepath.Join(m.sslDir(), "privkey.pem")
+	ci, err1 := os.Stat(cp)
+	ki, err2 := os.Stat(kp)
 	if err1 != nil || err2 != nil {
 		return nil
 	}
-	leaf, err := parseLeaf(c, k)
-	if err != nil {
-		return nil
+	key := ci.ModTime().String() + "|" + ki.ModTime().String() + "|" + fmt.Sprint(ci.Size(), ki.Size())
+	m.certMu.Lock()
+	defer m.certMu.Unlock()
+	if key == m.certKey {
+		return m.certLeaf
 	}
-	return leaf
+	m.certKey, m.certLeaf = key, nil
+	c, err1 := os.ReadFile(cp)
+	k, err2 := os.ReadFile(kp)
+	if err1 == nil && err2 == nil {
+		m.certLeaf, _ = parseLeaf(c, k)
+	}
+	return m.certLeaf
 }
 
 func readUpload(r *http.Request, field string) ([]byte, error) {
