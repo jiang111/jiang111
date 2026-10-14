@@ -105,6 +105,14 @@ func newSiteRT(m *Manager, s Site, st *Stats) (*SiteRT, error) {
 	return rt, nil
 }
 
+func (s *SiteRT) roundTripper() http.RoundTripper {
+	base := s.m.transport(s.cfg.InsecureTLS)
+	if s.cfg.StreamMode == "proxy" {
+		return &followTransport{base: base, s: s}
+	}
+	return base
+}
+
 func (s *SiteRT) isUpstream(scheme, host, port string) bool {
 	if host != s.upHost {
 		return false
@@ -349,7 +357,7 @@ func (s *SiteRT) serve(w http.ResponseWriter, r *http.Request, prefix string) {
 				}
 			}
 		},
-		Transport:      s.m.transport(s.cfg.InsecureTLS),
+		Transport:      s.roundTripper(),
 		FlushInterval:  -1,
 		ModifyResponse: rc.modifyResponse,
 		ErrorHandler:   rc.errorHandler,

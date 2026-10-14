@@ -135,7 +135,7 @@ td.p{white-space:normal;word-break:break-all;min-width:240px;font-family:ui-mono
         <label><input type="radio" name="stream_mode" value="proxy">经本机中转</label>
         <label><input type="radio" name="stream_mode" value="direct">客户端直连推流</label>
       </div>
-      <small>上游如果做了推流分离（播放时 302 跳到别的推流域名）：「中转」会自动识别并把推流也经本机转发（隐藏真实 IP、改善线路，但消耗本机流量）；「直连」只代理 API，视频流让客户端直接连推流服务器（省流量）。</small>
+      <small>上游如果做了推流分离（播放时 302 跳到别的推流域名）：「中转」会由本机直接跟随播放跳转（客户端拿到的是 206，兼容 Exo 等播放器的 Range/拖动），推流也经本机转发（改善线路，但消耗本机流量）；「直连」只代理 API，视频流让客户端直接连推流服务器（省流量）。</small>
     </div>
     <details>
       <summary>高级选项</summary>

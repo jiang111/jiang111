@@ -29,8 +29,9 @@ func fakeEmby(t *testing.T, streamURL *string) *httptest.Server {
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprintf(w, `{"MediaSources":[{"DirectStreamUrl":"%s/emby/videos/1/stream?api_key=x","Path":"%s/v/1.mkv"}],"Host":%q,"XFF":%q,"OriginOK":%v}`,
 				self.URL, *streamURL, r.Host, r.Header.Get("X-Forwarded-For"), r.Header.Get("Origin") == self.URL)
-		case r.URL.Path == "/emby/videos/1/stream":
-			http.Redirect(w, r, *streamURL+"/v/1.mkv?sign=1", http.StatusFound)
+		case r.URL.Path == "/emby/videos/1/stream", r.URL.Path == "/emby/redir":
+			// 模拟 NoxEmby 等推流分离：播放请求 307 到推流节点
+			http.Redirect(w, r, *streamURL+"/v/1.mkv?sign=1", http.StatusTemporaryRedirect)
 		case r.URL.Path == "/emby/web/":
 			http.Redirect(w, r, "/emby/web/index.html", http.StatusFound)
 		case r.URL.Path == "/embywebsocket":
@@ -131,8 +132,19 @@ func TestPathModeFlow(t *testing.T) {
 		t.Fatalf("headers wrong: %s", body)
 	}
 
-	// 302 推流分离 → Location 改写到 /__ep/
-	resp, _ := get(t, base+"/emby/videos/1/stream?api_key=x")
+	// 播放请求带 Range 被 307 到推流节点：服务端直接跟随，客户端拿到 206
+	resp, body := get(t, base+"/emby/videos/1/stream?api_key=x&static=true", "Range", "bytes=0-9")
+	if resp.StatusCode != 206 || body != "0123456789" || resp.Header.Get("Content-Range") != "bytes 0-9/10000" {
+		t.Fatalf("follow 307 failed: %d %q %v", resp.StatusCode, body, resp.Header)
+	}
+	// 不带 Range 的直链播放请求同样跟随
+	resp, body = get(t, base+"/emby/videos/1/stream?api_key=x")
+	if resp.StatusCode != 200 || len(body) != 10000 {
+		t.Fatalf("follow 307 (no range) failed: %d %d", resp.StatusCode, len(body))
+	}
+
+	// 非播放请求的跳转 → Location 改写到 /__ep/
+	resp, _ = get(t, base+"/emby/redir")
 	if loc := resp.Header.Get("Location"); loc != epURL+"?sign=1" {
 		t.Fatalf("location = %q, want %q", loc, epURL+"?sign=1")
 	}
@@ -144,6 +156,7 @@ func TestPathModeFlow(t *testing.T) {
 
 	// 经 /__ep/ 拉流，支持 Range
 	resp, body = get(t, epURL+"?sign=1", "Range", "bytes=10-19")
+	_ = body
 	if resp.StatusCode != 206 || body != "0123456789" {
 		t.Fatalf("range via ep failed: %d %q", resp.StatusCode, body)
 	}
@@ -169,7 +182,7 @@ func TestPathModeFlow(t *testing.T) {
 
 func TestDirectStreamMode(t *testing.T) {
 	_, entry, _, st := setup(t, Site{Mode: "path", Path: "jp", StreamMode: "direct"})
-	resp, _ := get(t, entry.URL+"/jp/emby/videos/1/stream")
+	resp, _ := get(t, entry.URL+"/jp/emby/videos/1/stream", "Range", "bytes=0-")
 	if loc := resp.Header.Get("Location"); loc != st.URL+"/v/1.mkv?sign=1" {
 		t.Fatalf("direct mode should keep location, got %q", loc)
 	}
