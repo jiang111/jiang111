@@ -26,18 +26,25 @@
 
 路径前缀和独立域名共用入口端口 `55661`。
 
-### 套 HTTPS
+### 套 HTTPS（路径前缀模式，推荐）
 
-1Panel → 网站 → 创建网站 → 反向代理，代理地址填 `http://127.0.0.1:55661`（或某个站点的独立端口），申请证书即可。
-1Panel 默认会传 `Host`、`X-Forwarded-Proto` 和 WebSocket 头，程序据此自动生成 `https://` 的地址；建议在反代配置里加：
-
-```nginx
-proxy_buffering off;
-proxy_request_buffering off;
-proxy_read_timeout 86400s;
-```
-
-然后在面板「设置」里把「入口公网地址」填成 `https://你的域名`，卡片上显示的客户端地址就对了。
+1. 1Panel → 网站 → 你已建好并申请了证书的网站 → 反向代理 → 创建：
+   - 前端请求路径：`/`
+   - 后端代理地址：`http://127.0.0.1:55661`（**末尾不要加 `/`**，否则 nginx 会改动请求路径）
+2. 编辑这条反代的「源文」，在 `location /` 里补上（1Panel 默认已带 Host、X-Forwarded-Proto、WebSocket 头）：
+   ```nginx
+   proxy_http_version 1.1;
+   proxy_buffering off;
+   proxy_request_buffering off;
+   proxy_max_temp_file_size 0;
+   proxy_read_timeout 86400s;
+   proxy_send_timeout 86400s;
+   client_max_body_size 0;
+   ```
+3. 面板「设置」→ 入口公网地址填 `https://你的域名`。
+4. 添加站点时接入方式选「路径前缀」，客户端地址就是 `https://你的域名/路径`，端口 443。
+5. （可选）把 config.json 的 `listen` 改成 `127.0.0.1:55661` 并重启容器，入口只允许本机 nginx 访问，外面不能绕过 HTTPS。
+   面板 55660 同理可以只在防火墙对自己的 IP 放行。
 
 ## 推流分离
 

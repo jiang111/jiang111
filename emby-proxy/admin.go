@@ -118,7 +118,11 @@ func (a *Admin) login(w http.ResponseWriter, r *http.Request) {
 			recent = append(recent, t)
 		}
 	}
-	a.failures[ip] = recent
+	if len(recent) == 0 {
+		delete(a.failures, ip)
+	} else {
+		a.failures[ip] = recent
+	}
 	a.failMu.Unlock()
 	if len(recent) >= 5 {
 		writeErr(w, http.StatusTooManyRequests, "失败次数过多，请 10 分钟后再试")

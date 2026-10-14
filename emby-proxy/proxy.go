@@ -79,7 +79,7 @@ func parseUpstream(raw string) (*url.URL, error) {
 	base := strings.TrimRight(u.EscapedPath(), "/")
 	// 用户常把 /emby 或 /web/index.html 带进来，这些都不是 base path
 	lb := strings.ToLower(base)
-	if lb == "/emby" || strings.HasPrefix(lb, "/web") || strings.HasPrefix(lb, "/emby/web") {
+	if lb == "/emby" || lb == "/web" || strings.HasPrefix(lb, "/web/") || lb == "/emby/web" || strings.HasPrefix(lb, "/emby/web/") {
 		base = ""
 	}
 	u.Path, u.RawPath = "", ""
@@ -136,7 +136,6 @@ func (s *SiteRT) learnHost(key string) {
 	}
 }
 
-// allowedEP 判断 /__ep/ 目标是否允许：只允许上游自己跳转/返回过的推流域名，或手动添加的域名，避免成为开放代理。
 // learnRouteHost 把路由目标加入内存白名单（不写入配置，避免节点名把配置刷满）。
 func (s *SiteRT) learnRouteHost(u *url.URL) {
 	h, p := splitHP(u.Host, u.Scheme)
@@ -147,6 +146,7 @@ func (s *SiteRT) learnRouteHost(u *url.URL) {
 	s.hostsMu.Unlock()
 }
 
+// allowedEP 判断 /__ep/ 目标是否允许：只允许上游自己跳转/返回过的推流域名，或手动添加的域名，避免成为开放代理。
 func (s *SiteRT) allowedEP(scheme, host, port string) bool {
 	if s.isUpstream(scheme, host, port) {
 		return true
@@ -399,6 +399,7 @@ func (rc *reqCtx) modifyResponse(resp *http.Response) error {
 	h.Del("Server")
 	h.Del("X-Powered-By")
 	h.Del("Alt-Svc")
+	h.Del("Strict-Transport-Security") // HTTPS 策略由你自己的前置反代决定，不继承上游的
 	for _, k := range []string{"Location", "Content-Location"} {
 		if v := h.Get(k); v != "" {
 			h.Set(k, rc.rewriteLocation(v))

@@ -8,28 +8,31 @@ NC='\033[0m'
 
 DIR=/opt/emby-proxy
 RAW=https://raw.githubusercontent.com/jiang111/jiang111/master/emby-proxy
+TARBALL=https://codeload.github.com/jiang111/jiang111/tar.gz/refs/heads/master
 SRC_DIR=$(cd "$(dirname "$0")" 2>/dev/null && pwd || true)
-FILES="go.mod main.go config.go proxy.go rewrite.go stats.go manager.go admin.go web/index.html Dockerfile"
 
 if ! command -v docker >/dev/null 2>&1; then
     echo -e "${RED}未检测到 docker，请先在 1Panel 里安装 Docker${NC}"
     exit 1
 fi
 
-mkdir -p "$DIR/src/web" "$DIR/data"
+mkdir -p "$DIR/data"
+rm -rf "$DIR/src.new"
+mkdir -p "$DIR/src.new"
 
-fetch() {
-    if [ -n "$SRC_DIR" ] && [ -f "$SRC_DIR/$1" ]; then
-        cp "$SRC_DIR/$1" "$2"
-    else
-        curl -fsSL "$RAW/$1" -o "$2"
-    fi
-}
-
-for f in $FILES; do
-    fetch "$f" "$DIR/src/$f"
-done
-fetch docker-compose.yml "$DIR/docker-compose.yml"
+# 源码整目录获取，避免漏文件
+if [ -n "$SRC_DIR" ] && [ -f "$SRC_DIR/main.go" ]; then
+    cp -r "$SRC_DIR/." "$DIR/src.new/"
+else
+    curl -fsSL "$TARBALL" | tar -xz -C "$DIR/src.new" --strip-components=2 jiang111-master/emby-proxy
+fi
+if [ ! -f "$DIR/src.new/main.go" ]; then
+    echo -e "${RED}下载源码失败${NC}"
+    exit 1
+fi
+rm -rf "$DIR/src"
+mv "$DIR/src.new" "$DIR/src"
+cp "$DIR/src/docker-compose.yml" "$DIR/docker-compose.yml"
 
 cd "$DIR"
 echo "正在构建镜像（首次需要拉取 golang 镜像，稍等一两分钟）..."
