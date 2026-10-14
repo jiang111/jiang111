@@ -315,3 +315,19 @@ func TestMagpieStyleRoute(t *testing.T) {
 		t.Fatalf("route arg injection not blocked: %d", resp.StatusCode)
 	}
 }
+
+func TestAddScheme(t *testing.T) {
+	for in, want := range map[string]string{
+		"lite.example.uk": "https://lite.example.uk",
+		"a.com:443":       "https://a.com:443",
+		"a.com:8096":      "http://a.com:8096",
+		"1.2.3.4:8096":    "http://1.2.3.4:8096",
+		"1.2.3.4":         "http://1.2.3.4",
+		"http://a.com":    "http://a.com",
+		"a.com/emby":      "https://a.com/emby",
+	} {
+		if got := addScheme(in); got != want {
+			t.Errorf("addScheme(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

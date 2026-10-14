@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -147,9 +148,7 @@ var hostRe = regexp.MustCompile(`^[a-z0-9.-]{1,253}$`)
 func normalizeSite(s *Site) {
 	s.Name = strings.TrimSpace(s.Name)
 	s.Upstream = strings.TrimSpace(s.Upstream)
-	if s.Upstream != "" && !strings.Contains(s.Upstream, "://") {
-		s.Upstream = "http://" + s.Upstream
-	}
+	s.Upstream = addScheme(s.Upstream)
 	s.Mode = strings.ToLower(strings.TrimSpace(s.Mode))
 	if s.Mode == "" {
 		s.Mode = "port"
@@ -246,4 +245,25 @@ func validateSite(cfg *Config, s *Site) error {
 		return errors.New("未知的接入方式")
 	}
 	return nil
+}
+
+// addScheme 给没写协议的地址补上协议：域名默认 https（现在的服务器基本都套了证书），
+// IP 或非 443 端口（如 :8096）默认 http。
+func addScheme(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || strings.Contains(raw, "://") {
+		return raw
+	}
+	hostport := raw
+	if i := strings.IndexAny(hostport, "/?#"); i >= 0 {
+		hostport = hostport[:i]
+	}
+	host, port, err := net.SplitHostPort(hostport)
+	if err != nil {
+		host, port = strings.Trim(hostport, "[]"), ""
+	}
+	if net.ParseIP(host) != nil || (port != "" && port != "443") {
+		return "http://" + raw
+	}
+	return "https://" + raw
 }

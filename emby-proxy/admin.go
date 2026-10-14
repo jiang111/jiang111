@@ -324,10 +324,7 @@ func (a *Admin) test(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "请求格式错误")
 		return
 	}
-	up := strings.TrimSpace(body.Upstream)
-	if up != "" && !strings.Contains(up, "://") {
-		up = "http://" + up
-	}
+	up := addScheme(body.Upstream)
 	u, err := parseUpstream(up)
 	if err != nil {
 		writeErr(w, 400, err.Error())
