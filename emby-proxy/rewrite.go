@@ -113,7 +113,7 @@ func (rc *reqCtx) fixSystemInfo(data []byte) []byte {
 		}
 	}
 	for _, k := range []string{"LocalAddresses", "RemoteAddresses"} {
-		if _, ok := m[k]; ok {
+		if v, ok := m[k].([]any); ok && len(v) > 0 {
 			m[k] = []string{rc.publicBase}
 			changed = true
 		}
