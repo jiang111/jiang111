@@ -3,3 +3,7 @@ DOMAIN-SUFFIX,de2.staryuki.me
 DOMAIN-SUFFIX,vision.recmata.net
 DOMAIN-SUFFIX,023168.xyz
 DOMAIN-SUFFIX,223789.xyz
+DOMAIN-SUFFIX,chapanda.site
+DOMAIN-SUFFIX,lite.cn2gias.uk
+DOMAIN-SUFFIX,lilyemby.com
+DOMAIN-SUFFIX,inemby.us.ci
