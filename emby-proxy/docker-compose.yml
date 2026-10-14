@@ -1,0 +1,17 @@
+services:
+  emby-proxy:
+    build: ./src
+    image: emby-proxy:latest
+    container_name: emby-proxy
+    restart: unless-stopped
+    # host 网络：面板里新增「独立端口」站点时无需改 compose、无需重建容器
+    network_mode: host
+    environment:
+      - TZ=Asia/Taipei
+    volumes:
+      - /opt/emby-proxy/data:/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
