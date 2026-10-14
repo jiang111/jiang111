@@ -223,6 +223,9 @@ func (s *SiteRT) publicBase(r *http.Request, prefix string) string {
 			host = net.JoinHostPort(strings.Trim(host, "[]"), p)
 		}
 	}
+	if h, p, err := net.SplitHostPort(host); err == nil && p == defaultPort(scheme) {
+		host = joinHP(scheme, strings.ToLower(h), p)
+	}
 	return scheme + "://" + host + prefix
 }
 

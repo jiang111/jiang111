@@ -26,25 +26,31 @@
 
 路径前缀和独立域名共用入口端口 `55661`。
 
-### 套 HTTPS（路径前缀模式，推荐）
+### 套 HTTPS：nginx + 一个服务一个端口（推荐）
 
-1. 1Panel → 网站 → 你已建好并申请了证书的网站 → 反向代理 → 创建：
-   - 前端请求路径：`/`
-   - 后端代理地址：`http://127.0.0.1:55661`（**末尾不要加 `/`**，否则 nginx 会改动请求路径）
-2. 编辑这条反代的「源文」，在 `location /` 里补上（1Panel 默认已带 Host、X-Forwarded-Proto、WebSocket 头）：
-   ```nginx
-   proxy_http_version 1.1;
-   proxy_buffering off;
-   proxy_request_buffering off;
-   proxy_max_temp_file_size 0;
-   proxy_read_timeout 86400s;
-   proxy_send_timeout 86400s;
-   client_max_body_size 0;
+nginx 在对外端口做 HTTPS，转发给本机的站点端口。对外端口和站点端口**不能相同**（Linux 上会端口冲突），
+比如对外 `8001` → 站点 `18001`、对外 `8002` → 站点 `18002`。
+
+1. 面板「设置 → Nginx」：
+   - 独立端口监听地址选「仅本机 127.0.0.1」（站点端口只让 nginx 访问，外面不能绕过 HTTPS）
+   - 填证书和私钥路径（如 `/etc/letsencrypt/live/你的域名/fullchain.pem`、`privkey.pem`）
+2. 添加站点：接入方式「独立端口」填 `18001`；「高级选项 → 客户端访问地址」填 `https://你的域名:8001`。
+3. 「设置 → 生成 nginx 配置」，保存为 `/etc/nginx/conf.d/emby-proxy.conf`，然后：
+   ```bash
+   nginx -t && nginx -s reload
    ```
-3. 面板「设置」→ 入口公网地址填 `https://你的域名`。
-4. 添加站点时接入方式选「路径前缀」，客户端地址就是 `https://你的域名/路径`，端口 443。
-5. （可选）把 config.json 的 `listen` 改成 `127.0.0.1:55661` 并重启容器，入口只允许本机 nginx 访问，外面不能绕过 HTTPS。
-   面板 55660 同理可以只在防火墙对自己的 IP 放行。
+   新增/修改站点后重新生成一次即可。服务器有 IPv6 的话把配置里 `listen [::]:端口` 那行的注释去掉。
+4. 防火墙放行对外端口（8001、8002…），不要放行 18001 这些站点端口。
+5. 客户端里填 `https://你的域名`，端口 `8001`（或直接 `https://你的域名:8001`）。
+
+面板也可以只对本机开放：config.json 里 `admin_listen` 改成 `127.0.0.1:55660`，用 SSH 隧道
+（`ssh -L 55660:127.0.0.1:55660 服务器`）或生成的配置里注释掉的面板 server 块访问。
+
+### 套 HTTPS：路径前缀模式
+
+nginx 一个 `server`（443）反代到入口端口 `http://127.0.0.1:55661`（`proxy_pass` 末尾不要加 `/`），
+location 里的头和超时设置与上面生成的配置相同；然后面板「设置」里把入口公网地址填成 `https://你的域名`，
+客户端地址为 `https://你的域名/路径`。
 
 ## 推流分离
 

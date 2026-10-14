@@ -331,3 +331,21 @@ func TestAddScheme(t *testing.T) {
 		}
 	}
 }
+
+func TestNginxConfig(t *testing.T) {
+	cfg := &Config{AdminListen: ":55660", PortBind: "127.0.0.1", NginxCert: "/c.pem", NginxKey: "/k.pem", Sites: []*Site{
+		{Name: "a", Mode: "port", Port: 18001, PublicURL: "https://e.example.com:8001", Upstream: "https://u", Enabled: true},
+		{Name: "b", Mode: "port", Port: 18002, Upstream: "https://u"},
+		{Name: "c", Mode: "port", Port: 8003, PublicURL: "https://e.example.com:8003", Upstream: "https://u"},
+		{Name: "d", Mode: "path", Path: "x", Upstream: "https://u"},
+	}}
+	out := nginxConfig(cfg)
+	for _, want := range []string{"listen 8001 ssl;", "server_name e.example.com;", "proxy_pass http://127.0.0.1:18001;", "ssl_certificate     /c.pem;"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q in:\n%s", want, out)
+		}
+	}
+	if strings.Count(out, "\nserver {") != 1 {
+		t.Fatalf("expected exactly one server block:\n%s", out)
+	}
+}

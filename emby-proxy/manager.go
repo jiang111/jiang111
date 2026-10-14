@@ -113,7 +113,7 @@ func (m *Manager) reload() {
 		if m.listeners[port] != nil {
 			continue
 		}
-		ln, err := net.Listen("tcp", ":"+strconv.Itoa(port))
+		ln, err := net.Listen("tcp", net.JoinHostPort(m.cfg.PortBind, strconv.Itoa(port)))
 		if err != nil {
 			siteErr[rt.cfg.ID] = "端口监听失败: " + err.Error()
 			delete(sites, rt.cfg.ID)
@@ -127,6 +127,15 @@ func (m *Manager) reload() {
 		log.Printf("站点 %s 监听端口 %d → %s", rt.cfg.Name, port, rt.cfg.Upstream)
 	}
 	m.sites, m.byPath, m.byHost, m.byPort, m.siteErr = sites, byPath, byHost, byPort, siteErr
+}
+
+// rebindAll 关闭所有独立端口后重新监听（监听地址变化时用）。调用方需持有 m.mu 写锁。
+func (m *Manager) rebindAll() {
+	for port, srv := range m.listeners {
+		srv.Close()
+		delete(m.listeners, port)
+	}
+	m.reload()
 }
 
 func newServer(h http.Handler) *http.Server {

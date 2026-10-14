@@ -47,6 +47,9 @@ type Config struct {
 	Secret        string  `json:"secret"`
 	EntryURL      string  `json:"entry_url,omitempty"`   // 入口的公网地址（仅用于面板显示客户端地址）
 	PublicHost    string  `json:"public_host,omitempty"` // 端口模式显示用的服务器 IP/域名
+	PortBind      string  `json:"port_bind,omitempty"`   // 独立端口站点的监听地址，空=所有网卡，127.0.0.1=仅本机（前面有 nginx 时）
+	NginxCert     string  `json:"nginx_cert,omitempty"`  // 生成 nginx 配置用的证书路径
+	NginxKey      string  `json:"nginx_key,omitempty"`
 	Sites         []*Site `json:"sites"`
 }
 

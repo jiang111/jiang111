@@ -125,7 +125,7 @@ td.p{white-space:normal;word-break:break-all;min-width:240px;font-family:ui-mono
         <label><input type="radio" name="mode" value="path">路径前缀</label>
         <label><input type="radio" name="mode" value="host">独立域名</label>
       </div>
-      <div class="f" data-mode="port" style="margin-top:8px"><input type="number" name="port" min="1" max="65535" placeholder="例如 18001"><small>兼容性最好（所有客户端都支持）。记得在防火墙/安全组放行该端口。</small></div>
+      <div class="f" data-mode="port" style="margin-top:8px"><input type="number" name="port" min="1" max="65535" placeholder="例如 18001"><small>兼容性最好（所有客户端都支持）。直接对外：防火墙放行该端口。前面有 nginx 做 HTTPS：在「高级选项 → 客户端访问地址」填 <code>https://域名:对外端口</code>，到「设置」里生成 nginx 配置。</small></div>
       <div class="f" data-mode="path" style="margin-top:8px"><div class="row"><span class="chip">入口/</span><input type="text" name="path" placeholder="例如 hk"></div><small>多个站点共用一个入口端口/域名，客户端地址填 <code>入口地址/hk</code>。Infuse、SenPlayer、Forward、VidHub、Emby 官方等支持带路径的地址。</small></div>
       <div class="f" data-mode="host" style="margin-top:8px"><input type="text" name="host" placeholder="例如 hk.emby.mydomain.com"><small>把该域名解析到本机并反代到入口端口（需保留 Host 头）。</small></div>
     </div>
@@ -424,11 +424,42 @@ function renderSettings() {
     <div class="f"><label>原密码</label><input type="password" name="old" autocomplete="current-password"></div>
     <div class="f"><label>新密码</label><input type="password" name="new" autocomplete="new-password" minlength="6"></div>
     <div class="foot"><button class="btn pri">修改</button></div></form>
+    <form class="panel" id="nf"><h3>Nginx（独立端口 + HTTPS）</h3>
+    <div class="f"><label>独立端口监听地址</label>
+      <select name="port_bind"><option value="">所有网卡（客户端直接连，http）</option><option value="127.0.0.1">仅本机 127.0.0.1（前面有 nginx 做 HTTPS）</option></select>
+      <small>选「仅本机」后站点端口只有 nginx 能访问，外部无法绕过 HTTPS。nginx 对外端口要和站点端口不同（如对外 8001 → 站点 18001）。修改后会重新监听，正在播放的连接会断开。</small></div>
+    <div class="f"><label>证书路径</label><input type="text" name="nginx_cert" value="${esc(st.nginx_cert)}" placeholder="/etc/letsencrypt/live/你的域名/fullchain.pem"></div>
+    <div class="f"><label>私钥路径</label><input type="text" name="nginx_key" value="${esc(st.nginx_key)}" placeholder="/etc/letsencrypt/live/你的域名/privkey.pem"></div>
+    <div class="foot"><button type="button" class="btn" id="btnNginx">生成 nginx 配置</button><button class="btn pri">保存</button></div>
+    <div id="nginxOut" style="display:none;margin-top:12px">
+      <div class="row" style="margin-bottom:6px"><span class="kv">保存为 /etc/nginx/conf.d/emby-proxy.conf，然后执行 <code>nginx -t && nginx -s reload</code></span><div class="sp"></div><button type="button" class="btn sm" id="btnNginxCopy">复制</button></div>
+      <textarea id="nginxText" readonly style="min-height:360px;font-size:12px"></textarea></div></form>
     <div class="panel"><h3>端口</h3><div class="help">面板：<code>${esc(st.admin_listen)}</code>　入口：<code>${esc(st.listen)}</code><br>修改这两个端口需要编辑 config.json 中的 <code>admin_listen</code> / <code>listen</code> 后重启容器。</div></div>`;
   $('#sf').onsubmit = async e => {
     e.preventDefault();
     try { await api('PUT', '/api/settings', {entry_url: e.target.entry_url.value, public_host: e.target.public_host.value}); await load(); toast('已保存'); }
     catch (err) { toast(err.message); }
+  };
+  $('#nf').port_bind.value = st.port_bind || '';
+  $('#nf').onsubmit = async e => {
+    e.preventDefault();
+    const f = e.target;
+    try { await api('PUT', '/api/settings', {port_bind: f.port_bind.value, nginx_cert: f.nginx_cert.value, nginx_key: f.nginx_key.value}); await load(); toast('已保存'); }
+    catch (err) { toast(err.message); }
+  };
+  $('#btnNginx').onclick = async () => {
+    const f = $('#nf');
+    try {
+      await api('PUT', '/api/settings', {nginx_cert: f.nginx_cert.value, nginx_key: f.nginx_key.value});
+      const r = await fetch('/api/nginx');
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      $('#nginxText').value = await r.text();
+      $('#nginxOut').style.display = '';
+    } catch (err) { toast(err.message); }
+  };
+  $('#btnNginxCopy').onclick = async () => {
+    try { await navigator.clipboard.writeText($('#nginxText').value); toast('已复制'); }
+    catch (err) { $('#nginxText').select(); toast('请手动复制'); }
   };
   $('#pf').onsubmit = async e => {
     e.preventDefault();

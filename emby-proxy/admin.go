@@ -47,6 +47,13 @@ func (a *Admin) Handler() http.Handler {
 	mux.HandleFunc("POST /api/sites/{id}/clear-stats", a.auth(a.clearStats))
 	mux.HandleFunc("POST /api/test", a.auth(a.test))
 	mux.HandleFunc("PUT /api/settings", a.auth(a.settings))
+	mux.HandleFunc("GET /api/nginx", a.auth(func(w http.ResponseWriter, r *http.Request) {
+		a.m.mu.RLock()
+		conf := nginxConfig(a.m.cfg)
+		a.m.mu.RUnlock()
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Write([]byte(conf))
+	}))
 	return securityHeaders(mux)
 }
 
@@ -183,6 +190,7 @@ func (a *Admin) state(w http.ResponseWriter, r *http.Request) {
 		"settings": map[string]any{
 			"listen": m.cfg.Listen, "admin_listen": m.cfg.AdminListen,
 			"entry_url": m.cfg.EntryURL, "public_host": m.cfg.PublicHost,
+			"port_bind": m.cfg.PortBind, "nginx_cert": m.cfg.NginxCert, "nginx_key": m.cfg.NginxKey,
 		},
 		"sites":   views,
 		"uptime":  int64(time.Since(m.started).Seconds()),
@@ -281,6 +289,9 @@ func (a *Admin) settings(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		EntryURL    *string `json:"entry_url"`
 		PublicHost  *string `json:"public_host"`
+		PortBind    *string `json:"port_bind"`
+		NginxCert   *string `json:"nginx_cert"`
+		NginxKey    *string `json:"nginx_key"`
 		OldPassword string  `json:"old_password"`
 		NewPassword string  `json:"new_password"`
 	}
@@ -308,6 +319,24 @@ func (a *Admin) settings(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.PublicHost != nil {
 		m.cfg.PublicHost = strings.TrimSpace(*body.PublicHost)
+	}
+	if body.NginxCert != nil {
+		m.cfg.NginxCert = strings.TrimSpace(*body.NginxCert)
+	}
+	if body.NginxKey != nil {
+		m.cfg.NginxKey = strings.TrimSpace(*body.NginxKey)
+	}
+	if body.PortBind != nil {
+		bind := strings.Trim(strings.TrimSpace(*body.PortBind), "[]")
+		if !validBind(bind) {
+			m.mu.Unlock()
+			writeErr(w, 400, "监听地址必须是 IP，例如 127.0.0.1，留空表示所有网卡")
+			return
+		}
+		if bind != m.cfg.PortBind {
+			m.cfg.PortBind = bind
+			m.rebindAll()
+		}
 	}
 	m.mu.Unlock()
 	if err := m.save(); err != nil {
