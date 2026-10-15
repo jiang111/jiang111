@@ -30,10 +30,13 @@ if [ -f "$APPLIED" ]; then cp "$APPLIED" "$APPLIED.prev"; else : > "$APPLIED.pre
 cp "$CONF" "$APPLIED"
 
 if OUT=$(nginx -t 2>&1); then
-    if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet nginx 2>/dev/null; then
-        R=$(systemctl reload nginx 2>&1)
-    else
+    # nginx 没在运行时直接启动（配置已通过检查）
+    if [ -d /run/systemd/system ] && systemctl cat nginx.service >/dev/null 2>&1; then
+        R=$(systemctl reload-or-restart nginx 2>&1)
+    elif [ -s /run/nginx.pid ] && kill -0 "$(cat /run/nginx.pid)" 2>/dev/null; then
         R=$(nginx -s reload 2>&1)
+    else
+        R=$(nginx 2>&1)
     fi
     if [ $? -eq 0 ]; then STATUS=ok; else STATUS=fail; fi
     OUT="$OUT
