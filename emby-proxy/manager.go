@@ -30,10 +30,14 @@ type Manager struct {
 	listeners map[int]*http.Server
 	stats     map[string]*Stats
 
-	logs   *LogRing
-	trs    [3]*http.Transport // 按 tlsVerify / tlsIgnoreExpired / tlsInsecure
-	saveMu sync.Mutex
-	bg     sync.WaitGroup // 后台保存（发现推流域名时）
+	logs    *LogRing
+	trs     [3]*http.Transport // 按 tlsVerify / tlsIgnoreExpired / tlsInsecure
+	saveMu  sync.Mutex
+	bg      sync.WaitGroup // 后台保存（发现推流域名时）
+	cluster *Cluster
+
+	peerMu    sync.Mutex
+	downUntil map[string]time.Time // 暂时连不上的节点（同一用户固定同一台）
 
 	certMu   sync.Mutex
 	certKey  string

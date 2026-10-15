@@ -409,7 +409,7 @@ async function renderLogs() {
       <select id="logSite" style="max-width:240px"><option value="">全部站点</option>${S.sites.map(s => `<option value="${esc(s.id)}">${esc(s.name)}</option>`).join('')}</select>
       <label class="chk" style="margin:0"><input type="checkbox" id="logPause">暂停刷新</label><div class="sp"></div>
       <span class="kv">敏感参数（api_key / token）已打码 · 最多保留最近 1000 条</span></div>
-      <div class="tw"><table><thead><tr><th>时间</th><th>站点</th><th>客户端 IP</th><th>状态</th><th>方法</th><th>路径</th><th>流量</th><th>耗时</th><th>客户端</th></tr></thead><tbody id="logTable"></tbody></table></div>`;
+      <div class="tw"><table><thead><tr><th>时间</th><th>站点</th><th>客户端 IP</th><th>状态</th><th>方法</th><th>路径</th><th>流量</th><th>耗时</th><th>节点</th><th>客户端</th></tr></thead><tbody id="logTable"></tbody></table></div>`;
     $('#logSite').value = logSite;
     $('#logSite').onchange = e => { logSite = e.target.value; refreshLogs(); };
     $('#logPause').checked = logPaused;
@@ -424,8 +424,8 @@ async function refreshLogs() {
     const t = new Date(l.t * 1000), cls = 's' + String(l.status)[0];
     return `<tr><td>${t.toLocaleTimeString('zh-CN', {hour12: false})}</td><td>${esc(l.site_name)}</td><td>${esc(l.ip)}</td>
       <td class="${cls}" title="${esc(l.err || '')}">${l.status === 499 ? '499 客户端断开' : l.status}</td><td>${esc(l.method)}</td><td class="p">${esc(l.path)}</td>
-      <td>${fmtBytes(l.bytes)}</td><td>${l.ms < 1000 ? l.ms + 'ms' : (l.ms / 1000).toFixed(1) + 's'}</td><td title="${esc(l.ua)}">${esc(l.ua.slice(0, 28))}</td></tr>`;
-  }).join('') : '<tr><td colspan="9" style="text-align:center;color:var(--muted);padding:30px">暂无记录</td></tr>';
+      <td>${fmtBytes(l.bytes)}</td><td>${l.ms < 1000 ? l.ms + 'ms' : (l.ms / 1000).toFixed(1) + 's'}</td><td>${esc(l.node || '')}</td><td title="${esc(l.ua)}">${esc(l.ua.slice(0, 28))}</td></tr>`;
+  }).join('') : '<tr><td colspan="10" style="text-align:center;color:var(--muted);padding:30px">暂无记录</td></tr>';
 }
 
 function certStatus(st) {
@@ -463,13 +463,14 @@ function renderCluster() {
     const nodes = c.nodes || [];
     detail = `<div class="f"><label>同步令牌</label><div class="row"><input type="text" readonly value="${esc(c.token)}" id="clToken"><button type="button" class="btn" id="btnCopyToken">复制</button><button type="button" class="btn" id="btnNewToken">重新生成</button></div>
         <small>在每台从节点上填写本机的「面板 HTTPS 地址」和这个令牌。重新生成后，旧令牌立即失效。</small></div>
-      <div class="f"><label>从节点（${nodes.length}）</label>${nodes.length ? `<table><thead><tr><th>名称</th><th>IP</th><th>最近同步</th><th>状态</th></tr></thead><tbody>${nodes.map(n =>
-        `<tr><td>${esc(n.name)}</td><td>${esc(n.ip)}</td><td>${fmtAgo(n.last_seen)}</td><td>${n.last_seen < Date.now()/1000 - 120 ? '<span class="bad">失联</span>' : n.current ? '<span class="ok">已是最新</span>' : '<span class="kv">同步中</span>'}</td></tr>`).join('')}</tbody></table>`
-        : '<div class="kv">还没有从节点连接</div>'}</div>`;
+      <div class="f"><label>从节点（${nodes.length}）</label>${nodes.length ? `<table><thead><tr><th>名称</th><th>转发地址</th><th>最近同步</th><th>状态</th></tr></thead><tbody>${nodes.map(n =>
+        `<tr><td>${esc(n.name)}</td><td>${esc(n.addr || n.ip)}</td><td>${fmtAgo(n.last_seen)}</td><td>${n.last_seen < Date.now()/1000 - 90 ? '<span class="bad">失联（已移出分配）</span>' : n.current ? '<span class="ok">已是最新</span>' : '<span class="kv">同步中</span>'}</td></tr>`).join('')}</tbody></table>`
+        : '<div class="kv">还没有从节点连接</div>'}</div>
+      <label class="chk"><input type="checkbox" name="sticky" ${c.sticky ? 'checked' : ''}><span><b>同一用户固定同一台</b>：同一个客户端 IP 的 API 和推流请求都只经过同一台服务器访问上游，落到别的服务器上会被转给它。上游看到的 IP 数和用户直连时一样。</span></label>
+      ${c.sticky ? `<div class="kv" style="white-space:normal;margin-bottom:10px">参与分配的节点：${(c.members || []).map(m => esc(m.name) + '（' + esc(m.addr) + '）').join('、') || '无'}${!c.advertise_addr ? '。<span class="bad">本机没填公网 IP，主节点不参与分配</span>（如果 DNS 里也有主节点，请填写）' : ''}</div>` : ''}`;
   } else if (role === 'node') {
     detail = `<div class="f"><label>主节点面板地址</label><input type="text" name="master_url" value="${esc(c.master_url)}" placeholder="https://master.example.com:8443"></div>
       <div class="f"><label>同步令牌</label><input type="text" name="token" placeholder="${c.token ? '已保存（' + esc(c.token) + '），留空不修改' : '主节点「设置 → 多服务器同步」里复制'}"></div>
-      <div class="f"><label>本机名称</label><input type="text" name="node_name" value="${esc(c.node_name)}" placeholder="在主节点上显示，例如 tokyo-1，留空用主机名"></div>
       <div class="kv" style="white-space:normal">${syncLine()}</div>`;
   }
   return `<form class="panel" id="cf"><h3>多服务器同步</h3>
@@ -478,6 +479,10 @@ function renderCluster() {
       <label><input type="radio" name="role" value="" ${role === '' ? 'checked' : ''}>单机</label>
       <label><input type="radio" name="role" value="master" ${role === 'master' ? 'checked' : ''}>主节点</label>
       <label><input type="radio" name="role" value="node" ${role === 'node' ? 'checked' : ''}>从节点</label></div></div>
+    ${role ? `<div class="row" style="gap:10px;align-items:flex-start">
+      <div class="f" style="flex:1"><label>本机名称</label><input type="text" name="node_name" value="${esc(c.node_name)}" placeholder="${esc(c.self_name || '默认主机名')}"><small>各台不能重名，如 tokyo-1</small></div>
+      <div class="f" style="flex:1"><label>本机公网 IP</label><input type="text" name="advertise_addr" value="${esc(c.advertise_addr)}" placeholder="${role === 'node' ? '留空用主节点看到的 IP' : '例如 203.0.113.10'}"><small>其它服务器转发请求时连这个 IP</small></div>
+    </div>` : ''}
     <div class="f"><label>本机面板 HTTPS 地址</label><input type="text" name="panel_url" value="${esc(c.panel_url)}" placeholder="https://master.example.com:8443">
       <small>填写后自动生成面板的 nginx 配置。主节点必须填写（从节点通过它同步），并把 config.json 的 admin_listen 改为 127.0.0.1:${portOf(S.settings.admin_listen)}。
       这个域名只解析到本机，不要和负载均衡的域名相同。</small></div>
@@ -496,7 +501,9 @@ function bindCluster() {
     const role = f.querySelector('input[name=role]:checked').value;
     if (role === 'node' && S.cluster.role !== 'node' && !confirm('设为从节点后，本机的站点和设置会被主节点的配置整体覆盖，确定？')) return;
     const body = {role, panel_url: f.panel_url.value};
-    if (role === 'node') Object.assign(body, {master_url: f.master_url.value, token: f.token.value, node_name: f.node_name.value});
+    if (role) Object.assign(body, {node_name: f.node_name.value, advertise_addr: f.advertise_addr.value});
+    if (role === 'master' && f.sticky) body.sticky = f.sticky.checked;
+    if (role === 'node') Object.assign(body, {master_url: f.master_url.value, token: f.token.value});
     try { await api('PUT', '/api/cluster', body); await load(); toast('已保存'); } catch (err) { toast(err.message); }
   };
   if ($('#btnCopyToken')) $('#btnCopyToken').onclick = async () => {
@@ -504,7 +511,7 @@ function bindCluster() {
   };
   if ($('#btnNewToken')) $('#btnNewToken').onclick = async () => {
     if (!confirm('重新生成后所有从节点都要更新令牌，确定？')) return;
-    await api('PUT', '/api/cluster', {role: 'master', new_token: true, panel_url: f.panel_url.value}); await load(); toast('已生成新令牌');
+    await api('PUT', '/api/cluster', {role: 'master', new_token: true, panel_url: f.panel_url.value, node_name: f.node_name.value, advertise_addr: f.advertise_addr.value, sticky: f.sticky ? f.sticky.checked : undefined}); await load(); toast('已生成新令牌');
   };
   if ($('#btnSyncNow')) $('#btnSyncNow').onclick = async () => {
     await api('POST', '/api/cluster/sync-now'); toast('已开始同步'); setTimeout(load, 1500);

@@ -94,6 +94,7 @@ type LogEntry struct {
 	Ms       int64  `json:"ms"`
 	UA       string `json:"ua"`
 	Err      string `json:"err,omitempty"`
+	Node     string `json:"node,omitempty"` // 「→ 名称」转发给了该节点；「← 名称」由该节点转来
 }
 
 type LogRing struct {

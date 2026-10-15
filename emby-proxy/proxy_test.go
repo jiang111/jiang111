@@ -931,6 +931,13 @@ func TestClusterSync(t *testing.T) {
 	if conf, err := os.ReadFile(node.nginxConfPath()); err != nil || !strings.Contains(string(conf), "listen 8001 ssl;") {
 		t.Fatalf("node nginx conf: %v\n%s", err, conf)
 	}
+	// 首次同步后本节点加入成员列表，版本会变一次；生产中节点同步后会立刻再拉一次
+	if err := nc.pull(); err != nil {
+		t.Fatal(err)
+	}
+	if ms := node.cfg.Members; len(ms) != 1 || ms[0].Name != "tokyo-1" || ms[0].Addr != "127.0.0.1" {
+		t.Fatalf("members not synced: %+v", ms)
+	}
 	v1 := nc.status.Version
 	if nodes := mc.nodeList(v1); len(nodes) != 1 || nodes[0].Current {
 		t.Fatalf("before confirming, node should not be current: %+v", nodes)
@@ -971,5 +978,164 @@ func TestNginxIPv6Option(t *testing.T) {
 	cfg.NginxIPv6 = true
 	if out := nginxConfig(cfg, "", "", nil); !strings.Contains(out, "    listen [::]:8001 ssl;\n") {
 		t.Fatalf("ipv6 should be enabled:\n%s", out)
+	}
+}
+
+// 同一用户固定同一台：两个节点 A、B，各自前面一个 TLS 服务器模拟 nginx。
+// 同一个客户端的请求不管落到哪个节点，上游看到的都是同一个节点；不同客户端会分到不同节点；
+// 负责节点挂掉时就地处理（POST 请求体不丢）；客户端伪造转发标记无效；WebSocket 能跨节点转发。
+func TestStickyAcrossNodes(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/embywebsocket" {
+			c, brw, _ := http.NewResponseController(w).Hijack()
+			defer c.Close()
+			brw.WriteString("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n")
+			brw.Flush()
+			line, _ := brw.ReadString('\n')
+			brw.WriteString("echo:" + line)
+			brw.Flush()
+			return
+		}
+		b, _ := io.ReadAll(r.Body)
+		if r.Header.Get(hopHeader) != "" {
+			t.Errorf("hop header leaked upstream")
+		}
+		fmt.Fprintf(w, "node=%s body=%s", r.Header.Get("X-Node"), b)
+	}))
+	defer up.Close()
+
+	// 给 emby.test 签证书，两个「nginx」都用它
+	caKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	caTpl := &x509.Certificate{SerialNumber: big.NewInt(20), Subject: pkix.Name{CommonName: "ca"}, IsCA: true, BasicConstraintsValid: true,
+		KeyUsage: x509.KeyUsageCertSign, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour)}
+	caDER, _ := x509.CreateCertificate(rand.Reader, caTpl, caTpl, &caKey.PublicKey, caKey)
+	ca, _ := x509.ParseCertificate(caDER)
+	leafKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	leafDER, _ := x509.CreateCertificate(rand.Reader, &x509.Certificate{SerialNumber: big.NewInt(21), DNSNames: []string{"emby.test"},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}, ca, &leafKey.PublicKey, caKey)
+	pool := x509.NewCertPool()
+	pool.AddCert(ca)
+	peerTLS.RootCAs = pool
+	defer func() {
+		peerTLS.RootCAs = nil
+		peerTransports.Range(func(k, _ any) bool { peerTransports.Delete(k); return true })
+	}()
+
+	type nodeT struct {
+		m     *Manager
+		front *httptest.Server
+		addr  string
+	}
+	nodes := map[string]*nodeT{}
+	for _, name := range []string{"A", "B"} {
+		site := &Site{ID: "s1", Name: "x", Enabled: true, Upstream: up.URL, Mode: "path", Path: "e", StreamMode: "proxy",
+			PublicURL: "https://emby.test:8001/e", Headers: map[string]string{"X-Node": name}}
+		cfg := &Config{Listen: ":0", AdminListen: ":0", ClusterSecret: "shared", Sites: []*Site{site},
+			Cluster: ClusterConfig{Role: "node", NodeName: name, Sticky: true}}
+		if err := validateSite(cfg, site); err != nil {
+			t.Fatal(err)
+		}
+		m := NewManager(filepath.Join(t.TempDir(), "c.json"), cfg)
+		m.mu.Lock()
+		m.reload()
+		m.mu.Unlock()
+		// 模拟 nginx：TLS、X-Real-IP（测试里用 X-Test-Client 指定客户端 IP）、X-Forwarded-*
+		front := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ip := r.Header.Get("X-Test-Client")
+			if ip == "" {
+				ip, _, _ = net.SplitHostPort(r.RemoteAddr)
+			}
+			r.Header.Del("X-Test-Client")
+			r.Header.Set("X-Real-Ip", ip)
+			r.Header.Set("X-Forwarded-Proto", "https")
+			r.Header.Set("X-Forwarded-Host", "emby.test:8001")
+			m.ServeHTTP(w, r)
+		}))
+		front.TLS = &tls.Config{Certificates: []tls.Certificate{{Certificate: [][]byte{leafDER}, PrivateKey: leafKey}}}
+		front.StartTLS()
+		t.Cleanup(front.Close)
+		nodes[name] = &nodeT{m: m, front: front, addr: strings.TrimPrefix(front.URL, "https://")}
+	}
+	members := []Member{{Name: "A", Addr: nodes["A"].addr}, {Name: "B", Addr: nodes["B"].addr}}
+	for _, n := range nodes {
+		n.m.cfg.Members = members
+	}
+	cl := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool, ServerName: "emby.test"}}}
+	do := func(node, method, client, body string, hdr ...string) string {
+		req, _ := http.NewRequest(method, nodes[node].front.URL+"/e/emby/Items", strings.NewReader(body))
+		req.Header.Set("X-Test-Client", client)
+		for i := 0; i+1 < len(hdr); i += 2 {
+			req.Header.Set(hdr[i], hdr[i+1])
+		}
+		resp, err := cl.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return string(b)
+	}
+
+	seen := map[string]bool{}
+	for i := 0; i < 20; i++ {
+		client := fmt.Sprintf("203.0.113.%d", i)
+		viaA := do("A", "GET", client, "")
+		viaB := do("B", "POST", client, "progress")
+		ownerA := strings.TrimPrefix(strings.Fields(viaA)[0], "node=")
+		ownerB := strings.TrimPrefix(strings.Fields(viaB)[0], "node=")
+		if ownerA != ownerB || !strings.Contains(viaB, "body=progress") {
+			t.Fatalf("client %s: via A → %q, via B → %q (should be same node, body kept)\nA logs: %+v", client, viaA, viaB, nodes["A"].m.logs.list("", 2))
+		}
+		seen[ownerA] = true
+	}
+	if !seen["A"] || !seen["B"] {
+		t.Fatalf("clients should spread across both nodes: %v", seen)
+	}
+
+	// 找一个归 B 负责的客户端
+	var clientB string
+	for i := 0; i < 50; i++ {
+		c := fmt.Sprintf("198.51.100.%d", i)
+		if o, _ := nodes["A"].m.owner(c); o.Name == "B" {
+			clientB = c
+			break
+		}
+	}
+	// 客户端伪造转发标记：无效，仍然按负责节点处理
+	if got := do("A", "GET", clientB, "", hopHeader, "1|1.2.3.4|s1|A|forged"); !strings.HasPrefix(got, "node=B") {
+		t.Fatalf("forged hop should be ignored: %q", got)
+	}
+	// 访问日志：A 上记录转发给 B，B 上记录由 A 转来，客户端 IP 是原始 IP
+	if l := nodes["A"].m.logs.list("", 1)[0]; l.Node != "→ B" || l.IP != clientB {
+		t.Fatalf("A log: %+v", l)
+	}
+	if l := nodes["B"].m.logs.list("", 1)[0]; l.Node != "← A" || l.IP != clientB {
+		t.Fatalf("B log: %+v", l)
+	}
+
+	// WebSocket 跨节点：clientB 连到 A，实际由 B 连上游
+	conn, err := tls.Dial("tcp", nodes["A"].addr, &tls.Config{RootCAs: pool, ServerName: "emby.test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fmt.Fprintf(conn, "GET /e/embywebsocket?api_key=x HTTP/1.1\r\nHost: emby.test:8001\r\nX-Test-Client: %s\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n", clientB)
+	br := bufio.NewReader(conn)
+	if resp, err := http.ReadResponse(br, nil); err != nil || resp.StatusCode != 101 {
+		t.Fatalf("ws upgrade via forward: %v %v", err, resp)
+	}
+	fmt.Fprintf(conn, "hi\n")
+	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	if line, _ := br.ReadString('\n'); line != "echo:hi\n" {
+		t.Fatalf("ws echo via forward = %q", line)
+	}
+	conn.Close()
+
+	// B 挂掉：A 就地处理，POST 请求体不丢
+	nodes["B"].front.Close()
+	if got := do("A", "POST", clientB, "after-down"); got != "node=A body=after-down" {
+		t.Fatalf("fallback when owner down: %q", got)
+	}
+	if l := nodes["A"].m.logs.list("", 1)[0]; !strings.Contains(l.Node, "失联") {
+		t.Fatalf("fallback log: %+v", l)
 	}
 }

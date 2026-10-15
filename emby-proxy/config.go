@@ -55,6 +55,7 @@ type Config struct {
 	NginxIPv6     bool          `json:"nginx_ipv6,omitempty"` // nginx 同时监听 IPv6
 	PanelURL      string        `json:"panel_url,omitempty"`  // 本机面板的 HTTPS 地址（生成 nginx 面板配置；从节点用它连接主节点）
 	Cluster       ClusterConfig `json:"cluster"`
+	Members       []Member      `json:"members,omitempty"` // 从节点：主节点下发的节点列表
 	Sites         []*Site       `json:"sites"`
 }
 

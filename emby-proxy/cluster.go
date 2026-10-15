@@ -29,26 +29,32 @@ type ClusterConfig struct {
 	Role      string `json:"role,omitempty"`       // ""=单机 | master | node
 	Token     string `json:"token,omitempty"`      // 主节点：同步令牌；从节点：主节点给的令牌
 	MasterURL string `json:"master_url,omitempty"` // 从节点：主节点面板地址，如 https://master.example.com:8443
-	NodeName  string `json:"node_name,omitempty"`  // 从节点：在主节点上显示的名字
+	NodeName  string `json:"node_name,omitempty"`  // 本机名字（主节点上显示，也用于分配用户）
+
+	AdvertiseAddr string `json:"advertise_addr,omitempty"` // 本机公网 IP（节点间转发用；从节点留空则用主节点看到的 IP）
+	Sticky        bool   `json:"sticky,omitempty"`         // 同一用户固定同一台（主节点设置，同步给从节点）
 }
 
 // syncPayload 是主节点下发的内容。
 type syncPayload struct {
-	Sites         []*Site `json:"sites"`
-	EntryURL      string  `json:"entry_url,omitempty"`
-	PublicHost    string  `json:"public_host,omitempty"`
-	PortBind      string  `json:"port_bind,omitempty"`
-	NginxCert     string  `json:"nginx_cert,omitempty"` // 主节点手动指定的证书路径（各节点需自备同路径文件）
-	NginxKey      string  `json:"nginx_key,omitempty"`
-	NginxIPv6     bool    `json:"nginx_ipv6,omitempty"`
-	ClusterSecret string  `json:"cluster_secret"`
-	CertPEM       []byte  `json:"cert_pem,omitempty"` // 主节点上传的证书（各节点写到自己的数据目录）
-	KeyPEM        []byte  `json:"key_pem,omitempty"`
+	Sites         []*Site  `json:"sites"`
+	EntryURL      string   `json:"entry_url,omitempty"`
+	PublicHost    string   `json:"public_host,omitempty"`
+	PortBind      string   `json:"port_bind,omitempty"`
+	NginxCert     string   `json:"nginx_cert,omitempty"` // 主节点手动指定的证书路径（各节点需自备同路径文件）
+	NginxKey      string   `json:"nginx_key,omitempty"`
+	NginxIPv6     bool     `json:"nginx_ipv6,omitempty"`
+	ClusterSecret string   `json:"cluster_secret"`
+	Sticky        bool     `json:"sticky,omitempty"`
+	Members       []Member `json:"members,omitempty"`
+	CertPEM       []byte   `json:"cert_pem,omitempty"` // 主节点上传的证书（各节点写到自己的数据目录）
+	KeyPEM        []byte   `json:"key_pem,omitempty"`
 }
 
 type nodeInfo struct {
 	Name     string `json:"name"`
 	IP       string `json:"ip"`
+	Addr     string `json:"addr"` // 用于节点间转发的地址
 	LastSeen int64  `json:"last_seen"`
 	Version  string `json:"version"` // 节点当前持有的配置版本
 	Current  bool   `json:"current"` // 是否已是最新
@@ -71,7 +77,9 @@ type Cluster struct {
 }
 
 func newCluster(m *Manager) *Cluster {
-	return &Cluster{m: m, nodes: map[string]*nodeInfo{}, kick: make(chan struct{}, 1)}
+	c := &Cluster{m: m, nodes: map[string]*nodeInfo{}, kick: make(chan struct{}, 1)}
+	m.cluster = c
+	return c
 }
 
 func (m *Manager) isNode() bool {
@@ -83,12 +91,14 @@ func (m *Manager) isNode() bool {
 // payload 生成要下发的内容和它的版本号（内容哈希）。
 func (c *Cluster) payload() ([]byte, string, error) {
 	m := c.m
+	members := m.members()
 	cert, _ := os.ReadFile(filepath.Join(m.sslDir(), "fullchain.pem"))
 	key, _ := os.ReadFile(filepath.Join(m.sslDir(), "privkey.pem"))
 	m.mu.RLock()
 	p := syncPayload{
 		Sites: m.cfg.Sites, EntryURL: m.cfg.EntryURL, PublicHost: m.cfg.PublicHost, PortBind: m.cfg.PortBind,
 		ClusterSecret: m.cfg.ClusterSecret, NginxIPv6: m.cfg.NginxIPv6,
+		Sticky: m.cfg.Cluster.Sticky, Members: members,
 	}
 	// 用的是上传的证书就把文件发下去；手动路径则只发路径
 	hostCert := filepath.Join(m.hostSSLDir(), "fullchain.pem")
@@ -136,7 +146,11 @@ func (c *Cluster) serveSync(w http.ResponseWriter, r *http.Request) {
 	have := strings.Trim(r.Header.Get("If-None-Match"), `"`)
 	c.mu.Lock()
 	if len(c.nodes) < 200 || c.nodes[name] != nil {
-		c.nodes[name] = &nodeInfo{Name: name, IP: clientIP(r), LastSeen: time.Now().Unix(), Version: have}
+		addr := strings.TrimSpace(r.Header.Get("X-Node-Addr"))
+		if addr == "" || len(addr) > 64 {
+			addr = clientIP(r)
+		}
+		c.nodes[name] = &nodeInfo{Name: name, IP: clientIP(r), Addr: addr, LastSeen: time.Now().Unix(), Version: have}
 	}
 	c.mu.Unlock()
 	w.Header().Set("ETag", `"`+ver+`"`)
@@ -220,6 +234,9 @@ func (c *Cluster) pull() error {
 		name, _ = os.Hostname()
 	}
 	req.Header.Set("X-Node-Name", name)
+	if cc.AdvertiseAddr != "" {
+		req.Header.Set("X-Node-Addr", cc.AdvertiseAddr)
+	}
 	c.mu.Lock()
 	if c.status.Version != "" {
 		req.Header.Set("If-None-Match", `"`+c.status.Version+`"`)
@@ -306,6 +323,8 @@ func (c *Cluster) apply(p *syncPayload) error {
 	m.cfg.EntryURL, m.cfg.PublicHost = p.EntryURL, p.PublicHost
 	m.cfg.ClusterSecret = p.ClusterSecret
 	m.cfg.NginxIPv6 = p.NginxIPv6
+	m.cfg.Cluster.Sticky = p.Sticky
+	m.cfg.Members = p.Members
 	if len(p.CertPEM) > 0 {
 		m.cfg.NginxCert, m.cfg.NginxKey = filepath.Join(m.hostSSLDir(), "fullchain.pem"), filepath.Join(m.hostSSLDir(), "privkey.pem")
 	} else {
@@ -324,22 +343,29 @@ func (c *Cluster) apply(p *syncPayload) error {
 // ---- 面板接口 ----
 
 type clusterView struct {
-	Role      string      `json:"role"`
-	Token     string      `json:"token,omitempty"`
-	MasterURL string      `json:"master_url,omitempty"`
-	NodeName  string      `json:"node_name,omitempty"`
-	PanelURL  string      `json:"panel_url,omitempty"`
-	Version   string      `json:"version,omitempty"`
-	Nodes     []nodeInfo  `json:"nodes,omitempty"`
-	Status    *syncStatus `json:"status,omitempty"`
+	Role          string      `json:"role"`
+	Sticky        bool        `json:"sticky"`
+	AdvertiseAddr string      `json:"advertise_addr,omitempty"`
+	SelfName      string      `json:"self_name"`
+	Members       []Member    `json:"members,omitempty"`
+	Token         string      `json:"token,omitempty"`
+	MasterURL     string      `json:"master_url,omitempty"`
+	NodeName      string      `json:"node_name,omitempty"`
+	PanelURL      string      `json:"panel_url,omitempty"`
+	Version       string      `json:"version,omitempty"`
+	Nodes         []nodeInfo  `json:"nodes,omitempty"`
+	Status        *syncStatus `json:"status,omitempty"`
 }
 
 func (c *Cluster) view() clusterView {
 	m := c.m
 	m.mu.RLock()
 	cc := m.cfg.Cluster
-	v := clusterView{Role: cc.Role, MasterURL: cc.MasterURL, NodeName: cc.NodeName, PanelURL: m.cfg.PanelURL}
+	v := clusterView{Role: cc.Role, MasterURL: cc.MasterURL, NodeName: cc.NodeName, PanelURL: m.cfg.PanelURL,
+		Sticky: cc.Sticky, AdvertiseAddr: cc.AdvertiseAddr}
 	m.mu.RUnlock()
+	v.SelfName = m.selfName()
+	v.Members = m.members()
 	switch cc.Role {
 	case "master":
 		v.Token = cc.Token
@@ -366,6 +392,8 @@ func (a *Admin) clusterSettings(w http.ResponseWriter, r *http.Request) {
 		NodeName      string  `json:"node_name"`
 		PanelURL      *string `json:"panel_url"`
 		NewToken      bool    `json:"new_token"`
+		AdvertiseAddr string  `json:"advertise_addr"`
+		Sticky        *bool   `json:"sticky"`
 		AllowInsecure bool    `json:"allow_http"`
 	}
 	if err := readJSON(r, &body); err != nil {
@@ -391,6 +419,11 @@ func (a *Admin) clusterSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	body.AdvertiseAddr = strings.TrimSpace(body.AdvertiseAddr)
+	if strings.ContainsAny(body.AdvertiseAddr, "/ ") || len(body.AdvertiseAddr) > 64 {
+		writeErr(w, 400, "本机公网地址只填 IP（或 IP:端口），例如 203.0.113.10")
+		return
+	}
 	var panelURL string
 	if body.PanelURL != nil {
 		panelURL = strings.TrimRight(strings.TrimSpace(*body.PanelURL), "/")
@@ -412,7 +445,14 @@ func (a *Admin) clusterSettings(w http.ResponseWriter, r *http.Request) {
 		if prevRole != "master" || cc.Token == "" || body.NewToken {
 			cc.Token = randHex(16)
 		}
-		cc.MasterURL, cc.NodeName = "", ""
+		if prevRole != "master" && body.Sticky == nil {
+			cc.Sticky = true // 默认开启「同一用户固定同一台」
+		}
+		if body.Sticky != nil {
+			cc.Sticky = *body.Sticky
+		}
+		cc.MasterURL = ""
+		cc.NodeName = strings.TrimSpace(body.NodeName)
 	case "node":
 		cc.MasterURL, cc.NodeName = body.MasterURL, strings.TrimSpace(body.NodeName)
 		if body.Token != "" {
@@ -423,8 +463,10 @@ func (a *Admin) clusterSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	default:
-		cc.Token, cc.MasterURL, cc.NodeName = "", "", ""
+		cc.Token, cc.MasterURL, cc.NodeName, cc.Sticky = "", "", "", false
+		m.cfg.Members = nil
 	}
+	cc.AdvertiseAddr = body.AdvertiseAddr
 	if body.PanelURL != nil {
 		m.cfg.PanelURL = panelURL
 	}

@@ -311,7 +311,7 @@ func (s *SiteRT) epSegment(u *url.URL) string {
 
 var stripReqHeaders = []string{
 	"X-Real-Ip", "Forwarded", "Via", "Cf-Connecting-Ip", "True-Client-Ip", "X-Client-Ip",
-	"Cdn-Loop", "Cf-Ipcountry", "Cf-Ray", "Cf-Visitor", "Cf-Worker", "X-Forwarded-Port", "X-Forwarded-Prefix",
+	"Cdn-Loop", "Cf-Ipcountry", "Cf-Ray", "Cf-Visitor", "Cf-Worker", "X-Forwarded-Port", "X-Forwarded-Prefix", hopHeader,
 }
 
 func (s *SiteRT) serve(w http.ResponseWriter, r *http.Request, prefix string) {
@@ -321,6 +321,7 @@ func (s *SiteRT) serve(w http.ResponseWriter, r *http.Request, prefix string) {
 	cw := &countWriter{ResponseWriter: w, st: st}
 	rc := &reqCtx{s: s, prefix: prefix, cw: cw}
 	ip := clientIP(r)
+	node := ""
 	defer func() {
 		st.end(rc.streaming)
 		status := cw.status
@@ -333,9 +334,20 @@ func (s *SiteRT) serve(w http.ResponseWriter, r *http.Request, prefix string) {
 		s.m.logs.add(LogEntry{
 			Time: start.Unix(), Site: s.cfg.ID, SiteName: s.cfg.Name, IP: ip, Method: r.Method,
 			Path: maskURI(r.URL.RequestURI()), Status: status, Bytes: cw.n,
-			Ms: time.Since(start).Milliseconds(), UA: shortUA(r.UserAgent()), Err: rc.errMsg,
+			Ms: time.Since(start).Milliseconds(), UA: shortUA(r.UserAgent()), Err: rc.errMsg, Node: node,
 		})
 	}()
+
+	// 同一用户固定同一台：由其它节点转来的请求直接处理；否则不是自己负责的用户就转给负责节点
+	if hip, from, ok := s.m.verifyHop(r.Header.Get(hopHeader), s.cfg.ID); ok {
+		ip, node = hip, "← "+from
+	} else if owner, ok := s.m.owner(ip); ok && owner.Name != s.m.selfName() && s.cfg.PublicURL != "" {
+		if s.forward(w, r, owner, ip, cw) {
+			node = "→ " + owner.Name
+			return
+		}
+		node = "→ " + owner.Name + " 失联，本机处理"
+	}
 
 	rc.publicBase = s.publicBase(r, prefix)
 	esc := r.URL.EscapedPath()
