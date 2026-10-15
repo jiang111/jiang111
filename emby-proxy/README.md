@@ -58,7 +58,29 @@ master.example.com ─────▶ 服务器 1 的面板（从节点从这里
   apt install -y nginx          # CentOS: yum install -y nginx && systemctl enable --now nginx
   ```
 
-**域名和证书**：一个域名，以及覆盖它的证书。多台服务器建议用 Cloudflare DNS 验证申请通配符证书（教程二第 2 步）。
+**域名（Cloudflare）**：域名的 DNS 由 Cloudflare 管理（免费版即可）。还没接入的话：
+
+1. [dash.cloudflare.com](https://dash.cloudflare.com) →「Domains / 域」→「Onboard a domain / 添加域」，输入根域名 `example.com`，计划选 Free。
+2. 到**买域名的注册商**后台：有 DNSSEC 的先关闭，再把名称服务器改成 Cloudflare 给的两个 `*.ns.cloudflare.com`。
+3. 等 Cloudflare 显示「有效 / Active」（几分钟到几小时）。
+
+**Cloudflare API 令牌**（用来自动申请证书；多服务器时也用来管理 DNS 记录）：
+
+1. 右上角头像 →「My Profile / 我的个人资料」→「API Tokens」→「Create Token」→ 模板「**Edit zone DNS / 编辑区域 DNS**」。
+2. Zone Resources 选 `Include` → `Specific zone` → 你的域名 →「Continue to summary」→「Create Token」，复制令牌（只显示一次）。
+3. 回到域名的「Overview / 概述」页，右侧「API」区域复制 **Zone ID**。
+
+**DNS 记录**：在域名 →「DNS」→「Records」添加 A 记录，**代理状态必须点成灰色云朵「仅 DNS」**
+（小黄云不转发 8001 这类端口，也不允许用普通代理传视频）。单台服务器只需要一条：
+
+| 类型 | 名称 | 内容 | 代理状态 | TTL |
+| --- | --- | --- | --- | --- |
+| A | `emby` | 服务器 IP | 仅 DNS（灰云） | 自动 |
+
+多台服务器的记录见教程二第 5 步。更详细的说明（令牌验证、用命令管理记录、Load Balancing）见
+[配置手册第 3 节](docs/配置手册.md#3-cloudflare-域名配置)。
+
+**证书**：推荐用 acme.sh + 上面的令牌自动申请通配符证书并自动续期（教程二第 2 步，单台也适用）；也可以在面板上传现成的证书。
 
 **端口规划**（约定，后面都按这个来）：
 
@@ -92,8 +114,9 @@ bash <(curl -fsSL https://raw.githubusercontent.com/jiang111/jiang111/master/emb
 「设置」页 → **Nginx（独立端口 + HTTPS）**：
 
 1. **独立端口监听地址** 选「仅本机 127.0.0.1」→ 保存。
-2. **HTTPS 证书**：选择证书文件（`fullchain.pem` / `.crt`）和私钥文件（`privkey.pem` / `.key`）→「上传证书」。
-   上传成功会显示域名和到期时间。
+2. **HTTPS 证书**：二选一
+   - 自动申请（推荐）：在服务器上执行教程二第 2 步的 acme.sh 命令，一分钟内这里会显示证书；
+   - 上传：选择证书文件（`fullchain.pem` / `.crt`）和私钥文件（`privkey.pem` / `.key`）→「上传证书」，成功会显示域名和到期时间。
    - 证书已过期但仍想用：勾选「允许上传已过期的证书」。
    - 服务器上用 certbot / acme.sh 自动续期：展开「改用服务器上已有的证书路径」填路径；
      或者像教程二第 2 步那样把证书装进 `/opt/emby-proxy/data/ssl/`（程序会自动识别并跟随续期）。
@@ -168,11 +191,12 @@ API 和推流都只经负责节点访问上游；用户被 DNS 分到别的服�
 多台服务器共用一个域名时，HTTP 验证可能被别的服务器接到，所以用 Cloudflare DNS 验证申请
 `example.com` + `*.example.com`，直接装到程序数据目录。之后 acme.sh 自动续期，程序自动 reload nginx 并同步给从节点。
 
-1. Cloudflare → 我的个人资料 → API 令牌 → 创建令牌 → 模板「编辑区域 DNS」→ 区域选你的域名 → 复制令牌。
+1. 准备好 Cloudflare API 令牌和 Zone ID（见[部署前准备](#2-部署前准备)）。
 2. 在主节点执行：
    ```bash
    curl https://get.acme.sh | sh -s email=you@example.com
    export CF_Token="你的 Cloudflare API 令牌"
+   export CF_Zone_ID="你的 Zone ID"
    ~/.acme.sh/acme.sh --issue --dns dns_cf -d example.com -d '*.example.com' --server letsencrypt
    mkdir -p /opt/emby-proxy/data/ssl
    ~/.acme.sh/acme.sh --install-cert -d example.com --ecc \
@@ -213,7 +237,7 @@ API 和推流都只经负责节点访问上游；用户被 DNS 分到别的服�
 
 ### 第 5 步：Cloudflare DNS
 
-Cloudflare → 域名 → DNS → 记录：
+Cloudflare → 域名 →「DNS」→「Records」→「Add record」，按下表添加。**每条都要把橙色云朵点成灰色**（仅 DNS）：
 
 | 类型 | 名称 | 内容 | 代理状态 | TTL |
 | --- | --- | --- | --- | --- |
@@ -222,10 +246,16 @@ Cloudflare → 域名 → DNS → 记录：
 | A | `emby` | 服务器 2 IP | 仅 DNS（灰云） | 1 分钟 |
 | A | `emby` | 服务器 3 IP | 仅 DNS（灰云） | 1 分钟 |
 
-- 同名多条 A 记录会被轮流返回，用户就分到不同服务器。主节点接流量的话也加进 `emby`。
-- **必须灰云**：小黄云只代理 443、8443 等少数端口，8001 这类端口过不去，且 Cloudflare 条款限制普通代理传视频。
-- 免费版没有健康检查：服务器挂了要手动删掉它的 `emby` 记录。要自动摘除可用付费的 Load Balancing
-  （健康检查：HTTPS、端口 8001、路径 `/emby/System/Info/Public`、期望 200；代理状态保持仅 DNS）。
+- 同一个名称 `emby` 加多条 A 记录，Cloudflare 会轮流返回，用户就分到不同服务器。主节点也接流量的话也加进 `emby`。
+- `master` 只指向主节点，要在第 4 步（从节点加入）之前生效。
+- **`emby` 不要加 AAAA（IPv6）记录**：同一个客户端可能时而走 IPv4 时而走 IPv6，会被当成两个用户分到不同服务器。
+- 域名如果有 CAA 记录，要包含 `letsencrypt.org`，否则申请证书会失败。
+- 「SSL/TLS」页面的设置只对小黄云生效，灰云下不用改。
+- 免费版没有健康检查：某台服务器挂了，要手动删掉它的那条 `emby` 记录，恢复后再加回（TTL 1 分钟，几分钟内生效）。
+  也可以用命令管理（[配置手册 3.5](docs/配置手册.md#35-用-api-管理记录)），或开通付费的 Load Balancing 自动摘除
+  （[配置手册 3.7](docs/配置手册.md#37-可选自动摘除故障服务器cloudflare-load-balancing)）。
+
+验证解析：`dig +short emby.example.com @1.1.1.1` 应列出每台服务器的 IP。
 
 ### 第 6 步：防火墙和验证
 
@@ -354,6 +384,8 @@ location /magpiecdn { proxy_pass https://$arg_load.example.net; }
 | 登录返回 429 | 对方按 IP 限制登录次数，稍后再试 |
 | 卡片红点「端口监听失败」 | 程序端口被占用，或与面板 / 入口端口冲突，换一个程序端口 |
 | 「nginx 检查未通过」 | 看下方错误：`Address family not supported` = 没有 IPv6 却勾了 IPv6；`cannot load certificate` = 证书路径不对；`Address already in use` = 对外端口被占用或和程序端口相同。nginx 会继续用上一份配置 |
+| 客户端连不上，`dig +short emby.example.com` 没有结果或不是服务器 IP | DNS 记录没加对或还没生效；确认是灰云 |
+| 浏览器 / 客户端报证书错误 | 证书不包含 `emby.example.com`（看「设置 → Nginx → HTTPS 证书」显示的域名） |
 | 「自动应用」显示未安装 | 安装时没有 nginx 或 systemd：装好 nginx 后重新执行安装命令 |
 | 从节点「同步失败」 | 从节点上 `curl https://master.example.com:8443` 是否通；8443 是否放行；令牌是否被重新生成过 |
 | 日志「→ 某节点 失联，本机处理」 | 从本机连不上那台的对外端口：查它的防火墙、nginx、「本机公网 IP」 |
@@ -388,7 +420,7 @@ location /magpiecdn { proxy_pass https://$arg_load.example.net; }
 | `/opt/emby-proxy/src/` | 源码（安装 / 更新时下载） |
 | `/etc/systemd/system/emby-proxy-nginx.{service,timer}` | 每 15 秒检查并应用 nginx 配置 |
 
-`config.json` 的完整字段和面板 API 见[配置手册](docs/配置手册.md#9-参考字段和接口)。
+`config.json` 的完整字段和面板 API 见[配置手册](docs/配置手册.md#10-参考字段和接口)。
 
 ### 做了哪些处理
 
