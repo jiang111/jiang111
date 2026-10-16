@@ -52,7 +52,8 @@ func (a *Admin) Handler() http.Handler {
 	mux.HandleFunc("POST /api/cert", a.auth(a.nodeReadOnly(a.uploadCert)))
 	mux.HandleFunc("GET /api/export", a.auth(a.exportConfig))
 	mux.HandleFunc("POST /api/import", a.auth(a.nodeReadOnly(a.importConfig)))
-	mux.HandleFunc("GET /api/cluster/sync", a.cluster.serveSync) // 令牌鉴权，供从节点拉取
+	mux.HandleFunc("GET /api/cluster/sync", a.cluster.serveSync)      // 令牌鉴权，供从节点拉取
+	mux.HandleFunc("POST /api/cluster/report", a.cluster.serveReport) // 令牌鉴权，从节点上报统计
 	mux.HandleFunc("PUT /api/cluster", a.auth(a.clusterSettings))
 	mux.HandleFunc("POST /api/cluster/sync-now", a.auth(func(w http.ResponseWriter, r *http.Request) {
 		a.cluster.syncNow()
@@ -225,9 +226,12 @@ func (a *Admin) login(w http.ResponseWriter, r *http.Request) {
 
 type siteView struct {
 	*Site
-	Stats  StatsView `json:"stats"`
+	Stats  StatsView `json:"stats"` // 本机
 	Status string    `json:"status"`
 	Error  string    `json:"error,omitempty"`
+	// 仅主节点：本机 + 各在线节点之和，及各节点拆分
+	ClusterStats *StatsView  `json:"cluster_stats,omitempty"`
+	NodeStats    []nodeStats `json:"node_stats,omitempty"`
 }
 
 func (a *Admin) state(w http.ResponseWriter, r *http.Request) {
@@ -235,6 +239,11 @@ func (a *Admin) state(w http.ResponseWriter, r *http.Request) {
 	// 这两项内部会自己加锁，必须在持有读锁之前算好（读锁嵌套在有写者等待时会死锁）
 	cluster := a.cluster.view()
 	ngx := m.nginxStatus()
+	// 各节点上报的统计同样先取快照（c.mu），持有 m.mu 时不能再拿 c.mu
+	var snap *statsSnapshot
+	if cluster.Role == "master" {
+		snap = a.cluster.statsSnapshot()
+	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	views := []siteView{}
@@ -243,6 +252,10 @@ func (a *Admin) state(w http.ResponseWriter, r *http.Request) {
 		if st := m.stats[s.ID]; st != nil {
 			v.Stats = st.view()
 		}
+		if snap != nil {
+			cs, ns := snap.site(s.ID, cluster.SelfName, v.Stats)
+			v.ClusterStats, v.NodeStats = &cs, ns
+		}
 		if e := m.siteErr[s.ID]; e != "" {
 			v.Status, v.Error = "error", e
 		} else if m.sites[s.ID] != nil {
@@ -250,7 +263,7 @@ func (a *Admin) state(w http.ResponseWriter, r *http.Request) {
 		}
 		views = append(views, v)
 	}
-	writeJSON(w, 200, map[string]any{
+	out := map[string]any{
 		"settings": map[string]any{
 			"listen": m.cfg.Listen, "admin_listen": m.cfg.AdminListen,
 			"entry_url": m.cfg.EntryURL, "public_host": m.cfg.PublicHost,
@@ -262,7 +275,11 @@ func (a *Admin) state(w http.ResponseWriter, r *http.Request) {
 		"cluster": cluster,
 		"uptime":  int64(time.Since(m.started).Seconds()),
 		"version": version,
-	})
+	}
+	if snap != nil {
+		out["cluster_stats_nodes"] = snap.nodes // 上报过统计的从节点及最后上报时间
+	}
+	writeJSON(w, 200, out)
 }
 
 func (a *Admin) logsAPI(w http.ResponseWriter, r *http.Request) {
@@ -339,6 +356,7 @@ func (a *Admin) deleteSite(w http.ResponseWriter, r *http.Request) {
 	delete(m.stats, id)
 	m.reload()
 	m.mu.Unlock()
+	a.cluster.dropSite(id)
 	if err := m.save(); err != nil {
 		writeErr(w, 500, "保存失败: "+err.Error())
 		return
@@ -348,14 +366,14 @@ func (a *Admin) deleteSite(w http.ResponseWriter, r *http.Request) {
 
 func (a *Admin) clearStats(w http.ResponseWriter, r *http.Request) {
 	m := a.m
+	id := r.PathValue("id")
 	m.mu.RLock()
-	st := m.stats[r.PathValue("id")]
+	st := m.stats[id]
 	m.mu.RUnlock()
 	if st != nil {
-		st.Requests.Store(0)
-		st.Bytes.Store(0)
-		st.Errors.Store(0)
+		st.clear()
 	}
+	a.cluster.markCleared(id) // 主节点：各节点的累计值从现在算起（m.mu 已释放）
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
 

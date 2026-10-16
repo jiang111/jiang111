@@ -262,16 +262,19 @@ function render() {
 
 function renderSites() {
   const sites = S.sites;
-  const tot = sites.reduce((a, s) => (a.b += s.stats.bytes, a.r += s.stats.requests, a.a += s.stats.active, a.p += s.stats.streams, a.run += s.status === 'running' ? 1 : 0, a), {b: 0, r: 0, a: 0, p: 0, run: 0});
-  const recent = sites.reduce((a, s) => a + (s.stats.series || []).slice(-5).reduce((x, y) => x + y, 0), 0);
+  // 主节点用全部节点的汇总（cluster_stats），其它情况只有本机
+  const st = s => s.cluster_stats || s.stats;
+  const tot = sites.reduce((a, s) => (a.b += st(s).bytes, a.r += st(s).requests, a.a += st(s).active, a.p += st(s).streams, a.x += st(s).relay_bytes || 0, a.run += s.status === 'running' ? 1 : 0, a), {b: 0, r: 0, a: 0, p: 0, x: 0, run: 0});
+  const recent = sites.reduce((a, s) => a + (st(s).series || []).slice(-5).reduce((x, y) => x + y, 0), 0);
   let html = `<div class="totals">
     <div class="tot"><b>${tot.run} / ${sites.length}</b><span>运行中站点</span></div>
     <div class="tot"><b>${tot.p}</b><span>正在播放</span></div>
     <div class="tot"><b>${tot.a}</b><span>活动连接</span></div>
     <div class="tot"><b>${fmtBytes(recent / 300)}/s</b><span>近 5 分钟平均速度</span></div>
     <div class="tot"><b>${fmtBytes(tot.b)}</b><span>累计流量 · ${tot.r} 次请求</span></div>
+    ${tot.x ? `<div class="tot"><b>${fmtBytes(tot.x)}</b><span>节点间转发</span></div>` : ''}
   </div>
-  ${isNode() ? `<div class="notice">这台服务器是<b>从节点</b>，站点和设置由主节点 <code>${esc(S.cluster.master_url)}</code> 同步，只能查看。${syncLine()}</div>`
+  ${isNode() ? `<div class="notice">这台服务器是<b>从节点</b>，站点和设置由主节点 <code>${esc(S.cluster.master_url)}</code> 同步，只能查看。本页只显示本机数据，全部节点的汇总看主节点。${syncLine()}</div>`
     : `<div class="row" style="margin-bottom:12px"><div class="sp"></div><button class="btn pri" id="btnAdd">＋ 添加站点</button></div>`}`;
   if (!sites.length) {
     html += `<div class="empty">还没有站点。点「添加站点」，填入上游 Emby 地址即可生成一个反代地址。</div>`;
@@ -291,9 +294,10 @@ function renderSites() {
         <div class="kv">上游 <b>${esc(s.upstream)}</b></div>
         ${s.remark ? `<div class="kv">${esc(s.remark)}</div>` : ''}
         ${s.error ? `<div class="err">${esc(s.error)}</div>` : ''}
-        <div class="nums"><div><b>${s.stats.streams}</b>播放中</div><div><b>${s.stats.active}</b>连接</div><div><b>${fmtBytes(s.stats.bytes)}</b>流量</div><div><b>${s.stats.requests}</b>请求</div></div>
-        ${spark(s.stats.series || new Array(60).fill(0))}
-        <div class="kv">最近访问 ${fmtAgo(s.stats.last_access)}${s.stats.errors ? ` · <span class="bad">${s.stats.errors} 次上游错误</span>` : ''}</div>
+        <div class="nums"><div><b>${st(s).streams}</b>播放中</div><div><b>${st(s).active}</b>连接</div><div><b>${fmtBytes(st(s).bytes)}</b>流量</div><div><b>${st(s).requests}</b>请求</div></div>
+        ${s.node_stats && s.node_stats.length > 1 ? `<div class="kv" title="各节点：播放中 / 连接">${s.node_stats.map(n => `${esc(n.name)} 播放${n.stats.streams} 连接${n.stats.active}`).join(' · ')}</div>` : ''}
+        ${spark(st(s).series || new Array(60).fill(0))}
+        <div class="kv">最近访问 ${fmtAgo(st(s).last_access)}${st(s).relay_bytes ? ` · 节点间转发 ${fmtBytes(st(s).relay_bytes)}` : ''}${st(s).errors ? ` · <span class="bad">${st(s).errors} 次上游错误</span>` : ''}</div>
         <div class="acts"><button class="btn sm" data-act="test">测试上游</button>${isNode() ? '' : '<button class="btn sm" data-act="edit">编辑</button>'}
           <button class="btn sm" data-act="logs">日志</button><button class="btn sm" data-act="clear">清零统计</button><div class="sp"></div>${isNode() ? '' : '<button class="btn sm dan" data-act="del">删除</button>'}</div>
         <div class="test" data-res>${testRes[s.id] || ''}</div>
@@ -461,13 +465,17 @@ function renderCluster() {
   let detail = '';
   if (role === 'master') {
     const nodes = c.nodes || [];
+    const rep = Object.fromEntries((S.cluster_stats_nodes || []).map(n => [n.name, n]));
+    const repAgo = t => { const d = Math.max(0, Math.floor(Date.now() / 1000) - t); return d < 120 ? d + ' 秒前' : fmtAgo(t); };
+    const repCell = n => { const r = rep[n.name]; return !r ? '<span class="kv">未上报（旧版本？）</span>' : r.online ? repAgo(r.last_report) : `<span class="bad">${repAgo(r.last_report)}，不计入汇总</span>`; };
     detail = `<div class="f"><label>同步令牌</label><div class="row"><input type="text" readonly value="${esc(c.token)}" id="clToken"><button type="button" class="btn" id="btnCopyToken">复制</button><button type="button" class="btn" id="btnNewToken">重新生成</button></div>
         <small>在每台从节点上填写本机的「面板 HTTPS 地址」和这个令牌。重新生成后，旧令牌立即失效。</small></div>
-      <div class="f"><label>从节点（${nodes.length}）</label>${nodes.length ? `<table><thead><tr><th>名称</th><th>转发地址</th><th>最近同步</th><th>状态</th></tr></thead><tbody>${nodes.map(n =>
-        `<tr><td>${esc(n.name)}</td><td>${esc(n.addr || n.ip)}</td><td>${fmtAgo(n.last_seen)}</td><td>${n.last_seen < Date.now()/1000 - 90 ? '<span class="bad">失联（已移出分配）</span>' : n.current ? '<span class="ok">已是最新</span>' : '<span class="kv">同步中</span>'}</td></tr>`).join('')}</tbody></table>`
+      <div class="f"><label>从节点（${nodes.length}）</label>${nodes.length ? `<table><thead><tr><th>名称</th><th>转发地址</th><th>最近同步</th><th>统计上报</th><th>状态</th></tr></thead><tbody>${nodes.map(n =>
+        `<tr><td>${esc(n.name)}</td><td>${esc(n.addr || n.ip)}</td><td>${fmtAgo(n.last_seen)}</td><td>${repCell(n)}</td><td>${n.last_seen < Date.now()/1000 - 90 ? '<span class="bad">失联（已移出分配）</span>' : n.current ? '<span class="ok">已是最新</span>' : '<span class="kv">同步中</span>'}</td></tr>`).join('')}</tbody></table>`
         : '<div class="kv">还没有从节点连接</div>'}</div>
       <label class="chk"><input type="checkbox" name="sticky" ${c.sticky ? 'checked' : ''}><span><b>同一用户固定同一台</b>：同一个客户端 IP 的 API 和推流请求都只经过同一台服务器访问上游，落到别的服务器上会被转给它。上游看到的 IP 数和用户直连时一样。</span></label>
-      ${c.sticky ? `<div class="kv" style="white-space:normal;margin-bottom:10px">参与分配的节点：${(c.members || []).map(m => esc(m.name) + '（' + esc(m.addr) + '）').join('、') || '无'}${!c.advertise_addr ? '。<span class="bad">本机没填公网 IP，主节点不参与分配</span>（如果 DNS 里也有主节点，请填写）' : ''}</div>` : ''}`;
+      <label class="chk"><input type="checkbox" name="direct_stream" ${c.direct_stream ? 'checked' : ''}><span><b>视频直连</b>：请求落到非负责节点时，API 照常转发，视频请求 302 到负责节点的「本机直连域名」，视频只经过一台服务器，节省节点间转发流量。需要各台都填写直连域名；个别播放器跟随 302 后拖动有问题时关闭。</span></label>
+      ${c.sticky ? `<div class="kv" style="white-space:normal;margin-bottom:10px">参与分配的节点：${(c.members || []).map(m => esc(m.name) + '（' + esc(m.addr) + (m.host ? '，直连 ' + esc(m.host) : '') + '）').join('、') || '无'}${!c.advertise_addr ? '。<span class="bad">本机没填公网 IP，主节点不参与分配</span>（如果 DNS 里也有主节点，请填写）' : ''}</div>` : ''}`;
   } else if (role === 'node') {
     detail = `<div class="f"><label>主节点面板地址</label><input type="text" name="master_url" value="${esc(c.master_url)}" placeholder="https://master.example.com:8443"></div>
       <div class="f"><label>同步令牌</label><input type="text" name="token" placeholder="${c.token ? '已保存（' + esc(c.token) + '），留空不修改' : '主节点「设置 → 多服务器同步」里复制'}"></div>
@@ -482,6 +490,7 @@ function renderCluster() {
     ${role ? `<div class="row" style="gap:10px;align-items:flex-start">
       <div class="f" style="flex:1"><label>本机名称</label><input type="text" name="node_name" value="${esc(c.node_name)}" placeholder="${esc(c.self_name || '默认主机名')}"><small>各台不能重名，如 tokyo-1</small></div>
       <div class="f" style="flex:1"><label>本机公网 IP</label><input type="text" name="advertise_addr" value="${esc(c.advertise_addr)}" placeholder="${role === 'node' ? '留空用主节点看到的 IP' : '例如 203.0.113.10'}"><small>其它服务器转发请求时连这个 IP</small></div>
+      <div class="f" style="flex:1"><label>本机直连域名</label><input type="text" name="direct_host" value="${esc(c.direct_host)}" placeholder="例如 tokyo-1.example.com"><small>只解析到本机、证书要覆盖它；视频直连时其它服务器把视频请求 302 到这里</small></div>
     </div>` : ''}
     <div class="f"><label>本机面板 HTTPS 地址</label><input type="text" name="panel_url" value="${esc(c.panel_url)}" placeholder="https://master.example.com:8443">
       <small>填写后自动生成面板的 nginx 配置。主节点必须填写（从节点通过它同步），并把 config.json 的 admin_listen 改为 127.0.0.1:${portOf(S.settings.admin_listen)}。
@@ -501,8 +510,9 @@ function bindCluster() {
     const role = f.querySelector('input[name=role]:checked').value;
     if (role === 'node' && S.cluster.role !== 'node' && !confirm('设为从节点后，本机的站点和设置会被主节点的配置整体覆盖，确定？')) return;
     const body = {role, panel_url: f.panel_url.value};
-    if (role) Object.assign(body, {node_name: f.node_name.value, advertise_addr: f.advertise_addr.value});
+    if (role) Object.assign(body, {node_name: f.node_name.value, advertise_addr: f.advertise_addr.value, direct_host: f.direct_host.value});
     if (role === 'master' && f.sticky) body.sticky = f.sticky.checked;
+    if (role === 'master' && f.direct_stream) body.direct_stream = f.direct_stream.checked;
     if (role === 'node') Object.assign(body, {master_url: f.master_url.value, token: f.token.value});
     try { await api('PUT', '/api/cluster', body); await load(); toast('已保存'); } catch (err) { toast(err.message); }
   };

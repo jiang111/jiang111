@@ -6,7 +6,8 @@
 #   MASTER_URL=https://master.example.com:8443 bash /root/ep-node.sh
 #
 # 参数：DOMAIN、TOKEN、NODE_NAME、PUBLIC_IP 必填；MASTER_URL 默认 https://master.$DOMAIN:8443；
-#       EMBY_HOST 默认 emby.$DOMAIN；SKIP_INSTALL=1 / SKIP_FIREWALL=1 跳过对应步骤。可以重复执行。
+#       EMBY_HOST 默认 emby.$DOMAIN；DIRECT_HOST 本机直连域名，默认 $NODE_NAME.$DOMAIN（解析不到本机 IP 时不启用，设为空字符串关闭）；
+#       SKIP_INSTALL=1 / SKIP_FIREWALL=1 跳过对应步骤。可以重复执行。
 
 set -euo pipefail
 
@@ -16,6 +17,7 @@ NODE_NAME=${NODE_NAME:?请设置 NODE_NAME（本机名称，各台唯一）}
 PUBLIC_IP=${PUBLIC_IP:?请设置 PUBLIC_IP（本机公网 IP）}
 MASTER_URL=${MASTER_URL:-https://master.$DOMAIN:8443}
 EMBY_HOST=${EMBY_HOST:-emby.$DOMAIN}
+DIRECT_HOST=${DIRECT_HOST-$NODE_NAME.$DOMAIN}
 DIR=${EP_DIR:-/opt/emby-proxy}
 P=${EP_PANEL:-http://127.0.0.1:55660}
 RESTART_CMD=${RESTART_CMD:-docker restart emby-proxy}
@@ -62,6 +64,7 @@ trap 'rm -f "$COOKIE"' EXIT
 api() { curl -sS --noproxy '*' -b "$COOKIE" -c "$COOKIE" -H 'X-Emby-Proxy: 1' -H 'Content-Type: application/json' -X "$1" "$P$2" ${3:+-d "$3"}; }
 json() { python3 -c "import json,sys;d=json.load(sys.stdin);r=$1;print(r if not isinstance(r,(dict,list)) else json.dumps(r,ensure_ascii=False))"; }
 must_ok() { local out; out=$(cat); echo "$out" | grep -q '"ok":true' || die "$1：$out"; }
+resolves_to() { python3 -c "import socket,sys;sys.exit(0 if sys.argv[2] in {a[4][0] for a in socket.getaddrinfo(sys.argv[1],None,socket.AF_INET)} else 1)" "$1" "$2" 2>/dev/null; }
 login() {
     local pw
     pw=$(sed -n 's/.*"admin_password": "\(.*\)".*/\1/p' "$DIR/data/config.json")
@@ -86,8 +89,13 @@ case "$code" in
 esac
 
 step "加入集群（从节点）"
-api PUT /api/cluster "{\"role\":\"node\",\"node_name\":\"$NODE_NAME\",\"advertise_addr\":\"$PUBLIC_IP\",\"master_url\":\"$MASTER_URL\",\"token\":\"$TOKEN\"}" \
+if [ -n "$DIRECT_HOST" ] && ! resolves_to "$DIRECT_HOST" "$PUBLIC_IP"; then
+    warn "$DIRECT_HOST 没有解析到 $PUBLIC_IP，不启用本机直连域名（其它服务器会把视频请求转发过来，而不是 302）"
+    DIRECT_HOST=""
+fi
+api PUT /api/cluster "{\"role\":\"node\",\"node_name\":\"$NODE_NAME\",\"advertise_addr\":\"$PUBLIC_IP\",\"master_url\":\"$MASTER_URL\",\"token\":\"$TOKEN\",\"direct_host\":\"$DIRECT_HOST\"}" \
     | must_ok "设置从节点"
+echo "本机直连域名：${DIRECT_HOST:-未启用}"
 
 echo "等待同步…"
 for _ in $(seq 1 30); do

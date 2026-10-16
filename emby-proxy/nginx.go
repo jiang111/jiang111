@@ -52,6 +52,11 @@ map $http_upgrade $emby_proxy_connection {
 ssl_session_cache   shared:EmbyProxySSL:10m;
 ssl_session_timeout 1d;
 `)
+	// 本机直连域名（视频直连时其它节点把推流请求 302 到这里）：加到每个端口站点的 server_name
+	direct := cfg.Cluster.DirectHost
+	if direct != "" && leaf != nil && leaf.VerifyHostname(direct) != nil {
+		fmt.Fprintf(&b, "\n# 注意：证书不包含本机直连域名 %s，视频直连时客户端会报证书错误\n", direct)
+	}
 	used := map[string]string{}
 	for _, s := range cfg.Sites {
 		if s.Mode != "port" {
@@ -80,6 +85,10 @@ ssl_session_timeout 1d;
 		}
 		if !s.Enabled {
 			b.WriteString("# 注意：该站点当前已停用\n")
+		}
+		names := host
+		if direct != "" && !strings.EqualFold(direct, host) {
+			names += " " + direct
 		}
 		fmt.Fprintf(&b, `server {
     listen %[1]s ssl;
@@ -110,7 +119,7 @@ ssl_session_timeout 1d;
         proxy_send_timeout 86400s;
     }
 }
-`, port, host, cert, key, backend, s.Port, ipv6Prefix(cfg), ipv6Note(cfg))
+`, port, names, cert, key, backend, s.Port, ipv6Prefix(cfg), ipv6Note(cfg))
 	}
 
 	adminPort := listenPort(cfg.AdminListen)

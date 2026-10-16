@@ -202,7 +202,8 @@ type reqCtx struct {
 	matchPath  string // 小写、已解码、去掉前缀和 base 的路径，用于判断接口
 	acceptGzip bool
 	cw         *countWriter
-	streaming  bool
+	ip         string // 客户端真实 IP（转来的请求为原始 IP）
+	play       string // 视频响应的播放去重 key（见 playKey）
 	errMsg     string
 }
 
@@ -317,37 +318,59 @@ var stripReqHeaders = []string{
 func (s *SiteRT) serve(w http.ResponseWriter, r *http.Request, prefix string) {
 	start := time.Now()
 	st := s.stats
-	st.begin()
-	cw := &countWriter{ResponseWriter: w, st: st}
-	rc := &reqCtx{s: s, prefix: prefix, cw: cw}
 	ip := clientIP(r)
 	node := ""
-	defer func() {
-		st.end(rc.streaming)
+	logReq := func(cw *countWriter, errMsg string) {
 		status := cw.status
 		if status == 0 && r.Header.Get("Upgrade") != "" {
 			status = 101
 		}
-		if status >= 500 {
-			st.Errors.Add(1)
-		}
 		s.m.logs.add(LogEntry{
 			Time: start.Unix(), Site: s.cfg.ID, SiteName: s.cfg.Name, IP: ip, Method: r.Method,
 			Path: maskURI(r.URL.RequestURI()), Status: status, Bytes: cw.n,
-			Ms: time.Since(start).Milliseconds(), UA: shortUA(r.UserAgent()), Err: rc.errMsg, Node: node,
+			Ms: time.Since(start).Milliseconds(), UA: shortUA(r.UserAgent()), Err: errMsg, Node: node,
 		})
-	}()
+	}
 
-	// 同一用户固定同一台：由其它节点转来的请求直接处理；否则不是自己负责的用户就转给负责节点
+	// 同一用户固定同一台：由其它节点转来的请求直接处理；否则不是自己负责的用户就转给负责节点。
+	// 转发出去的请求只计入「转发」（RelayRequests/RelayBytes），不计入本站请求/连接/播放/流量，
+	// 由负责节点计数，避免两台相加时重复。
 	if hip, from, ok := s.m.verifyHop(r.Header.Get(hopHeader), s.cfg.ID); ok {
 		ip, node = hip, "← "+from
 	} else if owner, ok := s.m.owner(ip); ok && owner.Name != s.m.selfName() && s.cfg.PublicURL != "" {
-		if s.forward(w, r, owner, ip, cw) {
-			node = "→ " + owner.Name
+		if loc := s.directURL(r, prefix, owner); loc != "" {
+			// 视频直连：推流请求让客户端直接连负责节点，本机不转发视频
+			rw := &countWriter{ResponseWriter: w, st: st, relay: true}
+			w.Header().Set("Location", loc)
+			w.Header().Set("Cache-Control", "no-store")
+			rw.WriteHeader(http.StatusFound)
+			st.LastAccess.Store(st.clock().Unix())
+			node = "⇢ " + owner.Name + " 直连"
+			logReq(rw, "")
 			return
 		}
+		rw := &countWriter{ResponseWriter: w, st: st, relay: true}
+		st.RelayRequests.Add(1)
+		if s.forward(w, r, owner, ip, rw) {
+			st.LastAccess.Store(st.clock().Unix())
+			node = "→ " + owner.Name
+			logReq(rw, "")
+			return
+		}
+		st.RelayRequests.Add(-1) // 负责节点连不上，下面按本机请求正常计数
 		node = "→ " + owner.Name + " 失联，本机处理"
 	}
+
+	st.begin()
+	cw := &countWriter{ResponseWriter: w, st: st}
+	rc := &reqCtx{s: s, prefix: prefix, cw: cw, ip: ip}
+	defer func() {
+		st.end(rc.play)
+		if cw.status >= 500 {
+			st.Errors.Add(1)
+		}
+		logReq(cw, rc.errMsg)
+	}()
 
 	rc.publicBase = s.publicBase(r, prefix)
 	esc := r.URL.EscapedPath()
@@ -484,8 +507,10 @@ func (rc *reqCtx) modifyResponse(resp *http.Response) error {
 	}
 	ct := strings.ToLower(h.Get("Content-Type"))
 	if (strings.HasPrefix(ct, "video/") || strings.HasPrefix(ct, "audio/")) && !strings.Contains(ct, "mpegurl") {
-		rc.streaming = true
-		rc.s.stats.Streams.Add(1)
+		if rc.play == "" {
+			rc.play = playKey(rc.ip, rc.matchPath)
+			rc.s.stats.startPlay(rc.play)
+		}
 	}
 	return rc.rewriteBody(resp, ct)
 }
@@ -606,9 +631,11 @@ func (rc *reqCtx) isSelf(scheme, host, port string) bool {
 }
 
 // countWriter 统计下行流量；实现 Unwrap 以便 ReverseProxy 能 Flush / Hijack（WebSocket）。
+// relay 为 true 时（转发给其它节点的请求）只计入转发流量。
 type countWriter struct {
 	http.ResponseWriter
 	st     *Stats
+	relay  bool
 	n      int64
 	status int
 }
@@ -626,7 +653,11 @@ func (c *countWriter) Write(b []byte) (int, error) {
 	}
 	n, err := c.ResponseWriter.Write(b)
 	c.n += int64(n)
-	c.st.addBytes(int64(n))
+	if c.relay {
+		c.st.RelayBytes.Add(int64(n))
+	} else {
+		c.st.addBytes(int64(n))
+	}
 	return n, err
 }
 

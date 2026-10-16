@@ -30,7 +30,8 @@ import (
 // Member 是参与分配的节点。
 type Member struct {
 	Name string `json:"name"`
-	Addr string `json:"addr"` // 节点公网 IP（也可带端口，默认用站点客户端访问地址里的端口）
+	Addr string `json:"addr"`           // 节点公网 IP（也可带端口，默认用站点客户端访问地址里的端口）
+	Host string `json:"host,omitempty"` // 节点直连域名（视频直连时推流请求 302 到这里）
 }
 
 const hopHeader = "X-Emby-Proxy-Hop"
@@ -54,7 +55,7 @@ func (m *Manager) selfName() string {
 func (m *Manager) members() []Member {
 	m.mu.RLock()
 	role, sticky := m.cfg.Cluster.Role, m.cfg.Cluster.Sticky
-	adv, list := m.cfg.Cluster.AdvertiseAddr, m.cfg.Members
+	adv, host, list := m.cfg.Cluster.AdvertiseAddr, m.cfg.Cluster.DirectHost, m.cfg.Members
 	m.mu.RUnlock()
 	if !sticky {
 		return nil
@@ -67,12 +68,12 @@ func (m *Manager) members() []Member {
 	}
 	var out []Member
 	if adv != "" {
-		out = append(out, Member{Name: m.selfName(), Addr: adv})
+		out = append(out, Member{Name: m.selfName(), Addr: adv, Host: host})
 	}
 	m.cluster.mu.Lock()
 	for _, n := range m.cluster.nodes {
 		if n.Addr != "" && time.Since(time.Unix(n.LastSeen, 0)) < memberAliveWindow {
-			out = append(out, Member{Name: n.Name, Addr: n.Addr})
+			out = append(out, Member{Name: n.Name, Addr: n.Addr, Host: n.Host})
 		}
 	}
 	m.cluster.mu.Unlock()
@@ -99,6 +100,64 @@ func (m *Manager) owner(clientIP string) (Member, bool) {
 		}
 	}
 	return best, found
+}
+
+// ---- 视频直连 ----
+// 请求落到非负责节点时，API 请求照常转发；推流请求（视频、HLS、推流域名转发）改为 302 到负责节点的直连域名，
+// 视频只经过负责节点一台，不再「客户端 ⇄ 本机 ⇄ 负责节点」两段都走一遍。负责节点看到的仍是客户端 IP，上游看到的仍只有负责节点。
+
+// cleanHost 校验直连域名：只允许域名（字母数字、- 和 .），不带协议、端口、路径；不合法返回空。
+func cleanHost(h string) string {
+	h = strings.ToLower(strings.TrimSpace(h))
+	if h == "" || len(h) > 253 || !strings.Contains(h, ".") || net.ParseIP(h) != nil {
+		return ""
+	}
+	for _, l := range strings.Split(h, ".") {
+		if !labelRe.MatchString(l) {
+			return ""
+		}
+	}
+	return h
+}
+
+// directURL 返回推流请求应 302 到的负责节点地址；不需要跳转时返回空。
+func (s *SiteRT) directURL(r *http.Request, prefix string, owner Member) string {
+	if owner.Host == "" || (r.Method != http.MethodGet && r.Method != http.MethodHead) {
+		return ""
+	}
+	s.m.mu.RLock()
+	on, self := s.m.cfg.Cluster.DirectStream, s.m.cfg.Cluster.DirectHost
+	s.m.mu.RUnlock()
+	if !on {
+		return ""
+	}
+	// 客户端已经是按本机直连域名来的（节点间的成员列表暂时不一致时）：不再跳转，避免来回 302
+	h := r.Host
+	if hh, _, err := net.SplitHostPort(h); err == nil {
+		h = hh
+	}
+	if self != "" && strings.EqualFold(h, self) {
+		return ""
+	}
+	esc := r.URL.EscapedPath()
+	rest := esc
+	if len(prefix) > 0 && len(esc) >= len(prefix) {
+		rest = esc[len(prefix):]
+	}
+	if !isMediaPath(rest) && !strings.HasPrefix(rest, epPrefix) {
+		if _, matched, _ := s.matchRoute(rest, r); !matched {
+			return ""
+		}
+	}
+	pub, err := url.Parse(s.cfg.PublicURL)
+	if err != nil || pub.Host == "" {
+		return ""
+	}
+	host := owner.Host
+	if p := pub.Port(); p != "" {
+		host = net.JoinHostPort(host, p)
+	}
+	return pub.Scheme + "://" + host + r.URL.RequestURI()
 }
 
 // ---- 节点暂时不可用标记 ----

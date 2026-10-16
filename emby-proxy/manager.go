@@ -334,8 +334,10 @@ func (m *Manager) persistStreamHost(id, key string) {
 // ---- 累计流量持久化 ----
 
 type savedStats struct {
-	Requests int64 `json:"requests"`
-	Bytes    int64 `json:"bytes"`
+	Requests      int64 `json:"requests"`
+	Bytes         int64 `json:"bytes"`
+	RelayRequests int64 `json:"relay_requests,omitempty"`
+	RelayBytes    int64 `json:"relay_bytes,omitempty"`
 }
 
 func (m *Manager) statsPath() string { return filepath.Join(filepath.Dir(m.path), "stats.json") }
@@ -353,6 +355,8 @@ func (m *Manager) loadStats() {
 		st := &Stats{}
 		st.Requests.Store(v.Requests)
 		st.Bytes.Store(v.Bytes)
+		st.RelayRequests.Store(v.RelayRequests)
+		st.RelayBytes.Store(v.RelayBytes)
 		m.stats[id] = st
 	}
 }
@@ -362,7 +366,7 @@ func (m *Manager) saveStats() {
 	out := map[string]savedStats{}
 	for _, s := range m.cfg.Sites {
 		if st := m.stats[s.ID]; st != nil {
-			out[s.ID] = savedStats{st.Requests.Load(), st.Bytes.Load()}
+			out[s.ID] = savedStats{st.Requests.Load(), st.Bytes.Load(), st.RelayRequests.Load(), st.RelayBytes.Load()}
 		}
 	}
 	m.mu.RUnlock()

@@ -19,6 +19,8 @@
 #   EMBY_HOST     客户端域名，默认 emby.$DOMAIN
 #   MASTER_HOST   主节点面板域名，默认 master.$DOMAIN；设为空字符串则不配置多服务器（单台）
 #   PANEL_PORT    主节点面板 HTTPS 端口，默认 8443
+#   DIRECT_HOST   本机直连域名（只解析到本机），默认 $NODE_NAME.$DOMAIN；解析不到本机 IP 时不启用。设为空字符串关闭
+#                 视频直连：客户端落到非负责节点时，视频请求 302 到负责节点的直连域名，视频只经过一台服务器
 #   IPV6=1        nginx 同时监听 IPv6（所有服务器都有 IPv6 时才开）
 #   SKIP_INSTALL=1 / SKIP_ACME=1 / SKIP_FIREWALL=1  跳过对应步骤（重复执行时用）
 #
@@ -32,6 +34,7 @@ PUBLIC_IP=${PUBLIC_IP:?请设置 PUBLIC_IP（本机公网 IP）}
 EMBY_HOST=${EMBY_HOST:-emby.$DOMAIN}
 MASTER_HOST=${MASTER_HOST-master.$DOMAIN}
 PANEL_PORT=${PANEL_PORT:-8443}
+DIRECT_HOST=${DIRECT_HOST-$NODE_NAME.$DOMAIN}
 FIRST_PORT=${FIRST_PORT:-8001}
 SITES=${SITES:-}
 CF_Token=${CF_Token:-}
@@ -90,6 +93,8 @@ api() { curl -sS --noproxy '*' -b "$COOKIE" -c "$COOKIE" -H 'X-Emby-Proxy: 1' -H
 # json 'python 表达式'：对标准输入的 JSON 求值（变量 d），打印结果
 json() { python3 -c "import json,sys;d=json.load(sys.stdin);r=$1;print(r if not isinstance(r,(dict,list)) else json.dumps(r,ensure_ascii=False))"; }
 must_ok() { local out; out=$(cat); echo "$out" | grep -q '"ok":true' || die "$1：$out"; }
+# resolves_to 域名 IP：域名的 A 记录里有这个 IP
+resolves_to() { python3 -c "import socket,sys;sys.exit(0 if sys.argv[2] in {a[4][0] for a in socket.getaddrinfo(sys.argv[1],None,socket.AF_INET)} else 1)" "$1" "$2" 2>/dev/null; }
 
 login() {
     local pw
@@ -208,9 +213,14 @@ fi
 
 if [ -n "$MASTER_HOST" ]; then
     step "设为主节点"
-    api PUT /api/cluster "{\"role\":\"master\",\"node_name\":\"$NODE_NAME\",\"advertise_addr\":\"$PUBLIC_IP\",\"panel_url\":\"https://$MASTER_HOST:$PANEL_PORT\",\"sticky\":true}" \
+    if [ -n "$DIRECT_HOST" ] && ! resolves_to "$DIRECT_HOST" "$PUBLIC_IP"; then
+        warn "$DIRECT_HOST 没有解析到 $PUBLIC_IP，不启用本机直连域名（视频请求落到本机时仍会转发）"
+        DIRECT_HOST=""
+    fi
+    api PUT /api/cluster "{\"role\":\"master\",\"node_name\":\"$NODE_NAME\",\"advertise_addr\":\"$PUBLIC_IP\",\"panel_url\":\"https://$MASTER_HOST:$PANEL_PORT\",\"sticky\":true,\"direct_stream\":true,\"direct_host\":\"$DIRECT_HOST\"}" \
         | must_ok "设置主节点"
     echo "面板 HTTPS：https://$MASTER_HOST:$PANEL_PORT"
+    echo "本机直连域名：${DIRECT_HOST:-未启用}"
 fi
 
 step "添加站点"

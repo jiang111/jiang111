@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -33,6 +32,8 @@ type ClusterConfig struct {
 
 	AdvertiseAddr string `json:"advertise_addr,omitempty"` // 本机公网 IP（节点间转发用；从节点留空则用主节点看到的 IP）
 	Sticky        bool   `json:"sticky,omitempty"`         // 同一用户固定同一台（主节点设置，同步给从节点）
+	DirectStream  bool   `json:"direct_stream,omitempty"`  // 视频直连：推流请求 302 到负责节点的直连域名（主节点设置，同步给从节点）
+	DirectHost    string `json:"direct_host,omitempty"`    // 本机直连域名（只解析到本机，证书要覆盖它），各节点独立
 }
 
 // syncPayload 是主节点下发的内容。
@@ -46,6 +47,7 @@ type syncPayload struct {
 	NginxIPv6     bool     `json:"nginx_ipv6,omitempty"`
 	ClusterSecret string   `json:"cluster_secret"`
 	Sticky        bool     `json:"sticky,omitempty"`
+	DirectStream  bool     `json:"direct_stream,omitempty"`
 	Members       []Member `json:"members,omitempty"`
 	CertPEM       []byte   `json:"cert_pem,omitempty"` // 主节点上传的证书（各节点写到自己的数据目录）
 	KeyPEM        []byte   `json:"key_pem,omitempty"`
@@ -55,6 +57,7 @@ type nodeInfo struct {
 	Name     string `json:"name"`
 	IP       string `json:"ip"`
 	Addr     string `json:"addr"` // 用于节点间转发的地址
+	Host     string `json:"host,omitempty"` // 节点的直连域名
 	LastSeen int64  `json:"last_seen"`
 	Version  string `json:"version"` // 节点当前持有的配置版本
 	Current  bool   `json:"current"` // 是否已是最新
@@ -74,10 +77,21 @@ type Cluster struct {
 	nodes  map[string]*nodeInfo // 主节点：已连接的从节点
 	status syncStatus           // 从节点：同步状态
 	kick   chan struct{}
+
+	// 主节点：统计汇总（见 report.go）
+	reports    map[string]*nodeReport          // 节点名 → 最近一次上报
+	bases      map[string]map[string]statsBase // 站点 ID → 节点名 → 清零基准
+	clearedMin map[string]int64                // 站点 ID → 清零时的分钟（Unix/60）
+
+	// 从节点：上报日志限频（只在 reportLoop 里用）
+	repOld   bool
+	repErr   string
+	repLogAt time.Time
 }
 
 func newCluster(m *Manager) *Cluster {
-	c := &Cluster{m: m, nodes: map[string]*nodeInfo{}, kick: make(chan struct{}, 1)}
+	c := &Cluster{m: m, nodes: map[string]*nodeInfo{}, kick: make(chan struct{}, 1),
+		reports: map[string]*nodeReport{}, bases: map[string]map[string]statsBase{}, clearedMin: map[string]int64{}}
 	m.cluster = c
 	return c
 }
@@ -98,7 +112,7 @@ func (c *Cluster) payload() ([]byte, string, error) {
 	p := syncPayload{
 		Sites: m.cfg.Sites, EntryURL: m.cfg.EntryURL, PublicHost: m.cfg.PublicHost, PortBind: m.cfg.PortBind,
 		ClusterSecret: m.cfg.ClusterSecret, NginxIPv6: m.cfg.NginxIPv6,
-		Sticky: m.cfg.Cluster.Sticky, Members: members,
+		Sticky: m.cfg.Cluster.Sticky, DirectStream: m.cfg.Cluster.DirectStream, Members: members,
 	}
 	// 用的是上传的证书就把文件发下去；手动路径则只发路径
 	hostCert := filepath.Join(m.hostSSLDir(), "fullchain.pem")
@@ -120,14 +134,7 @@ func (c *Cluster) payload() ([]byte, string, error) {
 
 // serveSync 是主节点的同步接口，用令牌鉴权（不走面板登录）。
 func (c *Cluster) serveSync(w http.ResponseWriter, r *http.Request) {
-	m := c.m
-	m.mu.RLock()
-	role, token := m.cfg.Cluster.Role, m.cfg.Cluster.Token
-	m.mu.RUnlock()
-	got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	if role != "master" || token == "" || subtle.ConstantTimeCompare([]byte(got), []byte(token)) != 1 {
-		time.Sleep(300 * time.Millisecond)
-		writeErr(w, http.StatusUnauthorized, "同步令牌不正确，或这台服务器不是主节点")
+	if !c.checkToken(w, r) {
 		return
 	}
 	data, ver, err := c.payload()
@@ -135,13 +142,7 @@ func (c *Cluster) serveSync(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	name := strings.TrimSpace(r.Header.Get("X-Node-Name"))
-	if name == "" {
-		name = clientIP(r)
-	}
-	if len(name) > 64 {
-		name = name[:64]
-	}
+	name := nodeName(r, r.Header.Get("X-Node-Name"))
 	// 记录节点自己报告持有的版本（节点应用新配置后会马上再请求一次，报告新版本）
 	have := strings.Trim(r.Header.Get("If-None-Match"), `"`)
 	c.mu.Lock()
@@ -150,7 +151,8 @@ func (c *Cluster) serveSync(w http.ResponseWriter, r *http.Request) {
 		if addr == "" || len(addr) > 64 {
 			addr = clientIP(r)
 		}
-		c.nodes[name] = &nodeInfo{Name: name, IP: clientIP(r), Addr: addr, LastSeen: time.Now().Unix(), Version: have}
+		c.nodes[name] = &nodeInfo{Name: name, IP: clientIP(r), Addr: addr, Host: cleanHost(r.Header.Get("X-Node-Host")),
+			LastSeen: time.Now().Unix(), Version: have}
 	}
 	c.mu.Unlock()
 	w.Header().Set("ETag", `"`+ver+`"`)
@@ -236,6 +238,9 @@ func (c *Cluster) pull() error {
 	req.Header.Set("X-Node-Name", name)
 	if cc.AdvertiseAddr != "" {
 		req.Header.Set("X-Node-Addr", cc.AdvertiseAddr)
+	}
+	if cc.DirectHost != "" {
+		req.Header.Set("X-Node-Host", cc.DirectHost)
 	}
 	c.mu.Lock()
 	if c.status.Version != "" {
@@ -324,6 +329,7 @@ func (c *Cluster) apply(p *syncPayload) error {
 	m.cfg.ClusterSecret = p.ClusterSecret
 	m.cfg.NginxIPv6 = p.NginxIPv6
 	m.cfg.Cluster.Sticky = p.Sticky
+	m.cfg.Cluster.DirectStream = p.DirectStream
 	m.cfg.Members = p.Members
 	if len(p.CertPEM) > 0 {
 		m.cfg.NginxCert, m.cfg.NginxKey = filepath.Join(m.hostSSLDir(), "fullchain.pem"), filepath.Join(m.hostSSLDir(), "privkey.pem")
@@ -345,6 +351,8 @@ func (c *Cluster) apply(p *syncPayload) error {
 type clusterView struct {
 	Role          string      `json:"role"`
 	Sticky        bool        `json:"sticky"`
+	DirectStream  bool        `json:"direct_stream"`
+	DirectHost    string      `json:"direct_host,omitempty"`
 	AdvertiseAddr string      `json:"advertise_addr,omitempty"`
 	SelfName      string      `json:"self_name"`
 	Members       []Member    `json:"members,omitempty"`
@@ -362,7 +370,7 @@ func (c *Cluster) view() clusterView {
 	m.mu.RLock()
 	cc := m.cfg.Cluster
 	v := clusterView{Role: cc.Role, MasterURL: cc.MasterURL, NodeName: cc.NodeName, PanelURL: m.cfg.PanelURL,
-		Sticky: cc.Sticky, AdvertiseAddr: cc.AdvertiseAddr}
+		Sticky: cc.Sticky, DirectStream: cc.DirectStream, DirectHost: cc.DirectHost, AdvertiseAddr: cc.AdvertiseAddr}
 	m.mu.RUnlock()
 	v.SelfName = m.selfName()
 	v.Members = m.members()
@@ -394,6 +402,8 @@ func (a *Admin) clusterSettings(w http.ResponseWriter, r *http.Request) {
 		NewToken      bool    `json:"new_token"`
 		AdvertiseAddr string  `json:"advertise_addr"`
 		Sticky        *bool   `json:"sticky"`
+		DirectStream  *bool   `json:"direct_stream"`
+		DirectHost    *string `json:"direct_host"`
 		AllowInsecure bool    `json:"allow_http"`
 	}
 	if err := readJSON(r, &body); err != nil {
@@ -424,6 +434,14 @@ func (a *Admin) clusterSettings(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "本机公网地址只填 IP（或 IP:端口），例如 203.0.113.10")
 		return
 	}
+	var directHost string
+	if body.DirectHost != nil {
+		directHost = strings.ToLower(strings.TrimSpace(*body.DirectHost))
+		if directHost != "" && cleanHost(directHost) == "" {
+			writeErr(w, 400, "本机直连域名只填域名（不带 https:// 和端口），例如 tokyo-1.example.com")
+			return
+		}
+	}
 	var panelURL string
 	if body.PanelURL != nil {
 		panelURL = strings.TrimRight(strings.TrimSpace(*body.PanelURL), "/")
@@ -451,6 +469,12 @@ func (a *Admin) clusterSettings(w http.ResponseWriter, r *http.Request) {
 		if body.Sticky != nil {
 			cc.Sticky = *body.Sticky
 		}
+		if prevRole != "master" && body.DirectStream == nil {
+			cc.DirectStream = true // 默认开启「视频直连」（节点没填直连域名时不生效）
+		}
+		if body.DirectStream != nil {
+			cc.DirectStream = *body.DirectStream
+		}
 		cc.MasterURL = ""
 		cc.NodeName = strings.TrimSpace(body.NodeName)
 	case "node":
@@ -463,10 +487,13 @@ func (a *Admin) clusterSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	default:
-		cc.Token, cc.MasterURL, cc.NodeName, cc.Sticky = "", "", "", false
+		cc.Token, cc.MasterURL, cc.NodeName, cc.Sticky, cc.DirectStream = "", "", "", false, false
 		m.cfg.Members = nil
 	}
 	cc.AdvertiseAddr = body.AdvertiseAddr
+	if body.DirectHost != nil {
+		cc.DirectHost = directHost
+	}
 	if body.PanelURL != nil {
 		m.cfg.PanelURL = panelURL
 	}

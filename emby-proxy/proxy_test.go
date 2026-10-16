@@ -373,6 +373,21 @@ func TestNginxConfig(t *testing.T) {
 	if strings.Count(out, "\nserver {") != 1 {
 		t.Fatalf("expected exactly one server block:\n%s", out)
 	}
+	cfg.Cluster.DirectHost = "n1.example.com"
+	if out = nginxConfig(cfg, "", "", nil); !strings.Contains(out, "server_name e.example.com n1.example.com;") {
+		t.Fatalf("direct host missing in server_name:\n%s", out)
+	}
+}
+
+func TestCleanHost(t *testing.T) {
+	for in, want := range map[string]string{
+		"Tokyo-1.Example.com": "tokyo-1.example.com", " a.b.c ": "a.b.c",
+		"": "", "a": "", "1.2.3.4": "", "a.example.com:443": "", "https://a.example.com": "", "a_b.example.com": "", "a..example.com": "",
+	} {
+		if got := cleanHost(in); got != want {
+			t.Errorf("cleanHost(%q) = %q, want %q", in, got, want)
+		}
+	}
 }
 
 func genCert(t *testing.T, host string, notAfter time.Time) (certPEM, keyPEM []byte) {
@@ -881,6 +896,14 @@ func TestClusterSync(t *testing.T) {
 	if len(token) != 32 {
 		t.Fatalf("token = %q", token)
 	}
+	for _, bad := range []string{"https://m.example.com", "m.example.com:8443", "203.0.113.1", "m", "a b.example.com"} {
+		if code, _ := adminDo(t, srvM, cM, "PUT", "/api/cluster", `{"role":"master","direct_host":"`+bad+`"}`, csrfHeader, "1"); code != 400 {
+			t.Fatalf("direct_host %q should be rejected: %d", bad, code)
+		}
+	}
+	if code, out := adminDo(t, srvM, cM, "PUT", "/api/cluster", `{"role":"master","panel_url":"https://master.example.com:8443","direct_host":"M.Example.com"}`, csrfHeader, "1"); code != 200 || master.cfg.Cluster.DirectHost != "m.example.com" || master.cfg.Cluster.Token != token {
+		t.Fatalf("set direct_host: %s %+v", out, master.cfg.Cluster)
+	}
 	cert, key := genCert(t, "*.example.com", time.Now().Add(60*24*time.Hour))
 	os.MkdirAll(master.sslDir(), 0o700)
 	os.WriteFile(filepath.Join(master.sslDir(), "fullchain.pem"), cert, 0o600)
@@ -906,7 +929,7 @@ func TestClusterSync(t *testing.T) {
 		t.Fatalf("plain http master must be refused by default: %d %s", code, out)
 	}
 	node.mu.Lock()
-	node.cfg.Cluster = ClusterConfig{Role: "node", MasterURL: srvM.URL, Token: "wrong", NodeName: "tokyo-1"}
+	node.cfg.Cluster = ClusterConfig{Role: "node", MasterURL: srvM.URL, Token: "wrong", NodeName: "tokyo-1", DirectHost: "tokyo-1.example.com"}
 	node.mu.Unlock()
 	if err := nc.pull(); err == nil || !strings.Contains(err.Error(), "令牌") {
 		t.Fatalf("wrong token: %v", err)
@@ -935,8 +958,15 @@ func TestClusterSync(t *testing.T) {
 	if err := nc.pull(); err != nil {
 		t.Fatal(err)
 	}
-	if ms := node.cfg.Members; len(ms) != 1 || ms[0].Name != "tokyo-1" || ms[0].Addr != "127.0.0.1" {
+	if ms := node.cfg.Members; len(ms) != 1 || ms[0].Name != "tokyo-1" || ms[0].Addr != "127.0.0.1" || ms[0].Host != "tokyo-1.example.com" {
 		t.Fatalf("members not synced: %+v", ms)
+	}
+	// 视频直连：主节点默认开启并同步给从节点；从节点 nginx 的 server_name 带上本机直连域名
+	if !master.cfg.Cluster.DirectStream || !node.cfg.Cluster.DirectStream {
+		t.Fatalf("direct_stream not synced: master %v node %v", master.cfg.Cluster.DirectStream, node.cfg.Cluster.DirectStream)
+	}
+	if conf, _ := os.ReadFile(node.nginxConfPath()); !strings.Contains(string(conf), "server_name emby.example.com tokyo-1.example.com;") {
+		t.Fatalf("node nginx server_name without direct host:\n%s", conf)
 	}
 	v1 := nc.status.Version
 	if nodes := mc.nodeList(v1); len(nodes) != 1 || nodes[0].Current {
@@ -1101,6 +1131,21 @@ func TestStickyAcrossNodes(t *testing.T) {
 			break
 		}
 	}
+	// 转发出去的请求：A 只计转发，不计本站请求/连接/流量/播放；B 按正常请求计数
+	stA, stB := nodes["A"].m.stats["s1"], nodes["B"].m.stats["s1"]
+	waitIdle(stA)
+	a0, b0 := stA.view(), stB.view()
+	do("A", "GET", clientB, "")
+	waitIdle(stA)
+	a1, b1 := stA.view(), stB.view()
+	if a1.Requests != a0.Requests || a1.Bytes != a0.Bytes || a1.Active != 0 || a1.Streams != 0 || a1.Errors != a0.Errors ||
+		a1.RelayRequests != a0.RelayRequests+1 || a1.RelayBytes <= a0.RelayBytes {
+		t.Fatalf("relay counted on A: before %+v after %+v", a0, a1)
+	}
+	if b1.Requests != b0.Requests+1 || b1.Bytes <= b0.Bytes || b1.RelayRequests != b0.RelayRequests {
+		t.Fatalf("owner B: before %+v after %+v", b0, b1)
+	}
+
 	// 客户端伪造转发标记：无效，仍然按负责节点处理
 	if got := do("A", "GET", clientB, "", hopHeader, "1|1.2.3.4|s1|A|forged"); !strings.HasPrefix(got, "node=B") {
 		t.Fatalf("forged hop should be ignored: %q", got)
@@ -1130,10 +1175,75 @@ func TestStickyAcrossNodes(t *testing.T) {
 	}
 	conn.Close()
 
+	// 视频直连：A、B 各有直连域名并开启后，clientB 落到 A 的视频请求 302 到 B，API 仍转发
+	members = []Member{{Name: "A", Addr: nodes["A"].addr, Host: "a.test"}, {Name: "B", Addr: nodes["B"].addr, Host: "b.test"}}
+	for name, n := range nodes {
+		n.m.mu.Lock()
+		n.m.cfg.Members = members
+		n.m.cfg.Cluster.DirectStream = true
+		n.m.cfg.Cluster.DirectHost = strings.ToLower(name) + ".test"
+		n.m.mu.Unlock()
+	}
+	noFollow := &http.Client{Transport: cl.Transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	raw := func(node, method, path, host string) (int, string, string) {
+		req, _ := http.NewRequest(method, nodes[node].front.URL+path, nil)
+		req.Header.Set("X-Test-Client", clientB)
+		if host != "" {
+			req.Host = host
+		}
+		resp, err := noFollow.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return resp.StatusCode, resp.Header.Get("Location"), string(b)
+	}
+	waitIdle(stA)
+	a0 = stA.view()
+	for _, p := range []string{"/e/emby/videos/1/stream.mkv?api_key=x&Static=true", "/e/emby/Videos/1/hls1/main/0.ts", "/e/__ep/sig/https/cdn.example.net/443/v.mp4"} {
+		code, loc, _ := raw("A", "GET", p, "")
+		if code != http.StatusFound || loc != "https://b.test:8001"+p {
+			t.Fatalf("direct stream %s: %d %q", p, code, loc)
+		}
+	}
+	if l := nodes["A"].m.logs.list("", 1)[0]; l.Node != "⇢ B 直连" || l.Status != http.StatusFound {
+		t.Fatalf("direct log: %+v", l)
+	}
+	waitIdle(stA)
+	if a1 = stA.view(); a1.Requests != a0.Requests || a1.Bytes != a0.Bytes || a1.RelayBytes != a0.RelayBytes || a1.Streams != 0 {
+		t.Fatalf("direct redirect should not count traffic on A: before %+v after %+v", a0, a1)
+	}
+	// API、非 GET 的视频请求：照常转发给 B
+	if code, loc, body := raw("A", "GET", "/e/emby/Items", ""); code != 200 || loc != "" || !strings.HasPrefix(body, "node=B") {
+		t.Fatalf("api should be forwarded: %d %q %q", code, loc, body)
+	}
+	if code, _, body := raw("A", "DELETE", "/e/emby/Videos/ActiveEncodings", ""); code != 200 || !strings.HasPrefix(body, "node=B") {
+		t.Fatalf("non-GET media request should be forwarded: %d %q", code, body)
+	}
+	// 客户端已经按 A 的直连域名来访问（成员列表暂时不一致）：不再跳转，转发给 B
+	if code, loc, body := raw("A", "GET", "/e/emby/videos/1/stream", "a.test:8001"); code != 200 || loc != "" || !strings.HasPrefix(body, "node=B") {
+		t.Fatalf("request on own direct host should not redirect: %d %q %q", code, loc, body)
+	}
+	// 关闭视频直连：照常转发
+	nodes["A"].m.mu.Lock()
+	nodes["A"].m.cfg.Cluster.DirectStream = false
+	nodes["A"].m.mu.Unlock()
+	if code, loc, body := raw("A", "GET", "/e/emby/videos/1/stream", ""); code != 200 || loc != "" || !strings.HasPrefix(body, "node=B") {
+		t.Fatalf("direct stream off should forward: %d %q %q", code, loc, body)
+	}
+
 	// B 挂掉：A 就地处理，POST 请求体不丢
 	nodes["B"].front.Close()
+	waitIdle(stA)
+	a0 = stA.view()
 	if got := do("A", "POST", clientB, "after-down"); got != "node=A body=after-down" {
 		t.Fatalf("fallback when owner down: %q", got)
+	}
+	// 就地处理按本机请求计数，不算转发
+	waitIdle(stA)
+	if a1 = stA.view(); a1.Requests != a0.Requests+1 || a1.Bytes <= a0.Bytes || a1.RelayRequests != a0.RelayRequests || a1.Active != 0 {
+		t.Fatalf("fallback stats: before %+v after %+v", a0, a1)
 	}
 	if l := nodes["A"].m.logs.list("", 1)[0]; !strings.Contains(l.Node, "失联") {
 		t.Fatalf("fallback log: %+v", l)
