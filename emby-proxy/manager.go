@@ -29,6 +29,7 @@ type Manager struct {
 	siteErr   map[string]string
 	listeners map[int]*http.Server
 	stats     map[string]*Stats
+	traffic   monthTraffic // 本月反代流量（流量均衡用）
 
 	logs    *LogRing
 	trs     [3]*http.Transport // 按 tlsVerify / tlsIgnoreExpired / tlsInsecure
@@ -145,6 +146,7 @@ func NewManager(path string, cfg *Config) *Manager {
 		started:   time.Now(),
 	}
 	m.loadStats()
+	m.loadTraffic()
 	return m
 }
 

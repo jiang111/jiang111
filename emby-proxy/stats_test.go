@@ -1,7 +1,10 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -236,7 +239,7 @@ func TestNodeReport(t *testing.T) {
 	mc.mu.Lock()
 	rep := mc.reports["isif"]
 	mc.mu.Unlock()
-	if rep == nil || rep.Sites[id].Requests != 3 {
+	if rep == nil || rep.Sites[id].Requests != 3 || rep.Traffic == nil || rep.Traffic.Month == "" {
 		t.Fatalf("report not recorded: %+v", rep)
 	}
 
@@ -245,5 +248,186 @@ func TestNodeReport(t *testing.T) {
 	node.mu.Unlock()
 	if err := nc.report(); err != errReportUnsupported {
 		t.Fatalf("old master: %v", err)
+	}
+}
+
+// 加权分配：权重都为 1 时与不加权完全一致；权重 3:1 时约 75% 的 IP 归权重高的；调高权重只会把 IP 拉过来，不会推走。
+func TestWeightedOwner(t *testing.T) {
+	owner := func(ms []Member, ip string) string {
+		m := &Manager{cfg: &Config{Cluster: ClusterConfig{Role: "node", Sticky: true}, Members: ms}, downUntil: map[string]time.Time{}}
+		o, _ := m.owner(ip)
+		return o.Name
+	}
+	plain := func(ip string) string { // 原来的不加权算法
+		best, bs := "", uint64(0)
+		for _, n := range []string{"fx", "isif"} {
+			sum := sha256.Sum256([]byte(n + "|" + ip))
+			if s := binary.BigEndian.Uint64(sum[:8]); best == "" || s > bs {
+				best, bs = n, s
+			}
+		}
+		return best
+	}
+	eq := []Member{{Name: "fx"}, {Name: "isif", Weight: 1}}
+	w31 := []Member{{Name: "fx", Weight: 3}, {Name: "isif", Weight: 1}}
+	w51 := []Member{{Name: "fx", Weight: 5}, {Name: "isif", Weight: 1}}
+	fx := 0
+	const n = 4000
+	for i := 0; i < n; i++ {
+		ip := fmt.Sprintf("198.51.%d.%d", i/250, i%250)
+		if a, b := owner(eq, ip), plain(ip); a != b {
+			t.Fatalf("equal weights changed assignment for %s: %s vs %s", ip, a, b)
+		}
+		o3 := owner(w31, ip)
+		if o3 == "fx" {
+			fx++
+		}
+		if o3 == "fx" && owner(w51, ip) != "fx" {
+			t.Fatalf("raising fx weight moved %s away from fx", ip)
+		}
+	}
+	if r := float64(fx) / n; r < 0.70 || r > 0.80 {
+		t.Fatalf("weight 3:1 share = %.2f, want ~0.75", r)
+	}
+}
+
+func TestCalcWeights(t *testing.T) {
+	gb := int64(1 << 30)
+	u := func(fx, isif int64, isifReported bool) map[string]*balanceNode {
+		return map[string]*balanceNode{"fx": {Name: "fx", Bytes: fx, Reported: true}, "isif": {Name: "isif", Bytes: isif, Reported: isifReported}}
+	}
+	if w := calcWeights(u(0, 0, true), nil, nil); w["fx"] != 1 || w["isif"] != 1 {
+		t.Fatalf("equal usage: %v", w)
+	}
+	// 平均 15G，平滑 10G：fx (25/10)=2.5，isif (25/40)=0.625→0.63
+	if w := calcWeights(u(0, 30*gb, true), nil, nil); w["fx"] != 2.5 || w["isif"] != 0.63 {
+		t.Fatalf("unequal usage: %v", w)
+	}
+	// 手动系数
+	if w := calcWeights(u(0, 30*gb, true), map[string]float64{"fx": 0.5}, nil); w["fx"] != 1.25 {
+		t.Fatalf("factor: %v", w)
+	}
+	// 没有用量数据的节点保持原权重；平均值只按有数据的算
+	if w := calcWeights(u(5*gb, 0, false), nil, map[string]float64{"isif": 0.7}); w["isif"] != 0.7 || w["fx"] != 1 {
+		t.Fatalf("unreported: %v", w)
+	}
+	// 上限；两台时用得多的那台最低到 0.5
+	if w := calcWeights(u(0, 100000*gb, true), map[string]float64{"fx": 10}, nil); w["fx"] != weightMax || w["isif"] != 0.5 {
+		t.Fatalf("clamp: %v", w)
+	}
+}
+
+// 本月流量：本机处理和转发都计入；跨月清零；保存后重启能恢复。
+func TestMonthTraffic(t *testing.T) {
+	var tr monthTraffic
+	may := time.Date(2026, 5, 31, 23, 0, 0, 0, time.Local)
+	tr.add(40) // 启动后第一次读取之前的流量不能丢
+	if mo, n := tr.get(may); mo != "2026-05" || n != 40 {
+		t.Fatal(mo, n)
+	}
+	tr.add(60)
+	tr.add(-5)
+	if _, n := tr.get(may); n != 100 {
+		t.Fatal(n)
+	}
+	if mo, n := tr.get(may.Add(2 * time.Hour)); mo != "2026-06" || n != 0 {
+		t.Fatalf("month rollover: %s %d", mo, n)
+	}
+	var nilTr *monthTraffic
+	nilTr.add(1) // countWriter 没设置时不崩
+
+	m, entry, _, _ := setup(t, Site{Mode: "path", Path: "hk", StreamMode: "proxy"})
+	get(t, entry.URL+"/hk/emby/System/Info/Public")
+	waitIdle(m.stats["s1"])
+	_, n := m.traffic.get(time.Now())
+	if n <= 0 || n != m.stats["s1"].Bytes.Load() {
+		t.Fatalf("traffic %d, site bytes %d", n, m.stats["s1"].Bytes.Load())
+	}
+	m.saveTraffic()
+	m2 := NewManager(m.path, &Config{})
+	if _, n2 := m2.traffic.get(time.Now()); n2 != n {
+		t.Fatalf("reload traffic: %d want %d", n2, n)
+	}
+}
+
+// 主节点：从节点上报本月流量 → 立即重新分配 → 权重写入配置并随节点列表下发；手动系数校验。
+func TestRebalance(t *testing.T) {
+	master, c, do, _, _ := clusterMaster(t)
+	if !master.cfg.Cluster.Balance {
+		t.Fatal("balance should default on for a new master")
+	}
+	if code, out := do("PUT", "/api/cluster", `{"role":"master","node_name":"fx","advertise_addr":"203.0.113.1","factors":{"isif":20}}`); code != 400 {
+		t.Fatalf("factor out of range should be rejected: %d %s", code, out)
+	}
+	c.mu.Lock()
+	c.nodes["isif"] = &nodeInfo{Name: "isif", Addr: "203.0.113.2", LastSeen: time.Now().Unix()}
+	c.mu.Unlock()
+	if code, out := do("PUT", "/api/cluster", `{"role":"master","node_name":"fx","advertise_addr":"203.0.113.1"}`); code != 200 {
+		t.Fatal(out)
+	}
+	month, _ := master.traffic.get(time.Now())
+	body, _ := json.Marshal(map[string]any{"name": "isif", "sites": map[string]StatsView{}, "traffic": trafficInfo{month, 30 << 30}})
+	if code, out := do("POST", "/api/cluster/report", string(body), "Authorization", "Bearer "+master.cfg.Cluster.Token); code != 200 {
+		t.Fatal(out)
+	}
+	code, out := do("POST", "/api/cluster/rebalance", "")
+	if code != 200 {
+		t.Fatal(out)
+	}
+	w := master.cfg.Cluster.Weights
+	if w["fx"] <= 2 || w["isif"] >= 1 || master.cfg.Cluster.LastBalance == "" {
+		t.Fatalf("weights: %v (%s)", w, out)
+	}
+	ms := master.members()
+	if len(ms) != 2 || ms[0].Name != "fx" || ms[0].Weight != w["fx"] || ms[1].Weight != w["isif"] {
+		t.Fatalf("members should carry weights: %+v", ms)
+	}
+	data, _, _ := c.payload()
+	var p syncPayload
+	json.Unmarshal(data, &p)
+	if len(p.Members) != 2 || p.Members[1].Weight != w["isif"] {
+		t.Fatalf("payload members: %+v", p.Members)
+	}
+	// 面板能看到各台本月流量和权重
+	_, out = do("GET", "/api/state", "")
+	var st struct {
+		Cluster clusterView `json:"cluster"`
+	}
+	json.Unmarshal([]byte(out), &st)
+	if bn := st.Cluster.BalanceNodes; len(bn) != 2 || bn[1].Name != "isif" || bn[1].Bytes != 30<<30 || !bn[1].Reported || bn[1].Weight != w["isif"] {
+		t.Fatalf("balance view: %+v", bn)
+	}
+	// 关闭流量均衡：权重不再下发（全按 1）
+	if code, out := do("PUT", "/api/cluster", `{"role":"master","node_name":"fx","advertise_addr":"203.0.113.1","balance":false}`); code != 200 {
+		t.Fatal(out)
+	}
+	for _, mb := range master.members() {
+		if mb.Weight != 0 {
+			t.Fatalf("weights should not be used when balance is off: %+v", mb)
+		}
+	}
+	if code, _ := do("POST", "/api/cluster/rebalance", ""); code != http.StatusConflict {
+		t.Fatalf("rebalance with balance off: %d", code)
+	}
+}
+
+// 每天 balanceHour 点重算一次，同一天不重复。
+func TestBalanceTick(t *testing.T) {
+	master, c, _, _, _ := clusterMaster(t)
+	day := time.Date(2026, 10, 16, balanceHour, 3, 0, 0, time.Local)
+	c.balanceTick(day.Add(-time.Hour))
+	if master.cfg.Cluster.LastBalance != "" {
+		t.Fatal("should not run outside the hour")
+	}
+	c.balanceTick(day)
+	if master.cfg.Cluster.LastBalance != "2026-10-16" {
+		t.Fatalf("should run at %d:00: %q", balanceHour, master.cfg.Cluster.LastBalance)
+	}
+	master.mu.Lock()
+	master.cfg.Cluster.Weights = map[string]float64{"x": 9}
+	master.mu.Unlock()
+	c.balanceTick(day.Add(30 * time.Minute))
+	if master.cfg.Cluster.Weights["x"] != 9 {
+		t.Fatal("should not run twice the same day")
 	}
 }

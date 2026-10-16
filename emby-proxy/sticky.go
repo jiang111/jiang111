@@ -29,9 +29,10 @@ import (
 
 // Member 是参与分配的节点。
 type Member struct {
-	Name string `json:"name"`
-	Addr string `json:"addr"`           // 节点公网 IP（也可带端口，默认用站点客户端访问地址里的端口）
-	Host string `json:"host,omitempty"` // 节点直连域名（视频直连时推流请求 302 到这里）
+	Name   string  `json:"name"`
+	Addr   string  `json:"addr"`             // 节点公网 IP（也可带端口，默认用站点客户端访问地址里的端口）
+	Host   string  `json:"host,omitempty"`   // 节点直连域名（视频直连时推流请求 302 到这里）
+	Weight float64 `json:"weight,omitempty"` // 分配权重（流量均衡），0 视为 1
 }
 
 const hopHeader = "X-Emby-Proxy-Hop"
@@ -56,6 +57,10 @@ func (m *Manager) members() []Member {
 	m.mu.RLock()
 	role, sticky := m.cfg.Cluster.Role, m.cfg.Cluster.Sticky
 	adv, host, list := m.cfg.Cluster.AdvertiseAddr, m.cfg.Cluster.DirectHost, m.cfg.Members
+	var weights map[string]float64
+	if m.cfg.Cluster.Balance {
+		weights = cloneWeights(m.cfg.Cluster.Weights)
+	}
 	m.mu.RUnlock()
 	if !sticky {
 		return nil
@@ -68,12 +73,13 @@ func (m *Manager) members() []Member {
 	}
 	var out []Member
 	if adv != "" {
-		out = append(out, Member{Name: m.selfName(), Addr: adv, Host: host})
+		name := m.selfName()
+		out = append(out, Member{Name: name, Addr: adv, Host: host, Weight: weights[name]})
 	}
 	m.cluster.mu.Lock()
 	for _, n := range m.cluster.nodes {
 		if n.Addr != "" && time.Since(time.Unix(n.LastSeen, 0)) < memberAliveWindow {
-			out = append(out, Member{Name: n.Name, Addr: n.Addr, Host: n.Host})
+			out = append(out, Member{Name: n.Name, Addr: n.Addr, Host: n.Host, Weight: weights[n.Name]})
 		}
 	}
 	m.cluster.mu.Unlock()
@@ -88,14 +94,14 @@ func (m *Manager) owner(clientIP string) (Member, bool) {
 		return Member{}, false
 	}
 	var best Member
-	var bestScore uint64
+	var bestScore float64
 	found := false
 	for _, mb := range ms {
 		if m.peerDown(mb.Name) {
 			continue
 		}
 		sum := sha256.Sum256([]byte(mb.Name + "|" + clientIP))
-		if s := binary.BigEndian.Uint64(sum[:8]); !found || s > bestScore {
+		if s := hrwScore(binary.BigEndian.Uint64(sum[:8]), weightOf(mb)); !found || s > bestScore {
 			best, bestScore, found = mb, s, true
 		}
 	}

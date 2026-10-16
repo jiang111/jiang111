@@ -55,6 +55,7 @@ func (a *Admin) Handler() http.Handler {
 	mux.HandleFunc("GET /api/cluster/sync", a.cluster.serveSync)      // 令牌鉴权，供从节点拉取
 	mux.HandleFunc("POST /api/cluster/report", a.cluster.serveReport) // 令牌鉴权，从节点上报统计
 	mux.HandleFunc("PUT /api/cluster", a.auth(a.clusterSettings))
+	mux.HandleFunc("POST /api/cluster/rebalance", a.auth(a.rebalanceNow))
 	mux.HandleFunc("POST /api/cluster/sync-now", a.auth(func(w http.ResponseWriter, r *http.Request) {
 		a.cluster.syncNow()
 		writeJSON(w, 200, map[string]any{"ok": true})

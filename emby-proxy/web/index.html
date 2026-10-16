@@ -475,11 +475,16 @@ function renderCluster() {
         : '<div class="kv">还没有从节点连接</div>'}</div>
       <label class="chk"><input type="checkbox" name="sticky" ${c.sticky ? 'checked' : ''}><span><b>同一用户固定同一台</b>：同一个客户端 IP 的 API 和推流请求都只经过同一台服务器访问上游，落到别的服务器上会被转给它。上游看到的 IP 数和用户直连时一样。</span></label>
       <label class="chk"><input type="checkbox" name="direct_stream" ${c.direct_stream ? 'checked' : ''}><span><b>视频直连</b>：请求落到非负责节点时，API 照常转发，视频请求 302 到负责节点的「本机直连域名」，视频只经过一台服务器，节省节点间转发流量。需要各台都填写直连域名；个别播放器跟随 302 后拖动有问题时关闭。</span></label>
-      ${c.sticky ? `<div class="kv" style="white-space:normal;margin-bottom:10px">参与分配的节点：${(c.members || []).map(m => esc(m.name) + '（' + esc(m.addr) + (m.host ? '，直连 ' + esc(m.host) : '') + '）').join('、') || '无'}${!c.advertise_addr ? '。<span class="bad">本机没填公网 IP，主节点不参与分配</span>（如果 DNS 里也有主节点，请填写）' : ''}</div>` : ''}`;
+      <label class="chk"><input type="checkbox" name="balance" ${c.balance ? 'checked' : ''}><span><b>流量均衡</b>：每天凌晨 5 点按各台本月反代流量重算分配权重，用得少的分到更多用户（同一用户仍固定一台）。只统计经反代的流量，某台还有其它耗流量的服务时把它的系数调低。</span></label>
+      ${c.balance && (c.balance_nodes || []).length ? `<div class="f"><label>流量均衡（${esc(c.traffic.month)}）</label><table><thead><tr><th>节点</th><th>本月反代流量</th><th>当前权重</th><th>手动系数</th></tr></thead><tbody>${c.balance_nodes.map(n =>
+        `<tr><td>${esc(n.name)}</td><td>${n.reported ? fmtBytes(n.bytes) : '<span class="kv">未上报</span>'}</td><td>${n.weight.toFixed(2)}</td><td><input type="number" data-factor="${esc(n.name)}" value="${n.factor}" min="0.1" max="10" step="0.1" style="width:80px"></td></tr>`).join('')}</tbody></table>
+        <div class="row" style="margin-top:6px"><small style="flex:1">上次重算：${esc(c.last_balance || '还没有')}。立即重新分配会让部分用户换到另一台（上游会看到 IP 变化），看片时不要点。</small><button type="button" class="btn sm" id="btnRebalance">立即重新分配</button></div></div>` : ''}
+      ${c.sticky ? `<div class="kv" style="white-space:normal;margin-bottom:10px">参与分配的节点：${(c.members || []).map(m => esc(m.name) + '（' + esc(m.addr) + (m.host ? '，直连 ' + esc(m.host) : '') + (m.weight && m.weight !== 1 ? '，权重 ' + m.weight : '') + '）').join('、') || '无'}${!c.advertise_addr ? '。<span class="bad">本机没填公网 IP，主节点不参与分配</span>（如果 DNS 里也有主节点，请填写）' : ''}</div>` : ''}`;
   } else if (role === 'node') {
     detail = `<div class="f"><label>主节点面板地址</label><input type="text" name="master_url" value="${esc(c.master_url)}" placeholder="https://master.example.com:8443"></div>
       <div class="f"><label>同步令牌</label><input type="text" name="token" placeholder="${c.token ? '已保存（' + esc(c.token) + '），留空不修改' : '主节点「设置 → 多服务器同步」里复制'}"></div>
-      <div class="kv" style="white-space:normal">${syncLine()}</div>`;
+      <div class="kv" style="white-space:normal">${syncLine()}</div>
+      <div class="kv">本机本月反代流量（${esc(c.traffic ? c.traffic.month : '')}）：${fmtBytes(c.traffic ? c.traffic.bytes : 0)}，已上报给主节点做流量均衡</div>`;
   }
   return `<form class="panel" id="cf"><h3>多服务器同步</h3>
     <div class="help" style="margin-bottom:10px">多台服务器用同一个域名做负载均衡时：一台设为<b>主节点</b>，其余设为<b>从节点</b>。从节点每 30 秒从主节点同步站点、设置和证书，nginx 配置自动更新。</div>
@@ -513,6 +518,9 @@ function bindCluster() {
     if (role) Object.assign(body, {node_name: f.node_name.value, advertise_addr: f.advertise_addr.value, direct_host: f.direct_host.value});
     if (role === 'master' && f.sticky) body.sticky = f.sticky.checked;
     if (role === 'master' && f.direct_stream) body.direct_stream = f.direct_stream.checked;
+    if (role === 'master' && f.balance) body.balance = f.balance.checked;
+    const factors = [...f.querySelectorAll('input[data-factor]')];
+    if (role === 'master' && factors.length) body.factors = Object.fromEntries(factors.map(i => [i.dataset.factor, parseFloat(i.value) || 1]));
     if (role === 'node') Object.assign(body, {master_url: f.master_url.value, token: f.token.value});
     try { await api('PUT', '/api/cluster', body); await load(); toast('已保存'); } catch (err) { toast(err.message); }
   };
@@ -522,6 +530,10 @@ function bindCluster() {
   if ($('#btnNewToken')) $('#btnNewToken').onclick = async () => {
     if (!confirm('重新生成后所有从节点都要更新令牌，确定？')) return;
     await api('PUT', '/api/cluster', {role: 'master', new_token: true, panel_url: f.panel_url.value, node_name: f.node_name.value, advertise_addr: f.advertise_addr.value, sticky: f.sticky ? f.sticky.checked : undefined}); await load(); toast('已生成新令牌');
+  };
+  if ($('#btnRebalance')) $('#btnRebalance').onclick = async () => {
+    if (!confirm('按本月用量立即重算权重？部分用户会换到另一台服务器。')) return;
+    try { const r = await api('POST', '/api/cluster/rebalance'); await load(); toast('已重新分配：' + Object.entries(r.weights || {}).map(([k, v]) => k + ' ' + v).join('，')); } catch (err) { toast(err.message); }
   };
   if ($('#btnSyncNow')) $('#btnSyncNow').onclick = async () => {
     await api('POST', '/api/cluster/sync-now'); toast('已开始同步'); setTimeout(load, 1500);

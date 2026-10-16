@@ -340,7 +340,7 @@ func (s *SiteRT) serve(w http.ResponseWriter, r *http.Request, prefix string) {
 	} else if owner, ok := s.m.owner(ip); ok && owner.Name != s.m.selfName() && s.cfg.PublicURL != "" {
 		if loc := s.directURL(r, prefix, owner); loc != "" {
 			// 视频直连：推流请求让客户端直接连负责节点，本机不转发视频
-			rw := &countWriter{ResponseWriter: w, st: st, relay: true}
+			rw := &countWriter{ResponseWriter: w, st: st, relay: true, tr: &s.m.traffic}
 			w.Header().Set("Location", loc)
 			w.Header().Set("Cache-Control", "no-store")
 			rw.WriteHeader(http.StatusFound)
@@ -349,7 +349,7 @@ func (s *SiteRT) serve(w http.ResponseWriter, r *http.Request, prefix string) {
 			logReq(rw, "")
 			return
 		}
-		rw := &countWriter{ResponseWriter: w, st: st, relay: true}
+		rw := &countWriter{ResponseWriter: w, st: st, relay: true, tr: &s.m.traffic}
 		st.RelayRequests.Add(1)
 		if s.forward(w, r, owner, ip, rw) {
 			st.LastAccess.Store(st.clock().Unix())
@@ -362,7 +362,7 @@ func (s *SiteRT) serve(w http.ResponseWriter, r *http.Request, prefix string) {
 	}
 
 	st.begin()
-	cw := &countWriter{ResponseWriter: w, st: st}
+	cw := &countWriter{ResponseWriter: w, st: st, tr: &s.m.traffic}
 	rc := &reqCtx{s: s, prefix: prefix, cw: cw, ip: ip}
 	defer func() {
 		st.end(rc.play)
@@ -635,6 +635,7 @@ func (rc *reqCtx) isSelf(scheme, host, port string) bool {
 type countWriter struct {
 	http.ResponseWriter
 	st     *Stats
+	tr     *monthTraffic // 本机本月流量（本机处理和转发都算）
 	relay  bool
 	n      int64
 	status int
@@ -653,6 +654,7 @@ func (c *countWriter) Write(b []byte) (int, error) {
 	}
 	n, err := c.ResponseWriter.Write(b)
 	c.n += int64(n)
+	c.tr.add(int64(n))
 	if c.relay {
 		c.st.RelayBytes.Add(int64(n))
 	} else {

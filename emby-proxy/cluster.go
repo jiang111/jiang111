@@ -34,6 +34,12 @@ type ClusterConfig struct {
 	Sticky        bool   `json:"sticky,omitempty"`         // 同一用户固定同一台（主节点设置，同步给从节点）
 	DirectStream  bool   `json:"direct_stream,omitempty"`  // 视频直连：推流请求 302 到负责节点的直连域名（主节点设置，同步给从节点）
 	DirectHost    string `json:"direct_host,omitempty"`    // 本机直连域名（只解析到本机，证书要覆盖它），各节点独立
+
+	// 流量均衡（主节点）：每天按各台本月用量重算权重，权重随节点列表下发（见 balance.go）
+	Balance     bool               `json:"balance,omitempty"`
+	Weights     map[string]float64 `json:"weights,omitempty"`      // 节点名 → 当前权重（自动计算）
+	Factors     map[string]float64 `json:"factors,omitempty"`      // 节点名 → 手动系数（该台还有其它耗流量的服务时调低）
+	LastBalance string             `json:"last_balance,omitempty"` // 上次重算的日期
 }
 
 // syncPayload 是主节点下发的内容。
@@ -56,7 +62,7 @@ type syncPayload struct {
 type nodeInfo struct {
 	Name     string `json:"name"`
 	IP       string `json:"ip"`
-	Addr     string `json:"addr"` // 用于节点间转发的地址
+	Addr     string `json:"addr"`           // 用于节点间转发的地址
 	Host     string `json:"host,omitempty"` // 节点的直连域名
 	LastSeen int64  `json:"last_seen"`
 	Version  string `json:"version"` // 节点当前持有的配置版本
@@ -349,20 +355,24 @@ func (c *Cluster) apply(p *syncPayload) error {
 // ---- 面板接口 ----
 
 type clusterView struct {
-	Role          string      `json:"role"`
-	Sticky        bool        `json:"sticky"`
-	DirectStream  bool        `json:"direct_stream"`
-	DirectHost    string      `json:"direct_host,omitempty"`
-	AdvertiseAddr string      `json:"advertise_addr,omitempty"`
-	SelfName      string      `json:"self_name"`
-	Members       []Member    `json:"members,omitempty"`
-	Token         string      `json:"token,omitempty"`
-	MasterURL     string      `json:"master_url,omitempty"`
-	NodeName      string      `json:"node_name,omitempty"`
-	PanelURL      string      `json:"panel_url,omitempty"`
-	Version       string      `json:"version,omitempty"`
-	Nodes         []nodeInfo  `json:"nodes,omitempty"`
-	Status        *syncStatus `json:"status,omitempty"`
+	Role          string        `json:"role"`
+	Sticky        bool          `json:"sticky"`
+	DirectStream  bool          `json:"direct_stream"`
+	DirectHost    string        `json:"direct_host,omitempty"`
+	Balance       bool          `json:"balance"`
+	BalanceNodes  []balanceNode `json:"balance_nodes,omitempty"` // 主节点：各成员本月流量、权重、系数
+	LastBalance   string        `json:"last_balance,omitempty"`
+	Traffic       trafficInfo   `json:"traffic"` // 本机本月反代流量
+	AdvertiseAddr string        `json:"advertise_addr,omitempty"`
+	SelfName      string        `json:"self_name"`
+	Members       []Member      `json:"members,omitempty"`
+	Token         string        `json:"token,omitempty"`
+	MasterURL     string        `json:"master_url,omitempty"`
+	NodeName      string        `json:"node_name,omitempty"`
+	PanelURL      string        `json:"panel_url,omitempty"`
+	Version       string        `json:"version,omitempty"`
+	Nodes         []nodeInfo    `json:"nodes,omitempty"`
+	Status        *syncStatus   `json:"status,omitempty"`
 }
 
 func (c *Cluster) view() clusterView {
@@ -370,10 +380,15 @@ func (c *Cluster) view() clusterView {
 	m.mu.RLock()
 	cc := m.cfg.Cluster
 	v := clusterView{Role: cc.Role, MasterURL: cc.MasterURL, NodeName: cc.NodeName, PanelURL: m.cfg.PanelURL,
-		Sticky: cc.Sticky, DirectStream: cc.DirectStream, DirectHost: cc.DirectHost, AdvertiseAddr: cc.AdvertiseAddr}
+		Sticky: cc.Sticky, DirectStream: cc.DirectStream, DirectHost: cc.DirectHost, AdvertiseAddr: cc.AdvertiseAddr,
+		Balance: cc.Balance, LastBalance: cc.LastBalance}
 	m.mu.RUnlock()
 	v.SelfName = m.selfName()
 	v.Members = m.members()
+	v.Traffic.Month, v.Traffic.Bytes = m.traffic.get(time.Now())
+	if cc.Role == "master" && cc.Balance {
+		v.BalanceNodes = c.balanceView(v.Members, v.SelfName)
+	}
 	switch cc.Role {
 	case "master":
 		v.Token = cc.Token
@@ -394,17 +409,19 @@ func (c *Cluster) view() clusterView {
 
 func (a *Admin) clusterSettings(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Role          string  `json:"role"`
-		MasterURL     string  `json:"master_url"`
-		Token         string  `json:"token"`
-		NodeName      string  `json:"node_name"`
-		PanelURL      *string `json:"panel_url"`
-		NewToken      bool    `json:"new_token"`
-		AdvertiseAddr string  `json:"advertise_addr"`
-		Sticky        *bool   `json:"sticky"`
-		DirectStream  *bool   `json:"direct_stream"`
-		DirectHost    *string `json:"direct_host"`
-		AllowInsecure bool    `json:"allow_http"`
+		Role          string             `json:"role"`
+		MasterURL     string             `json:"master_url"`
+		Token         string             `json:"token"`
+		NodeName      string             `json:"node_name"`
+		PanelURL      *string            `json:"panel_url"`
+		NewToken      bool               `json:"new_token"`
+		AdvertiseAddr string             `json:"advertise_addr"`
+		Sticky        *bool              `json:"sticky"`
+		DirectStream  *bool              `json:"direct_stream"`
+		DirectHost    *string            `json:"direct_host"`
+		Balance       *bool              `json:"balance"`
+		Factors       map[string]float64 `json:"factors"`
+		AllowInsecure bool               `json:"allow_http"`
 	}
 	if err := readJSON(r, &body); err != nil {
 		writeErr(w, 400, "请求格式错误")
@@ -433,6 +450,12 @@ func (a *Admin) clusterSettings(w http.ResponseWriter, r *http.Request) {
 	if strings.ContainsAny(body.AdvertiseAddr, "/ ") || len(body.AdvertiseAddr) > 64 {
 		writeErr(w, 400, "本机公网地址只填 IP（或 IP:端口），例如 203.0.113.10")
 		return
+	}
+	for name, f := range body.Factors {
+		if f != 0 && (f < factorMin || f > factorMax) || len(name) > 64 {
+			writeErr(w, 400, fmt.Sprintf("节点「%s」的系数要在 %g～%g 之间", name, factorMin, factorMax))
+			return
+		}
 	}
 	var directHost string
 	if body.DirectHost != nil {
@@ -475,6 +498,20 @@ func (a *Admin) clusterSettings(w http.ResponseWriter, r *http.Request) {
 		if body.DirectStream != nil {
 			cc.DirectStream = *body.DirectStream
 		}
+		if prevRole != "master" && body.Balance == nil {
+			cc.Balance = true // 默认开启「流量均衡」
+		}
+		if body.Balance != nil {
+			cc.Balance = *body.Balance
+		}
+		if body.Factors != nil {
+			cc.Factors = map[string]float64{}
+			for name, f := range body.Factors {
+				if f > 0 && f != 1 {
+					cc.Factors[name] = f
+				}
+			}
+		}
 		cc.MasterURL = ""
 		cc.NodeName = strings.TrimSpace(body.NodeName)
 	case "node":
@@ -488,6 +525,7 @@ func (a *Admin) clusterSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	default:
 		cc.Token, cc.MasterURL, cc.NodeName, cc.Sticky, cc.DirectStream = "", "", "", false, false
+		cc.Balance, cc.Weights, cc.Factors, cc.LastBalance = false, nil, nil, ""
 		m.cfg.Members = nil
 	}
 	cc.AdvertiseAddr = body.AdvertiseAddr

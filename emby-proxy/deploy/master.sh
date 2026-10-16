@@ -217,7 +217,7 @@ if [ -n "$MASTER_HOST" ]; then
         warn "$DIRECT_HOST 没有解析到 $PUBLIC_IP，不启用本机直连域名（视频请求落到本机时仍会转发）"
         DIRECT_HOST=""
     fi
-    api PUT /api/cluster "{\"role\":\"master\",\"node_name\":\"$NODE_NAME\",\"advertise_addr\":\"$PUBLIC_IP\",\"panel_url\":\"https://$MASTER_HOST:$PANEL_PORT\",\"sticky\":true,\"direct_stream\":true,\"direct_host\":\"$DIRECT_HOST\"}" \
+    api PUT /api/cluster "{\"role\":\"master\",\"node_name\":\"$NODE_NAME\",\"advertise_addr\":\"$PUBLIC_IP\",\"panel_url\":\"https://$MASTER_HOST:$PANEL_PORT\",\"sticky\":true,\"direct_stream\":true,\"balance\":true,\"direct_host\":\"$DIRECT_HOST\"}" \
         | must_ok "设置主节点"
     echo "面板 HTTPS：https://$MASTER_HOST:$PANEL_PORT"
     echo "本机直连域名：${DIRECT_HOST:-未启用}"
