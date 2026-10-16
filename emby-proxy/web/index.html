@@ -459,6 +459,17 @@ function nginxLine() {
   return '<span class="kv">● 配置已更新，等待 nginx 应用（约 15 秒）…</span>';
 }
 
+function renderFailover(c) {
+  const fo = c.failover || {peers: []};
+  const peers = fo.peers || [];
+  return `<div class="f"><label>故障接管</label>${peers.length ? `<table><thead><tr><th>节点</th><th>地址</th><th>状态</th><th>DNS</th><th>最近错误</th></tr></thead><tbody>${peers.map(p =>
+    `<tr><td>${esc(p.name)}</td><td>${esc(p.addr)}</td><td>${p.down ? `<span class="bad">失联（${fmtAgo(p.since)}起）</span>` : '<span class="ok">在线</span>'}</td><td>${p.in_dns == null ? '<span class="kv">—</span>' : p.in_dns ? '在' : '<span class="bad">已移除</span>'}</td><td>${esc(p.last_err || '')}</td></tr>`).join('')}</tbody></table>`
+    : '<div class="kv">还没有其它节点</div>'}
+    <small>每 10 秒探测其它节点，连续 3 次失败判定失联，它的用户改由本机负责${fo.dns ? `；失联满 1 分钟从 ${esc(fo.dns_name)} 删除它的 IP，恢复满 1 分钟加回` : '；没开启自动改 DNS 时，解析到失联节点的客户端会连不上'}。</small>
+    ${fo.dns_err ? `<div class="err">${esc(fo.dns_err)}</div>` : ''}
+    ${(fo.dns_log || []).length ? `<div class="kv" style="white-space:normal">${fo.dns_log.slice().reverse().map(esc).join('<br>')}</div>` : ''}</div>`;
+}
+
 function renderCluster() {
   const c = S.cluster || {role: ''};
   const role = c.role || '';
@@ -479,12 +490,20 @@ function renderCluster() {
       ${c.balance && (c.balance_nodes || []).length ? `<div class="f"><label>流量均衡（${esc(c.traffic.month)}）</label><table><thead><tr><th>节点</th><th>本月反代流量</th><th>当前权重</th><th>手动系数</th></tr></thead><tbody>${c.balance_nodes.map(n =>
         `<tr><td>${esc(n.name)}</td><td>${n.reported ? fmtBytes(n.bytes) : '<span class="kv">未上报</span>'}</td><td>${n.weight.toFixed(2)}</td><td><input type="number" data-factor="${esc(n.name)}" value="${n.factor}" min="0.1" max="10" step="0.1" style="width:80px"></td></tr>`).join('')}</tbody></table>
         <div class="row" style="margin-top:6px"><small style="flex:1">上次重算：${esc(c.last_balance || '还没有')}。立即重新分配会让部分用户换到另一台（上游会看到 IP 变化），看片时不要点。</small><button type="button" class="btn sm" id="btnRebalance">立即重新分配</button></div></div>` : ''}
+      ${renderFailover(c)}
+      <label class="chk"><input type="checkbox" name="dns_on" ${c.failover && c.failover.dns ? 'checked' : ''}><span><b>自动改 DNS</b>：节点失联时由活着的节点通过 Cloudflare API 把它从客户端域名删掉，恢复后加回（主节点挂了由从节点动手）。令牌会同步到各节点，只给这个域名的 DNS 编辑权限。</span></label>
+      <div class="row" style="gap:10px;align-items:flex-start">
+        <div class="f" style="flex:1"><label>Cloudflare API 令牌</label><input type="password" name="dns_token" autocomplete="off" placeholder="${c.dns_token ? '已保存（' + esc(c.dns_token) + '），留空不修改' : '只需 DNS 编辑权限'}"></div>
+        <div class="f" style="flex:1"><label>Zone ID</label><input type="text" name="dns_zone_id" value="${esc(c.dns_zone_id || '')}"></div>
+        <div class="f" style="flex:1"><label>客户端域名</label><input type="text" name="dns_name" value="${esc((c.failover && c.failover.dns_name) || '')}" placeholder="默认用站点的客户端访问域名"></div>
+      </div>
       ${c.sticky ? `<div class="kv" style="white-space:normal;margin-bottom:10px">参与分配的节点：${(c.members || []).map(m => esc(m.name) + '（' + esc(m.addr) + (m.host ? '，直连 ' + esc(m.host) : '') + (m.weight && m.weight !== 1 ? '，权重 ' + m.weight : '') + '）').join('、') || '无'}${!c.advertise_addr ? '。<span class="bad">本机没填公网 IP，主节点不参与分配</span>（如果 DNS 里也有主节点，请填写）' : ''}</div>` : ''}`;
   } else if (role === 'node') {
     detail = `<div class="f"><label>主节点面板地址</label><input type="text" name="master_url" value="${esc(c.master_url)}" placeholder="https://master.example.com:8443"></div>
       <div class="f"><label>同步令牌</label><input type="text" name="token" placeholder="${c.token ? '已保存（' + esc(c.token) + '），留空不修改' : '主节点「设置 → 多服务器同步」里复制'}"></div>
       <div class="kv" style="white-space:normal">${syncLine()}</div>
-      <div class="kv">本机本月反代流量（${esc(c.traffic ? c.traffic.month : '')}）：${fmtBytes(c.traffic ? c.traffic.bytes : 0)}，已上报给主节点做流量均衡</div>`;
+      <div class="kv">本机本月反代流量（${esc(c.traffic ? c.traffic.month : '')}）：${fmtBytes(c.traffic ? c.traffic.bytes : 0)}，已上报给主节点做流量均衡</div>
+      ${renderFailover(c)}`;
   }
   return `<form class="panel" id="cf"><h3>多服务器同步</h3>
     <div class="help" style="margin-bottom:10px">多台服务器用同一个域名做负载均衡时：一台设为<b>主节点</b>，其余设为<b>从节点</b>。从节点每 30 秒从主节点同步站点、设置和证书，nginx 配置自动更新。</div>
@@ -519,6 +538,15 @@ function bindCluster() {
     if (role === 'master' && f.sticky) body.sticky = f.sticky.checked;
     if (role === 'master' && f.direct_stream) body.direct_stream = f.direct_stream.checked;
     if (role === 'master' && f.balance) body.balance = f.balance.checked;
+    if (role === 'master' && f.dns_on) {
+      const had = !!(S.cluster.failover && S.cluster.failover.dns);
+      const tok = f.dns_token.value.trim(), zone = f.dns_zone_id.value.trim(), name = f.dns_name.value.trim();
+      if (!f.dns_on.checked) { if (had) body.dns_token = ''; }
+      else if (tok || !had || zone !== (S.cluster.dns_zone_id || '') || name !== ((S.cluster.failover && S.cluster.failover.dns_name) || '')) {
+        if (!tok && !had) { toast('请填写 Cloudflare API 令牌'); return; }
+        Object.assign(body, {dns_zone_id: zone, dns_name: name}, tok ? {dns_token: tok} : {});
+      }
+    }
     const factors = [...f.querySelectorAll('input[data-factor]')];
     if (role === 'master' && factors.length) body.factors = Object.fromEntries(factors.map(i => [i.dataset.factor, parseFloat(i.value) || 1]));
     if (role === 'node') Object.assign(body, {master_url: f.master_url.value, token: f.token.value});

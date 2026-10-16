@@ -316,6 +316,10 @@ var stripReqHeaders = []string{
 }
 
 func (s *SiteRT) serve(w http.ResponseWriter, r *http.Request, prefix string) {
+	if r.URL.Path == prefix+peerHealthPath { // 其它节点的健康探测（经 nginx），不访问上游
+		w.Write([]byte("ok"))
+		return
+	}
 	start := time.Now()
 	st := s.stats
 	ip := clientIP(r)

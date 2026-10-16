@@ -44,19 +44,20 @@ type ClusterConfig struct {
 
 // syncPayload 是主节点下发的内容。
 type syncPayload struct {
-	Sites         []*Site  `json:"sites"`
-	EntryURL      string   `json:"entry_url,omitempty"`
-	PublicHost    string   `json:"public_host,omitempty"`
-	PortBind      string   `json:"port_bind,omitempty"`
-	NginxCert     string   `json:"nginx_cert,omitempty"` // 主节点手动指定的证书路径（各节点需自备同路径文件）
-	NginxKey      string   `json:"nginx_key,omitempty"`
-	NginxIPv6     bool     `json:"nginx_ipv6,omitempty"`
-	ClusterSecret string   `json:"cluster_secret"`
-	Sticky        bool     `json:"sticky,omitempty"`
-	DirectStream  bool     `json:"direct_stream,omitempty"`
-	Members       []Member `json:"members,omitempty"`
-	CertPEM       []byte   `json:"cert_pem,omitempty"` // 主节点上传的证书（各节点写到自己的数据目录）
-	KeyPEM        []byte   `json:"key_pem,omitempty"`
+	Sites         []*Site      `json:"sites"`
+	EntryURL      string       `json:"entry_url,omitempty"`
+	PublicHost    string       `json:"public_host,omitempty"`
+	PortBind      string       `json:"port_bind,omitempty"`
+	NginxCert     string       `json:"nginx_cert,omitempty"` // 主节点手动指定的证书路径（各节点需自备同路径文件）
+	NginxKey      string       `json:"nginx_key,omitempty"`
+	NginxIPv6     bool         `json:"nginx_ipv6,omitempty"`
+	ClusterSecret string       `json:"cluster_secret"`
+	Sticky        bool         `json:"sticky,omitempty"`
+	DirectStream  bool         `json:"direct_stream,omitempty"`
+	DNS           *DNSFailover `json:"dns,omitempty"`
+	Members       []Member     `json:"members,omitempty"`
+	CertPEM       []byte       `json:"cert_pem,omitempty"` // 主节点上传的证书（各节点写到自己的数据目录）
+	KeyPEM        []byte       `json:"key_pem,omitempty"`
 }
 
 type nodeInfo struct {
@@ -118,7 +119,7 @@ func (c *Cluster) payload() ([]byte, string, error) {
 	p := syncPayload{
 		Sites: m.cfg.Sites, EntryURL: m.cfg.EntryURL, PublicHost: m.cfg.PublicHost, PortBind: m.cfg.PortBind,
 		ClusterSecret: m.cfg.ClusterSecret, NginxIPv6: m.cfg.NginxIPv6,
-		Sticky: m.cfg.Cluster.Sticky, DirectStream: m.cfg.Cluster.DirectStream, Members: members,
+		Sticky: m.cfg.Cluster.Sticky, DirectStream: m.cfg.Cluster.DirectStream, DNS: m.cfg.DNS, Members: members,
 	}
 	// 用的是上传的证书就把文件发下去；手动路径则只发路径
 	hostCert := filepath.Join(m.hostSSLDir(), "fullchain.pem")
@@ -336,6 +337,7 @@ func (c *Cluster) apply(p *syncPayload) error {
 	m.cfg.NginxIPv6 = p.NginxIPv6
 	m.cfg.Cluster.Sticky = p.Sticky
 	m.cfg.Cluster.DirectStream = p.DirectStream
+	m.cfg.DNS = p.DNS
 	m.cfg.Members = p.Members
 	if len(p.CertPEM) > 0 {
 		m.cfg.NginxCert, m.cfg.NginxKey = filepath.Join(m.hostSSLDir(), "fullchain.pem"), filepath.Join(m.hostSSLDir(), "privkey.pem")
@@ -362,7 +364,10 @@ type clusterView struct {
 	Balance       bool          `json:"balance"`
 	BalanceNodes  []balanceNode `json:"balance_nodes,omitempty"` // 主节点：各成员本月流量、权重、系数
 	LastBalance   string        `json:"last_balance,omitempty"`
-	Traffic       trafficInfo   `json:"traffic"` // 本机本月反代流量
+	Traffic       trafficInfo   `json:"traffic"`  // 本机本月反代流量
+	Failover      failoverView  `json:"failover"` // 故障接管：各节点探测状态、DNS 操作记录
+	DNSZoneID     string        `json:"dns_zone_id,omitempty"`
+	DNSToken      string        `json:"dns_token,omitempty"` // 只显示前 4 位
 	AdvertiseAddr string        `json:"advertise_addr,omitempty"`
 	SelfName      string        `json:"self_name"`
 	Members       []Member      `json:"members,omitempty"`
@@ -386,6 +391,15 @@ func (c *Cluster) view() clusterView {
 	v.SelfName = m.selfName()
 	v.Members = m.members()
 	v.Traffic.Month, v.Traffic.Bytes = m.traffic.get(time.Now())
+	v.Failover = m.failoverView()
+	m.mu.RLock()
+	if d := m.cfg.DNS; d != nil && cc.Role == "master" {
+		v.DNSZoneID = d.ZoneID
+		if len(d.Token) > 4 {
+			v.DNSToken = d.Token[:4] + "…"
+		}
+	}
+	m.mu.RUnlock()
 	if cc.Role == "master" && cc.Balance {
 		v.BalanceNodes = c.balanceView(v.Members, v.SelfName)
 	}
@@ -421,6 +435,9 @@ func (a *Admin) clusterSettings(w http.ResponseWriter, r *http.Request) {
 		DirectHost    *string            `json:"direct_host"`
 		Balance       *bool              `json:"balance"`
 		Factors       map[string]float64 `json:"factors"`
+		DNSToken      *string            `json:"dns_token"`   // 空字符串 = 关闭自动改 DNS
+		DNSZoneID     *string            `json:"dns_zone_id"` //
+		DNSName       *string            `json:"dns_name"`    // 默认用第一个站点客户端访问地址的域名
 		AllowInsecure bool               `json:"allow_http"`
 	}
 	if err := readJSON(r, &body); err != nil {
@@ -455,6 +472,52 @@ func (a *Admin) clusterSettings(w http.ResponseWriter, r *http.Request) {
 		if f != 0 && (f < factorMin || f > factorMax) || len(name) > 64 {
 			writeErr(w, 400, fmt.Sprintf("节点「%s」的系数要在 %g～%g 之间", name, factorMin, factorMax))
 			return
+		}
+	}
+	// 自动改 DNS（只在主节点设置）：保存前用令牌查一次记录，确认令牌、Zone ID、域名都对
+	var dns *DNSFailover
+	dnsSet := body.Role == "master" && (body.DNSToken != nil || body.DNSZoneID != nil || body.DNSName != nil)
+	if dnsSet {
+		a.m.mu.RLock()
+		cur := DNSFailover{}
+		if a.m.cfg.DNS != nil {
+			cur = *a.m.cfg.DNS
+		}
+		def := ""
+		for _, s := range a.m.cfg.Sites {
+			if u, err := url.Parse(s.PublicURL); err == nil && s.Mode == "port" && u.Hostname() != "" {
+				def = u.Hostname()
+				break
+			}
+		}
+		a.m.mu.RUnlock()
+		if body.DNSToken != nil {
+			cur.Token = strings.TrimSpace(*body.DNSToken)
+		}
+		if body.DNSZoneID != nil {
+			cur.ZoneID = strings.TrimSpace(*body.DNSZoneID)
+		}
+		if body.DNSName != nil {
+			cur.Name = strings.ToLower(strings.TrimSpace(*body.DNSName))
+		}
+		if cur.Name == "" {
+			cur.Name = def
+		}
+		if cur.Token != "" {
+			if cur.ZoneID == "" || cleanHost(cur.Name) == "" {
+				writeErr(w, 400, "自动改 DNS 需要填写 Zone ID 和客户端域名（如 emby.example.com）")
+				return
+			}
+			rs, err := cfListA(&cur)
+			if err != nil {
+				writeErr(w, 400, "Cloudflare 令牌校验失败: "+err.Error())
+				return
+			}
+			if len(rs) == 0 {
+				writeErr(w, 400, "Cloudflare 上没有 "+cur.Name+" 的 A 记录，请先按文档添加")
+				return
+			}
+			dns = &cur
 		}
 	}
 	var directHost string
@@ -504,6 +567,9 @@ func (a *Admin) clusterSettings(w http.ResponseWriter, r *http.Request) {
 		if body.Balance != nil {
 			cc.Balance = *body.Balance
 		}
+		if dnsSet {
+			m.cfg.DNS = dns
+		}
 		if body.Factors != nil {
 			cc.Factors = map[string]float64{}
 			for name, f := range body.Factors {
@@ -526,6 +592,7 @@ func (a *Admin) clusterSettings(w http.ResponseWriter, r *http.Request) {
 	default:
 		cc.Token, cc.MasterURL, cc.NodeName, cc.Sticky, cc.DirectStream = "", "", "", false, false
 		cc.Balance, cc.Weights, cc.Factors, cc.LastBalance = false, nil, nil, ""
+		m.cfg.DNS = nil
 		m.cfg.Members = nil
 	}
 	cc.AdvertiseAddr = body.AdvertiseAddr

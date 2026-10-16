@@ -30,6 +30,7 @@ type Manager struct {
 	listeners map[int]*http.Server
 	stats     map[string]*Stats
 	traffic   monthTraffic // 本月反代流量（流量均衡用）
+	fo        failover     // 故障接管：各节点探测状态
 
 	logs    *LogRing
 	trs     [3]*http.Transport // 按 tlsVerify / tlsIgnoreExpired / tlsInsecure

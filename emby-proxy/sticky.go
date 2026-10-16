@@ -168,7 +168,11 @@ func (s *SiteRT) directURL(r *http.Request, prefix string, owner Member) string 
 
 // ---- 节点暂时不可用标记 ----
 
+// peerDown：探测判定失联，或刚转发失败（1 分钟内）。
 func (m *Manager) peerDown(name string) bool {
+	if m.healthDown(name) {
+		return true
+	}
 	m.peerMu.Lock()
 	defer m.peerMu.Unlock()
 	return time.Now().Before(m.downUntil[name])

@@ -14,6 +14,7 @@
 #   NODE_NAME     本机名称（必填，各台唯一）
 #   PUBLIC_IP     本机公网 IP（必填）
 #   CF_Token / CF_Zone_ID  Cloudflare 令牌和 Zone ID，用 acme.sh 申请 *.$DOMAIN 通配符证书；不填则跳过（需自己在面板上传证书）
+#                 多服务器时也用于故障接管：节点失联时自动把它从 $EMBY_HOST 的 DNS 删掉、恢复后加回（DNS_FAILOVER=0 关闭）
 #   SITES         每行一个「名称=上游地址」，按顺序分配对外端口 FIRST_PORT、FIRST_PORT+1…（程序端口 +10000）
 #   FIRST_PORT    第一个站点的对外端口，默认 8001
 #   EMBY_HOST     客户端域名，默认 emby.$DOMAIN
@@ -221,6 +222,10 @@ if [ -n "$MASTER_HOST" ]; then
         | must_ok "设置主节点"
     echo "面板 HTTPS：https://$MASTER_HOST:$PANEL_PORT"
     echo "本机直连域名：${DIRECT_HOST:-未启用}"
+    if [ -n "$CF_Token" ] && [ -n "$CF_Zone_ID" ] && [ "${DNS_FAILOVER:-1}" = 1 ]; then
+        r=$(api PUT /api/cluster "{\"role\":\"master\",\"node_name\":\"$NODE_NAME\",\"advertise_addr\":\"$PUBLIC_IP\",\"dns_token\":\"$CF_Token\",\"dns_zone_id\":\"$CF_Zone_ID\",\"dns_name\":\"$EMBY_HOST\"}")
+        echo "$r" | grep -q '"ok":true' && echo "故障接管：已开启自动改 DNS（$EMBY_HOST）" || warn "故障接管：自动改 DNS 没有开启：$r"
+    fi
 fi
 
 step "添加站点"
