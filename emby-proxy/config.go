@@ -58,6 +58,8 @@ type Config struct {
 	Members       []Member      `json:"members,omitempty"` // 从节点：主节点下发的节点列表
 	DNS           *DNSFailover  `json:"dns,omitempty"`     // 故障接管：自动改 DNS（主节点填写，同步给从节点）
 	Sites         []*Site       `json:"sites"`
+	// 站点账号：站点 ID → 密文（见 account.go）。只在本机，不同步、不导出
+	Accounts map[string]string `json:"accounts,omitempty"`
 }
 
 func randHex(n int) string {

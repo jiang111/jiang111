@@ -157,9 +157,24 @@ pre.out{white-space:pre-wrap;word-break:break-all;background:var(--chip);border-
       <label class="chk"><input type="checkbox" name="insecure_tls"><span>完全不校验上游 HTTPS 证书（自签证书等）</span></label>
       <div class="f"><label>备注</label><input type="text" name="remark"></div>
     </details>
+    <div class="f">
+      <label>Emby 账号（可选，只做记录）</label>
+      <div class="row"><input type="text" name="acct_user" placeholder="用户名" autocomplete="off" spellcheck="false"><input type="password" name="acct_pass" placeholder="密码" autocomplete="new-password"><button type="button" class="btn" id="btnReveal">显示</button><button type="button" class="btn" id="btnCopyPw">复制</button></div>
+      <div class="err" id="acctErr"></div>
+      <small>只保存在本机并加密，不同步给从节点、不随导出；显示或复制密码要再输一次面板密码。用户名和密码都清空表示删除。</small>
+    </div>
     <label class="chk"><input type="checkbox" name="enabled"><span>启用</span></label>
     <div class="err" id="ferr"></div>
     <div class="foot"><button type="button" class="btn" id="btnCancel">取消</button><button type="submit" class="btn pri">保存</button></div>
+  </form>
+</div>
+
+<div class="mask" id="pwMask">
+  <form class="modal" id="pwForm" style="max-width:360px" autocomplete="off">
+    <h2>验证面板密码</h2>
+    <div class="f"><input type="password" name="pw" placeholder="面板密码" autocomplete="off"><small>查看站点账号的密码前需要再确认一次。</small></div>
+    <div class="err" id="pwErr"></div>
+    <div class="foot"><button type="button" class="btn" id="pwCancel">取消</button><button type="submit" class="btn pri">确定</button></div>
   </form>
 </div>
 
@@ -289,6 +304,7 @@ function renderSites() {
         <div class="chips"><span class="chip">${esc(modeTxt)}</span>
           <span class="chip ${s.stream_mode === 'proxy' ? 'g' : 'w'}">${s.stream_mode === 'proxy' ? '推流中转' : '推流直连'}</span>
           ${hosts.length ? `<span class="chip" title="${esc(hosts.join('\n'))}">推流域名 ${hosts.length}</span>` : ''}
+          ${s.account ? (s.account.error ? '<span class="chip w" title="账号无法解密">账号</span>' : '<span class="chip" title="已记录账号">账号</span>') : ''}
           ${s.forward_ip ? '<span class="chip">传真实IP</span>' : ''}${s.insecure_tls ? '<span class="chip w">不校验证书</span>' : s.ignore_expired ? '<span class="chip w">忽略证书过期</span>' : ''}</div>
         <div class="addr"><code title="${esc(addr)}">${esc(addr)}</code><button class="btn sm" data-act="copy" data-v="${esc(addr)}">复制</button></div>
         <div class="kv">上游 <b>${esc(s.upstream)}</b></div>
@@ -362,6 +378,13 @@ function openForm(s) {
   f.headers.value = Object.entries(v.headers || {}).map(([k, x]) => `${k}: ${x}`).join('\n');
   f.routes.value = (v.routes || []).map(r => `${r.path} => ${r.target}`).join('\n');
   f.forward_ip.checked = !!v.forward_ip; f.insecure_tls.checked = !!v.insecure_tls; f.ignore_expired.checked = !!v.ignore_expired; f.enabled.checked = v.enabled !== false;
+  const acc = (s && s.account) || null;
+  clearReveal();
+  f.acct_user.value = (acc && acc.username) || '';
+  f.acct_pass.value = '';
+  f.acct_pass.placeholder = acc && acc.has_password ? '已设置，留空不修改' : '密码';
+  $('#btnReveal').style.display = $('#btnCopyPw').style.display = acc && acc.has_password && !acc.error ? '' : 'none';
+  $('#acctErr').textContent = (acc && acc.error) || '';
   f.querySelector(`input[name=mode][value=${v.mode}]`).checked = true;
   f.querySelector(`input[name=stream_mode][value=${v.stream_mode || 'proxy'}]`).checked = true;
   if (!v.port && v.mode !== 'port') f.port.value = nextPort();
@@ -370,7 +393,60 @@ function openForm(s) {
   $('#mask').classList.add('show');
   setTimeout(() => f.name.focus(), 50);
 }
-function closeForm() { $('#mask').classList.remove('show'); }
+function closeForm() { clearReveal(); $('#form').acct_pass.value = ''; $('#mask').classList.remove('show'); }
+
+// ---- 站点账号：显示 / 复制密码前再验证一次面板密码 ----
+let pwResolve = null, revealTimer = null, revealed = null;
+function askPanelPassword() {
+  const f = $('#pwForm');
+  f.pw.value = ''; $('#pwErr').textContent = '';
+  $('#pwMask').classList.add('show');
+  setTimeout(() => f.pw.focus(), 50);
+  return new Promise(res => { pwResolve = res; });
+}
+function closePw(v) {
+  $('#pwForm').pw.value = '';
+  $('#pwMask').classList.remove('show');
+  if (pwResolve) { pwResolve(v); pwResolve = null; }
+}
+$('#pwCancel').onclick = () => closePw(null);
+$('#pwMask').addEventListener('mousedown', e => { if (e.target.id === 'pwMask') closePw(null); });
+$('#pwForm').onsubmit = e => { e.preventDefault(); closePw(e.target.pw.value); };
+// 拿到明文；面板密码错误时留在验证框里重试
+async function revealAccount() {
+  for (;;) {
+    const pw = await askPanelPassword();
+    if (pw === null) return null;
+    try { return await api('POST', `/api/sites/${editing}/account/reveal`, {password: pw}); }
+    catch (err) {
+      if (!/面板密码错误/.test(err.message)) { $('#acctErr').textContent = err.message; return null; }
+      toast(err.message);
+    }
+  }
+}
+// 30 秒后重新打码；没被改过的明文从输入框清掉（留空 = 不修改）
+function clearReveal() {
+  clearTimeout(revealTimer);
+  const p = $('#form').acct_pass;
+  if (revealed !== null && p.value === revealed) p.value = '';
+  p.type = 'password'; revealed = null;
+  $('#btnReveal').textContent = '显示';
+}
+$('#btnReveal').onclick = async () => {
+  if (revealed !== null) return clearReveal();
+  const r = await revealAccount();
+  if (!r) return;
+  const p = $('#form').acct_pass;
+  revealed = r.password; p.value = r.password; p.type = 'text';
+  $('#btnReveal').textContent = '隐藏';
+  revealTimer = setTimeout(clearReveal, 30000);
+};
+$('#btnCopyPw').onclick = async () => {
+  const r = await revealAccount();
+  if (!r) return;
+  try { await navigator.clipboard.writeText(r.password); toast('已复制密码'); }
+  catch (err) { toast('复制失败：浏览器不允许访问剪贴板，请用「显示」'); }
+};
 function syncMode() {
   const mode = $('#form').querySelector('input[name=mode]:checked').value;
   document.querySelectorAll('[data-mode]').forEach(el => el.style.display = el.dataset.mode === mode ? '' : 'none');
@@ -378,7 +454,10 @@ function syncMode() {
 document.querySelectorAll('#form input[name=mode]').forEach(r => r.onchange = syncMode);
 $('#btnCancel').onclick = closeForm;
 $('#mask').addEventListener('mousedown', e => { if (e.target.id === 'mask') closeForm(); });
-document.addEventListener('keydown', e => { if (e.key === 'Escape') closeForm(); });
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Escape') return;
+  if ($('#pwMask').classList.contains('show')) closePw(null); else closeForm();
+});
 $('#btnTest').onclick = async () => {
   const f = $('#form');
   $('#testRes').innerHTML = '测试中…';
@@ -402,6 +481,13 @@ $('#form').onsubmit = async e => {
   };
   try {
     const r = editing ? await api('PUT', '/api/sites/' + editing, body) : await api('POST', '/api/sites', body);
+    const old = editing && (S.sites.find(x => x.id === editing) || {}).account;
+    editing = r.id;
+    const au = f.acct_user.value.trim(), ap = f.acct_pass.value;
+    try {
+      if (au || ap) await api('PUT', `/api/sites/${r.id}/account`, {username: au, password: ap});
+      else if (old && !old.error) await api('DELETE', `/api/sites/${r.id}/account`);
+    } catch (err) { await load(); $('#ferr').textContent = '站点已保存，账号没有保存：' + err.message; return; }
     closeForm(); await load();
     toast(r.error ? '已保存，但：' + r.error : '已保存');
   } catch (err) { $('#ferr').textContent = err.message; }

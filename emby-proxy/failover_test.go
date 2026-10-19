@@ -293,6 +293,50 @@ func TestDNSFailoverSafety(t *testing.T) {
 	}
 }
 
+// 只做控制的主节点（不填本机公网地址）：不参与分配；节点失联满 1 分钟就删，不按名字错开；
+// 记录被删光时不会把自己加进去，只加回健康的节点。
+func TestDNSFailoverControlMaster(t *testing.T) {
+	cf := newFakeCF(t, "203.0.113.1", "203.0.113.2")
+	cfg := &Config{
+		Cluster: ClusterConfig{Role: "master", NodeName: "ctl", Sticky: true, Token: "t"},
+		Sites:   []*Site{{ID: "s1", Name: "x", Enabled: true, Mode: "port", Port: 18001, PublicURL: "https://emby.example.com:8001", Upstream: "https://u.example.net"}},
+		DNS:     &DNSFailover{Token: "good-token", ZoneID: "zone1", Name: "emby.example.com"},
+	}
+	m := NewManager(filepath.Join(t.TempDir(), "c.json"), cfg)
+	c := newCluster(m)
+	for name, ip := range map[string]string{"A": "203.0.113.1", "B": "203.0.113.2"} {
+		c.nodes[name] = &nodeInfo{Name: name, Addr: ip, LastSeen: time.Now().Unix()}
+	}
+	if ms := m.members(); len(ms) != 2 || ms[0].Name != "A" || ms[1].Name != "B" {
+		t.Fatalf("control-only master should not be a member: %+v", ms)
+	}
+	bDown := func(_, addr string) error {
+		if addr == "203.0.113.2" {
+			return errors.New("refused")
+		}
+		return nil
+	}
+	t0 := time.Unix(4_000_000, 0)
+	for i := 0; i < 3; i++ {
+		m.probePeers(t0, bDown)
+	}
+	m.dnsFailover(t0.Add(61 * time.Second)) // 名字排最后，但不用等错开时间
+	if got := cf.ips(); len(got) != 1 || got[0] != "203.0.113.1" {
+		t.Fatalf("B should be removed after %v: %v", dnsDelay, got)
+	}
+
+	cf.mu.Lock()
+	cf.recs = map[string]string{}
+	cf.mu.Unlock()
+	m.fo.mu.Lock()
+	m.fo.dnsTime = 0
+	m.fo.mu.Unlock()
+	m.dnsFailover(t0.Add(71 * time.Second))
+	if got := cf.ips(); len(got) != 1 || got[0] != "203.0.113.1" {
+		t.Fatalf("empty records: only healthy A should be added: %v", got)
+	}
+}
+
 // 主节点设置自动改 DNS：先校验令牌；面板只显示令牌前 4 位；随同步下发；空令牌关闭。
 func TestDNSFailoverSettings(t *testing.T) {
 	newFakeCF(t, "203.0.113.1")

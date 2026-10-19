@@ -339,6 +339,7 @@ func (c *Cluster) apply(p *syncPayload) error {
 	m.cfg.Cluster.DirectStream = p.DirectStream
 	m.cfg.DNS = p.DNS
 	m.cfg.Members = p.Members
+	m.cfg.Accounts = nil // 站点账号只在主节点（例如主节点改成从节点时清掉）
 	if len(p.CertPEM) > 0 {
 		m.cfg.NginxCert, m.cfg.NginxKey = filepath.Join(m.hostSSLDir(), "fullchain.pem"), filepath.Join(m.hostSSLDir(), "privkey.pem")
 	} else {

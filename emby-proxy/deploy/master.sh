@@ -12,7 +12,7 @@
 # 参数：
 #   DOMAIN        根域名（必填），客户端用 emby.$DOMAIN，主节点面板用 master.$DOMAIN
 #   NODE_NAME     本机名称（必填，各台唯一）
-#   PUBLIC_IP     本机公网 IP（必填）
+#   PUBLIC_IP     本机公网 IP（必填；SERVE=0 时不需要）
 #   CF_Token / CF_Zone_ID  Cloudflare 令牌和 Zone ID，用 acme.sh 申请 *.$DOMAIN 通配符证书；不填则跳过（需自己在面板上传证书）
 #                 多服务器时也用于故障接管：节点失联时自动把它从 $EMBY_HOST 的 DNS 删掉、恢复后加回（DNS_FAILOVER=0 关闭）
 #   SITES         每行一个「名称=上游地址」，按顺序分配对外端口 FIRST_PORT、FIRST_PORT+1…（程序端口 +10000）
@@ -22,6 +22,8 @@
 #   PANEL_PORT    主节点面板 HTTPS 端口，默认 8443
 #   DIRECT_HOST   本机直连域名（只解析到本机），默认 $NODE_NAME.$DOMAIN；解析不到本机 IP 时不启用。设为空字符串关闭
 #                 视频直连：客户端落到非负责节点时，视频请求 302 到负责节点的直连域名，视频只经过一台服务器
+#   SERVE=0       本机只做控制（面板、同步、统计汇总、流量均衡、改 DNS），不参与分配、不接客户端：
+#                 不填本机公网地址、不配直连域名、不放行站点端口，$EMBY_HOST 不要解析到本机，用户全由从节点负责
 #   IPV6=1        nginx 同时监听 IPv6（所有服务器都有 IPv6 时才开）
 #   SKIP_INSTALL=1 / SKIP_ACME=1 / SKIP_FIREWALL=1  跳过对应步骤（重复执行时用）
 #
@@ -31,7 +33,12 @@ set -euo pipefail
 
 DOMAIN=${DOMAIN:?请设置 DOMAIN，例如 DOMAIN=example.com}
 NODE_NAME=${NODE_NAME:?请设置 NODE_NAME，例如 NODE_NAME=hk-1}
-PUBLIC_IP=${PUBLIC_IP:?请设置 PUBLIC_IP（本机公网 IP）}
+SERVE=${SERVE:-1}
+if [ "$SERVE" = 0 ]; then
+    PUBLIC_IP=""
+else
+    PUBLIC_IP=${PUBLIC_IP:?请设置 PUBLIC_IP（本机公网 IP）}
+fi
 EMBY_HOST=${EMBY_HOST:-emby.$DOMAIN}
 MASTER_HOST=${MASTER_HOST-master.$DOMAIN}
 PANEL_PORT=${PANEL_PORT:-8443}
@@ -214,7 +221,10 @@ fi
 
 if [ -n "$MASTER_HOST" ]; then
     step "设为主节点"
-    if [ -n "$DIRECT_HOST" ] && ! resolves_to "$DIRECT_HOST" "$PUBLIC_IP"; then
+    if [ "$SERVE" = 0 ]; then
+        DIRECT_HOST=""
+        echo "本机只做控制，不参与分配"
+    elif [ -n "$DIRECT_HOST" ] && ! resolves_to "$DIRECT_HOST" "$PUBLIC_IP"; then
         warn "$DIRECT_HOST 没有解析到 $PUBLIC_IP，不启用本机直连域名（视频请求落到本机时仍会转发）"
         DIRECT_HOST=""
     fi
@@ -238,7 +248,7 @@ while IFS= read -r line; do
     name=${line%%=*}; up=${line#*=}
     [ "$name" != "$line" ] || die "SITES 格式应为「名称=上游地址」：$line"
     inner=$((port + 10000))
-    fw_ports+=("$port")
+    [ "$SERVE" = 0 ] || fw_ports+=("$port")
     if echo " $existing " | grep -q " $inner "; then
         echo "  - $name：端口 $inner 已有站点，跳过"
     else

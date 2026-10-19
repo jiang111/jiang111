@@ -23,6 +23,7 @@ import (
 // 2. 配置了 Cloudflare 令牌时，失联满 dnsDelay（再按节点名排序错开 dnsStagger）后，活着的节点把它的 IP
 //    从客户端域名的 A 记录里删掉；恢复满 dnsDelay 后加回。主节点挂了时由从节点动手。
 //    删除前重新查询，至少留一条才删；记录被删光时把自己加回去。参与分配的节点都应在 DNS 里。
+//    主节点可以只做控制（不填本机公网地址）：不参与分配、不在 DNS 里，节点失联时由它第一个动手。
 
 const (
 	peerHealthPath = "/__emby_proxy/health"
@@ -277,6 +278,7 @@ func (m *Manager) dnsFailover(now time.Time) {
 	m.mu.RLock()
 	d := m.cfg.DNS
 	selfAddr := m.cfg.Cluster.AdvertiseAddr
+	controlOnly := m.cfg.Cluster.Role == "master" && selfAddr == ""
 	m.mu.RUnlock()
 	if !d.enabled() {
 		return
@@ -299,6 +301,11 @@ func (m *Manager) dnsFailover(now time.Time) {
 	// 另外每 5 分钟核对一次
 	sort.Strings(names)
 	rank := sort.SearchStrings(names, self)
+	if controlOnly {
+		// 只做控制的主节点不参与分配，不会和别人互删，不用错开；而且要它先动手：
+		// 失联节点超过 memberAliveWindow 没同步就被移出成员列表，其它从节点随之停止探测它，不会再去删它
+		rank = 0
+	}
 	wait := dnsDelay + time.Duration(rank)*dnsStagger
 	need := now.Unix()-m.fo.dnsTime >= 300
 	for _, p := range ps {

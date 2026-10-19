@@ -46,6 +46,9 @@ func (a *Admin) Handler() http.Handler {
 	mux.HandleFunc("POST /api/sites", a.auth(a.nodeReadOnly(a.saveSite)))
 	mux.HandleFunc("PUT /api/sites/{id}", a.auth(a.nodeReadOnly(a.saveSite)))
 	mux.HandleFunc("DELETE /api/sites/{id}", a.auth(a.nodeReadOnly(a.deleteSite)))
+	mux.HandleFunc("PUT /api/sites/{id}/account", a.auth(a.nodeReadOnly(a.saveAccount)))
+	mux.HandleFunc("DELETE /api/sites/{id}/account", a.auth(a.nodeReadOnly(a.deleteAccount)))
+	mux.HandleFunc("POST /api/sites/{id}/account/reveal", a.auth(a.nodeReadOnly(a.revealAccount)))
 	mux.HandleFunc("POST /api/sites/{id}/clear-stats", a.auth(a.clearStats))
 	mux.HandleFunc("POST /api/test", a.auth(a.test))
 	mux.HandleFunc("PUT /api/settings", a.auth(a.settings))
@@ -231,8 +234,9 @@ type siteView struct {
 	Status string    `json:"status"`
 	Error  string    `json:"error,omitempty"`
 	// 仅主节点：本机 + 各在线节点之和，及各节点拆分
-	ClusterStats *StatsView  `json:"cluster_stats,omitempty"`
-	NodeStats    []nodeStats `json:"node_stats,omitempty"`
+	ClusterStats *StatsView   `json:"cluster_stats,omitempty"`
+	NodeStats    []nodeStats  `json:"node_stats,omitempty"`
+	Account      *accountView `json:"account,omitempty"` // 只有用户名和有没有密码
 }
 
 func (a *Admin) state(w http.ResponseWriter, r *http.Request) {
@@ -245,11 +249,19 @@ func (a *Admin) state(w http.ResponseWriter, r *http.Request) {
 	if cluster.Role == "master" {
 		snap = a.cluster.statsSnapshot()
 	}
+	var key []byte
+	var keyErr error
+	m.mu.RLock()
+	hasAccounts := len(m.cfg.Accounts) > 0
+	m.mu.RUnlock()
+	if hasAccounts {
+		key, keyErr = m.accountKey(false)
+	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	views := []siteView{}
 	for _, s := range m.cfg.Sites {
-		v := siteView{Site: s, Status: "disabled"}
+		v := siteView{Site: s, Status: "disabled", Account: m.accountViewOf(s.ID, key, keyErr)}
 		if st := m.stats[s.ID]; st != nil {
 			v.Stats = st.view()
 		}
@@ -354,6 +366,7 @@ func (a *Admin) deleteSite(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	m.cfg.Sites = sites
+	m.pruneAccounts()
 	delete(m.stats, id)
 	m.reload()
 	m.mu.Unlock()

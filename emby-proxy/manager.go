@@ -45,6 +45,9 @@ type Manager struct {
 	certKey  string
 	certLeaf *x509.Certificate
 	started  time.Time
+
+	acctMu  sync.Mutex
+	acctKey []byte // 站点账号的加密密钥（data/account.key）
 }
 
 // TLS 校验方式
