@@ -432,6 +432,8 @@ location /magpiecdn { proxy_pass https://$arg_load.example.net; }
 - 额外转发规则：`/magpiecdn => https://{arg.load}.example.net`
 
 `{public_base}` 是客户端访问的地址；`{arg.load}` 取请求参数，只允许字母数字和 `-`。这类服务器用独立端口方式最稳。
+推流经本机中转时，上游把播放请求 302 回 `{public_base}/magpiecdn?...` 这类本站自己的地址，本机直接按转发规则解析后去取流，
+不会经公网绕回自己（否则视频多走一圈，「连接」里还会多出服务器自己的 IP）。
 
 ### 按 IP 限制的服务器
 

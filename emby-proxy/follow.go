@@ -15,6 +15,7 @@ import (
 type followTransport struct {
 	base http.RoundTripper
 	s    *SiteRT
+	rc   *reqCtx
 }
 
 func isDirectStreamPath(p string) bool {
@@ -88,17 +89,27 @@ func (t *followTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		if err != nil || (loc.Scheme != "http" && loc.Scheme != "https") || loc.Host == "" {
 			return resp, nil
 		}
+		// 跳回本站自己的地址：在本机解析成真正的目标（目标来自站点配置，不做下面的内网地址限制，也不记为推流域名）
+		self := false
+		if u, ok := t.rc.resolveSelf(loc); ok {
+			loc, self = u, true
+		}
 		host, port := splitHP(loc.Host, loc.Scheme)
-		if ip := net.ParseIP(host); ip != nil && (ip.IsLoopback() || ip.IsUnspecified() || ip.IsPrivate() || ip.IsLinkLocalUnicast()) {
-			if up := net.ParseIP(t.s.upHost); up == nil || !(up.IsLoopback() || up.IsPrivate()) {
+		if !self {
+			if t.rc.isSelf(loc.Scheme, host, port) { // 本站地址但解析不了（不在本站路径下、参数不合法）：交给客户端，不经公网打自己
 				return resp, nil
 			}
-		}
-		if host == "localhost" {
-			return resp, nil
-		}
-		if !t.s.isUpstream(loc.Scheme, host, port) {
-			t.s.learnHost(hostKey(loc.Scheme, host, port))
+			if ip := net.ParseIP(host); ip != nil && (ip.IsLoopback() || ip.IsUnspecified() || ip.IsPrivate() || ip.IsLinkLocalUnicast()) {
+				if up := net.ParseIP(t.s.upHost); up == nil || !(up.IsLoopback() || up.IsPrivate()) {
+					return resp, nil
+				}
+			}
+			if host == "localhost" {
+				return resp, nil
+			}
+			if !t.s.isUpstream(loc.Scheme, host, port) {
+				t.s.learnHost(hostKey(loc.Scheme, host, port))
+			}
 		}
 
 		next := req.Clone(req.Context())

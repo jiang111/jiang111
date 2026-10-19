@@ -341,6 +341,79 @@ func TestMagpieStyleRoute(t *testing.T) {
 	}
 }
 
+// 推流请求被上游 302 到本站自己的地址（{MagpieCDN}/magpiecdn?load=节点）时，服务端跟随要在本机解析，
+// 不能经公网绕回自己：这里的 p.example.com 解析不到，绕出去就会失败；访问者里也只能有客户端一个 IP。
+func TestFollowSelfRedirect(t *testing.T) {
+	var nodeHits atomic.Int32
+	node := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		nodeHits.Add(1)
+		if r.URL.Path != "/magpiecdn" || r.URL.Query().Get("id") != "1" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "video/mp4")
+		http.ServeContent(w, r, "a.mp4", time.Time{}, bytes.NewReader(bytes.Repeat([]byte("ab"), 500)))
+	}))
+	defer node.Close()
+	_, nodePort, _ := net.SplitHostPort(strings.TrimPrefix(node.URL, "http://"))
+
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/Videos/1/stream":
+			http.Redirect(w, r, r.Header.Get("MagpieCDN")+"/magpiecdn?load="+nodePort+"&id=1", http.StatusFound)
+		case "/Videos/2/stream": // 跳回本站的普通路径：直接访问上游
+			http.Redirect(w, r, r.Header.Get("MagpieCDN")+"/Videos/2/original?x=1", http.StatusFound)
+		case "/Videos/3/stream": // 参数不合法，解析不了：把跳转交给客户端
+			http.Redirect(w, r, r.Header.Get("MagpieCDN")+"/magpiecdn?load=evil.com&id=1", http.StatusFound)
+		case "/Videos/2/original":
+			w.Header().Set("Content-Type", "video/mp4")
+			http.ServeContent(w, r, "b.mp4", time.Time{}, bytes.NewReader(bytes.Repeat([]byte("cd"), 500)))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer up.Close()
+
+	site := &Site{ID: "m", Name: "magpie", Enabled: true, Upstream: up.URL, Mode: "path", Path: "mp", StreamMode: "proxy",
+		PublicURL: "https://p.example.com/mp",
+		Headers:   map[string]string{"MagpieCDN": "{public_base}"},
+		Routes:    []Route{{Path: "/magpiecdn", Target: "http://127.0.0.1:{arg.load}"}}}
+	cfg := &Config{Listen: ":0", AdminListen: ":0", Sites: []*Site{site}}
+	if err := validateSite(cfg, site); err != nil {
+		t.Fatal(err)
+	}
+	m := NewManager(filepath.Join(t.TempDir(), "c.json"), cfg)
+	m.mu.Lock()
+	m.reload()
+	m.mu.Unlock()
+	entry := httptest.NewServer(m)
+	defer entry.Close()
+	defer m.bg.Wait()
+
+	resp, b := get(t, entry.URL+"/mp/Videos/1/stream", "Range", "bytes=0-3")
+	if resp.StatusCode != 206 || b != "abab" || nodeHits.Load() != 1 {
+		t.Fatalf("route via self redirect: %d %q hits=%d", resp.StatusCode, b, nodeHits.Load())
+	}
+	resp, b = get(t, entry.URL+"/mp/Videos/2/stream", "Range", "bytes=0-3")
+	if resp.StatusCode != 206 || b != "cdcd" {
+		t.Fatalf("upstream via self redirect: %d %q", resp.StatusCode, b)
+	}
+	resp, _ = get(t, entry.URL+"/mp/Videos/3/stream", "Range", "bytes=0-3")
+	if resp.StatusCode != 302 || resp.Header.Get("Location") != "https://p.example.com/mp/magpiecdn?load=evil.com&id=1" {
+		t.Fatalf("unresolvable self redirect: %d %q", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	rt := m.sites["m"]
+	rt.hostsMu.Lock()
+	learned := len(rt.hosts)
+	rt.hostsMu.Unlock()
+	if learned != 0 {
+		t.Fatalf("self address learned as stream host: %v", rt.hosts)
+	}
+	if v := rt.stats.view(); len(v.IPs) != 1 || v.Requests != 3 {
+		t.Fatalf("ips %+v requests %d", v.IPs, v.Requests)
+	}
+}
+
 func TestAddScheme(t *testing.T) {
 	for in, want := range map[string]string{
 		"lite.example.uk": "https://lite.example.uk",

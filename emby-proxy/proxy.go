@@ -112,10 +112,10 @@ func newSiteRT(m *Manager, s Site, st *Stats) (*SiteRT, error) {
 	return rt, nil
 }
 
-func (s *SiteRT) roundTripper() http.RoundTripper {
+func (s *SiteRT) roundTripper(rc *reqCtx) http.RoundTripper {
 	base := s.m.transport(s.cfg.InsecureTLS, s.cfg.IgnoreExpired)
 	if s.cfg.StreamMode == "proxy" {
-		return &followTransport{base: base, s: s}
+		return &followTransport{base: base, s: s, rc: rc}
 	}
 	return base
 }
@@ -464,7 +464,7 @@ func (s *SiteRT) serve(w http.ResponseWriter, r *http.Request, prefix string) {
 				}
 			}
 		},
-		Transport:      s.roundTripper(),
+		Transport:      s.roundTripper(rc),
 		FlushInterval:  -1,
 		ModifyResponse: rc.modifyResponse,
 		ErrorHandler:   rc.errorHandler,
@@ -640,6 +640,49 @@ func (rc *reqCtx) isSelf(scheme, host, port string) bool {
 	}
 	h, p := splitHP(hp, ps)
 	return h == host && p == port && ps == scheme
+}
+
+// resolveSelf 把指向本站自己对外地址的跳转（如上游按 MagpieCDN 头生成的 {public_base}/magpiecdn?load=节点）
+// 解析成本机收到这个请求时实际要访问的地址：额外转发规则、/__ep/ 推流地址或上游。
+// 服务端跟随跳转时用它在本机直接解析，不经公网绕回自己（DNS 可能落到另一台，视频多走一圈，访问者里还会多出服务器自己的 IP）。
+func (rc *reqCtx) resolveSelf(loc *url.URL) (*url.URL, bool) {
+	h, p := splitHP(loc.Host, loc.Scheme)
+	pb, err := url.Parse(rc.publicBase)
+	if err != nil || !rc.isSelf(loc.Scheme, h, p) {
+		return nil, false
+	}
+	base := strings.TrimRight(pb.EscapedPath(), "/")
+	esc := loc.EscapedPath()
+	if !strings.HasPrefix(esc, base) {
+		return nil, false
+	}
+	rest := esc[len(base):]
+	if rest == "" {
+		rest = "/"
+	}
+	if rest[0] != '/' {
+		return nil, false
+	}
+	s := rc.s
+	target, out := s.upstream, s.upBase+rest
+	if strings.HasPrefix(rest, epPrefix) {
+		t, remainder, ok := s.parseEP(rest)
+		if !ok {
+			return nil, false
+		}
+		target, out = t, remainder
+	} else if t, matched, err := s.matchRoute(rest, &http.Request{URL: loc}); matched {
+		if err != nil {
+			return nil, false
+		}
+		s.learnRouteHost(t)
+		target, out = t, rest
+	}
+	unesc, err := url.PathUnescape(out)
+	if err != nil {
+		return nil, false
+	}
+	return &url.URL{Scheme: target.Scheme, Host: target.Host, Path: unesc, RawPath: out, RawQuery: loc.RawQuery}, true
 }
 
 // countWriter 统计下行流量；实现 Unwrap 以便 ReverseProxy 能 Flush / Hijack（WebSocket）。
