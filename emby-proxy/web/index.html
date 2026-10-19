@@ -768,7 +768,7 @@ function kaStatusHTML() {
   const t = v => v ? new Date(v * 1000).toLocaleString('zh-CN', {month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit'}) : '—';
   const rows = k.sites.map(s => `<tr><td>${esc(s.name)}</td>
     <td>${s.running ? '<span class="ok">执行中…</span>' : esc(s.last_success || '—')}</td>
-    <td>${k.config.enabled && s.next ? t(s.next) : '—'}</td>
+    <td>${k.config.enabled && s.next && !s.running ? t(s.next) : '—'}</td>
     <td class="p">${s.error ? `<span class="bad">${esc(s.error)}</span>` : s.last_result ? `<span class="${s.last_ok ? 'ok' : 'bad'}">${esc(s.last_result)}</span> <span class="kv">${t(s.last_time)}</span>` : '—'}</td></tr>`).join('');
   return `<h3>状态</h3>${k.sites.length ? `<div class="tw" style="max-height:none"><table><tr><th>站点</th><th>上次成功</th><th>下次执行</th><th>最近结果</th></tr>${rows}</table></div>`
     : '<div class="help">还没有站点保存了 Emby 账号，在「站点 → 编辑」里填写。</div>'}
