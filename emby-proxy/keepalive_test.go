@@ -48,7 +48,7 @@ func TestKaNext(t *testing.T) {
 // config.json 里的保号设置不完整时用默认值，不会让后台循环出错。
 func TestKeepaliveConfigDefaults(t *testing.T) {
 	m, _ := kaManager(t, "https://up.example.net", "alice", "pw")
-	m.cfg.Keepalive = &KeepaliveConfig{Enabled: true, WatchMin: 5, WatchMax: 2}
+	m.cfg.Keepalive = &KeepaliveConfig{Enabled: true, WatchMin: 5, WatchMax: 2, Sites: map[string]bool{"s1": true}}
 	c := m.keepaliveConfig()
 	d := defaultKeepalive()
 	if c.RunAt != d.RunAt || c.IntervalDays != d.IntervalDays || c.WatchMax != 5 || c.Retries != d.Retries || c.Client != d.Client {
@@ -259,7 +259,7 @@ func TestKeepaliveFailures(t *testing.T) {
 	}
 	// 失败后要等 retry_hours 才到期
 	m2.cfg.Keepalive = &cfg
-	m2.cfg.Keepalive.Enabled = true
+	m2.cfg.Keepalive.Enabled, m2.cfg.Keepalive.Sites = true, map[string]bool{"s1": true}
 	if due, _ := m2.ka.due(time.Now()); len(due) != 0 {
 		t.Fatal("failed site should wait before retrying")
 	}
@@ -268,7 +268,7 @@ func TestKeepaliveFailures(t *testing.T) {
 	}
 }
 
-// 到期判断：开关关闭、从节点不跑；没跑过的到点就跑；成功后等 N 天；用站点客户端地址。
+// 到期判断：总开关或站点开关关闭、从节点不跑；没跑过的到点就跑；成功后等 N 天；用站点客户端地址。
 func TestKeepaliveDue(t *testing.T) {
 	m, _ := kaManager(t, "https://up.example.net", "alice", "pw")
 	now := time.Now()
@@ -279,6 +279,13 @@ func TestKeepaliveDue(t *testing.T) {
 	cfg.Enabled, cfg.RunAt = true, "00:00"
 	m.cfg.Keepalive = &cfg
 	m.cfg.Sites[0].Enabled, m.cfg.Sites[0].PublicURL = true, "https://emby.example.com:8001"
+	if due, _ := m.ka.due(now); len(due) != 0 {
+		t.Fatal("site switch off: should not run")
+	}
+	if _, err := m.ka.runNow(); err == nil || !strings.Contains(err.Error(), "没有开启保号的站点") {
+		t.Fatalf("run now with site switch off: %v", err)
+	}
+	cfg.Sites = map[string]bool{"s1": true}
 	due, _ := m.ka.due(now)
 	if len(due) != 1 || due[0].Base != "https://emby.example.com:8001" {
 		t.Fatalf("never-run site should be due, via public URL: %+v", due)
@@ -307,7 +314,7 @@ func TestKeepaliveAPI(t *testing.T) {
 	do := func(method, path, body string) (int, string) {
 		return adminDo(t, srv, ck, method, path, body, csrfHeader, "1")
 	}
-	if code, out := do("POST", "/api/keepalive/run", ""); code != 409 || !strings.Contains(out, "没有站点") {
+	if code, out := do("POST", "/api/keepalive/run", ""); code != 409 || !strings.Contains(out, "没有开启保号的站点") {
 		t.Fatalf("run without accounts: %d %s", code, out)
 	}
 	body := func(extra string) string {
@@ -350,8 +357,32 @@ func TestKeepaliveAPI(t *testing.T) {
 	if len(ts) != 1 || ts[0].Acc.DeviceID != "DEV-1" || ts[0].Acc.Password != "pw2" {
 		t.Fatalf("device id should be kept: %+v", ts)
 	}
-	if _, st := do("GET", "/api/state", ""); !strings.Contains(st, `"keepalive":{`) || !strings.Contains(st, `"name":"A"`) {
+	if _, st := do("GET", "/api/state", ""); !strings.Contains(st, `"keepalive":{`) || !strings.Contains(st, `"name":"A","on":false`) {
 		t.Fatalf("keepalive view: %s", st)
+	}
+
+	// 站点开关：打开后状态里 on=true 且有下次执行时间；保存保号设置不影响站点开关；删除站点一起清掉
+	if code, _ := do("PUT", "/api/sites/nope/keepalive", `{"enabled":true}`); code != 404 {
+		t.Fatalf("unknown site: %d", code)
+	}
+	if code, out := do("PUT", "/api/sites/"+r.ID+"/keepalive", `{"enabled":true}`); code != 200 {
+		t.Fatal(out)
+	}
+	do("PUT", "/api/keepalive", body(`,"sites":{}`))
+	if !m.cfg.Keepalive.Sites[r.ID] {
+		t.Fatal("saving settings should keep site switches")
+	}
+	if _, st := do("GET", "/api/state", ""); !strings.Contains(st, `"name":"A","on":true`) || !strings.Contains(st, `"next":`) {
+		t.Fatalf("site on: %s", st)
+	}
+	do("PUT", "/api/sites/"+r.ID+"/keepalive", `{"enabled":false}`)
+	if m.cfg.Keepalive.Sites[r.ID] {
+		t.Fatal("site switch off")
+	}
+	do("PUT", "/api/sites/"+r.ID+"/keepalive", `{"enabled":true}`)
+	do("DELETE", "/api/sites/"+r.ID, "")
+	if len(m.cfg.Keepalive.Sites) != 0 {
+		t.Fatalf("delete site should drop its switch: %v", m.cfg.Keepalive.Sites)
 	}
 
 	m.mu.Lock()
@@ -359,6 +390,9 @@ func TestKeepaliveAPI(t *testing.T) {
 	m.mu.Unlock()
 	if code, _ := do("PUT", "/api/keepalive", body("")); code != 409 {
 		t.Fatalf("node should reject: %d", code)
+	}
+	if code, _ := do("PUT", "/api/sites/x/keepalive", `{"enabled":true}`); code != 409 {
+		t.Fatalf("node should reject site switch: %d", code)
 	}
 	if _, st := do("GET", "/api/state", ""); !strings.Contains(st, `"keepalive":null`) {
 		t.Fatal("node should not show keepalive")

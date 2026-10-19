@@ -135,7 +135,7 @@ func (a *Admin) importConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	m.cfg.Sites = sites
-	m.pruneAccounts()
+	m.pruneSiteData()
 	// 设置只应用文件里有值的项，只含站点的文件不会清空现有设置
 	for _, f := range []struct {
 		dst *string

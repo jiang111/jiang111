@@ -136,11 +136,8 @@ func (m *Manager) accountViewOf(id string, key []byte, keyErr error) *accountVie
 	return &accountView{Username: a.Username, Password: a.Password}
 }
 
-// pruneAccounts 删掉已不存在的站点的账号，调用方持有 m.mu 写锁。
-func (m *Manager) pruneAccounts() {
-	if len(m.cfg.Accounts) == 0 {
-		return
-	}
+// pruneSiteData 删掉已不存在的站点的账号和保号开关，调用方持有 m.mu 写锁。
+func (m *Manager) pruneSiteData() {
 	ids := map[string]bool{}
 	for _, s := range m.cfg.Sites {
 		ids[s.ID] = true
@@ -148,6 +145,13 @@ func (m *Manager) pruneAccounts() {
 	for id := range m.cfg.Accounts {
 		if !ids[id] {
 			delete(m.cfg.Accounts, id)
+		}
+	}
+	if m.cfg.Keepalive != nil {
+		for id := range m.cfg.Keepalive.Sites {
+			if !ids[id] {
+				delete(m.cfg.Keepalive.Sites, id)
+			}
 		}
 	}
 }

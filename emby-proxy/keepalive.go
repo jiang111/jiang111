@@ -26,6 +26,7 @@ import (
 //   登录（伪装 SenPlayer）→ 随机选片 → 上报开始播放 → 每隔几秒上报进度（同时限速拉流）→ 上报停止 → 退出登录。
 // 服务器地址用站点的客户端访问地址（和播放器一样经过反代，上游看到的仍是负责节点的 IP）；
 // 站点停用或没有客户端访问地址时直接连上游。
+// 每个站点有自己的开关；定时执行要总开关和站点开关都打开，「立即执行」只看站点开关。
 // 调度按站点：上次成功日期 + N 天的设定时刻执行；失败的过几小时只重跑它自己。同一批到期的并行执行，
 // 开始时间错开几秒，结束后推送一条 Telegram 汇总。
 // 只在主节点 / 单机运行（账号只在这里），设置和状态都不同步给从节点、不随导出。
@@ -40,7 +41,8 @@ type KeepaliveClient struct {
 }
 
 type KeepaliveConfig struct {
-	Enabled        bool            `json:"enabled"`
+	Enabled        bool            `json:"enabled"`         // 定时保号总开关
+	Sites          map[string]bool `json:"sites,omitempty"` // 各站点开关（站点 ID → 开），没有的视为关
 	IntervalDays   int             `json:"interval_days"`   // 每几天一次
 	RunAt          string          `json:"run_at"`          // 几点执行，HH:MM（容器时区）
 	WatchMin       int             `json:"watch_min"`       // 每次观看时长范围（分钟）
@@ -154,6 +156,10 @@ func (m *Manager) keepaliveConfig() KeepaliveConfig {
 		return d
 	}
 	c := *m.cfg.Keepalive
+	c.Sites = make(map[string]bool, len(m.cfg.Keepalive.Sites))
+	for id, on := range m.cfg.Keepalive.Sites {
+		c.Sites[id] = on
+	}
 	if !runAtRe.MatchString(c.RunAt) {
 		c.RunAt = d.RunAt
 	}
@@ -194,11 +200,12 @@ func kaNext(cfg KeepaliveConfig, st *kaSiteState, now time.Time) time.Time {
 
 type kaTarget struct {
 	ID, Name, Base string
+	On             bool // 站点的保号开关
 	Acc            siteAccount
 	Transport      http.RoundTripper
 }
 
-// targets 返回存了账号的站点（解不开的账号带 err）。
+// targets 返回存了账号的站点（不论开关），解不开的账号放在第二个返回值里。
 func (k *keepalive) targets() ([]kaTarget, map[string]string) {
 	m := k.m
 	key, keyErr := m.accountKey(false)
@@ -226,7 +233,7 @@ func (k *keepalive) targets() ([]kaTarget, map[string]string) {
 		if acc.DeviceID == "" {
 			acc.DeviceID = uuid5URL(s.Upstream + acc.Username)
 		}
-		t := kaTarget{ID: s.ID, Name: s.Name, Acc: acc}
+		t := kaTarget{ID: s.ID, Name: s.Name, Acc: acc, On: m.cfg.Keepalive != nil && m.cfg.Keepalive.Sites[s.ID]}
 		if s.Enabled && s.PublicURL != "" {
 			t.Base, t.Transport = s.PublicURL, m.trs[tlsVerify]
 		} else {
@@ -266,7 +273,7 @@ func (k *keepalive) tick(now time.Time) {
 	}
 }
 
-// due 返回到期的站点（开关打开、不是从节点、没在执行）。
+// due 返回到期的站点（总开关和站点开关都打开、不是从节点、没在执行）。
 func (k *keepalive) due(now time.Time) ([]kaTarget, KeepaliveConfig) {
 	cfg := k.m.keepaliveConfig()
 	if k.m.isNode() || !cfg.Enabled {
@@ -276,7 +283,7 @@ func (k *keepalive) due(now time.Time) ([]kaTarget, KeepaliveConfig) {
 	var due []kaTarget
 	k.mu.Lock()
 	for _, t := range ts {
-		if !k.running[t.ID] && !now.Before(kaNext(cfg, k.state[t.ID], now)) {
+		if t.On && !k.running[t.ID] && !now.Before(kaNext(cfg, k.state[t.ID], now)) {
 			due = append(due, t)
 		}
 	}
@@ -284,11 +291,17 @@ func (k *keepalive) due(now time.Time) ([]kaTarget, KeepaliveConfig) {
 	return due, cfg
 }
 
-// runNow 是面板的「立即执行」：所有存了账号的站点跑一轮（开关没开也可以）。返回启动的站点数。
+// runNow 是面板的「立即执行」：开了保号开关的站点跑一轮（总开关没开也可以）。返回启动的站点数。
 func (k *keepalive) runNow() (int, error) {
-	ts, _ := k.targets()
+	all, _ := k.targets()
+	var ts []kaTarget
+	for _, t := range all {
+		if t.On {
+			ts = append(ts, t)
+		}
+	}
 	if len(ts) == 0 {
-		return 0, errors.New("还没有站点保存了账号")
+		return 0, errors.New("没有开启保号的站点（在状态表或站点编辑里打开）")
 	}
 	k.mu.Lock()
 	for _, r := range k.running {
@@ -736,6 +749,7 @@ func telegramSend(token, chat, text string) error {
 type kaSiteView struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
+	On          bool   `json:"on"` // 站点的保号开关
 	LastSuccess string `json:"last_success,omitempty"`
 	Next        int64  `json:"next,omitempty"` // 开关打开时的下次执行时间
 	Running     bool   `json:"running"`
@@ -759,7 +773,10 @@ func (k *keepalive) view(now time.Time) *kaView {
 		cfg.TelegramToken = cfg.TelegramToken[:min(4, len(cfg.TelegramToken))] + "…"
 	}
 	// 按站点顺序列出存了账号的站点
-	type row struct{ id, name, err string }
+	type row struct {
+		id, name, err string
+		on            bool
+	}
 	var rows []row
 	k.m.mu.RLock()
 	ok := map[string]bool{}
@@ -768,7 +785,7 @@ func (k *keepalive) view(now time.Time) *kaView {
 	}
 	for _, s := range k.m.cfg.Sites {
 		if e, isBad := bad[s.ID]; ok[s.ID] || isBad {
-			rows = append(rows, row{s.ID, s.Name, e})
+			rows = append(rows, row{s.ID, s.Name, e, cfg.Sites[s.ID]})
 		}
 	}
 	k.m.mu.RUnlock()
@@ -777,11 +794,11 @@ func (k *keepalive) view(now time.Time) *kaView {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	for _, r := range rows {
-		sv := kaSiteView{ID: r.id, Name: r.name, Running: k.running[r.id], Error: r.err}
+		sv := kaSiteView{ID: r.id, Name: r.name, On: r.on, Running: k.running[r.id], Error: r.err}
 		if st := k.state[r.id]; st != nil {
 			sv.LastSuccess, sv.LastOK, sv.LastTime, sv.LastResult = st.LastSuccess, st.LastOK, st.LastTime, st.LastResult
 		}
-		if cfg.Enabled && r.err == "" {
+		if cfg.Enabled && r.on && r.err == "" {
 			sv.Next = kaNext(cfg, k.state[r.id], now).Unix()
 		}
 		v.Sites = append(v.Sites, sv)
@@ -802,6 +819,7 @@ func (a *Admin) saveKeepalive(w http.ResponseWriter, r *http.Request) {
 	}
 	c := body.KeepaliveConfig
 	old := a.m.keepaliveConfig()
+	c.Sites = old.Sites // 站点开关用单独的接口改
 	c.TelegramToken = old.TelegramToken
 	if body.TelegramToken != nil {
 		c.TelegramToken = *body.TelegramToken
@@ -814,6 +832,42 @@ func (a *Admin) saveKeepalive(w http.ResponseWriter, r *http.Request) {
 	a.m.cfg.Keepalive = &c
 	a.m.mu.Unlock()
 	if err := a.m.save(); err != nil {
+		writeErr(w, 500, "保存失败: "+err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true})
+}
+
+// setSiteKeepalive：PUT /api/sites/{id}/keepalive，打开或关闭这个站点的保号。
+func (a *Admin) setSiteKeepalive(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := readJSON(r, &body); err != nil {
+		writeErr(w, 400, "请求格式错误")
+		return
+	}
+	m, id := a.m, r.PathValue("id")
+	m.mu.Lock()
+	if !m.siteExists(id) {
+		m.mu.Unlock()
+		writeErr(w, 404, "站点不存在")
+		return
+	}
+	if m.cfg.Keepalive == nil {
+		d := defaultKeepalive()
+		m.cfg.Keepalive = &d
+	}
+	if m.cfg.Keepalive.Sites == nil {
+		m.cfg.Keepalive.Sites = map[string]bool{}
+	}
+	if body.Enabled {
+		m.cfg.Keepalive.Sites[id] = true
+	} else {
+		delete(m.cfg.Keepalive.Sites, id)
+	}
+	m.mu.Unlock()
+	if err := m.save(); err != nil {
 		writeErr(w, 500, "保存失败: "+err.Error())
 		return
 	}

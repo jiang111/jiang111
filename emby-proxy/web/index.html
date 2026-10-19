@@ -164,6 +164,7 @@ pre.out{white-space:pre-wrap;word-break:break-all;background:var(--chip);border-
       <label>Emby 账号（可选，只做记录）</label>
       <div class="row"><input type="text" name="acct_user" placeholder="用户名" autocomplete="off" spellcheck="false"><input type="password" name="acct_pass" placeholder="密码" autocomplete="new-password"><button type="button" class="btn" id="btnShowPw">显示</button></div>
       <div class="err" id="acctErr"></div>
+      <label class="chk" id="kaChk" style="margin:6px 0 0"><input type="checkbox" name="acct_ka"><span>参与自动保号（在「保号」页设置时间）</span></label>
       <small>登录面板后可以查看；加密保存在本机，不同步给从节点、不随导出。用户名和密码都清空表示删除。</small>
     </div>
     <label class="chk"><input type="checkbox" name="enabled"><span>启用</span></label>
@@ -178,6 +179,7 @@ const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt
 const testRes = {};
 let S = null, tab = 'sites', editing = null, timer = null, logSite = '', logPaused = false;
 const shownPw = new Set(); // 卡片上点了「显示」的站点
+const kaOn = id => !!(S.keepalive && S.keepalive.sites.some(x => x.id === id && x.on)); // 站点的保号开关
 
 function toast(msg) {
   const t = $('#toast'); t.textContent = msg; t.style.display = 'block';
@@ -302,6 +304,7 @@ function renderSites() {
         <div class="chips"><span class="chip">${esc(modeTxt)}</span>
           <span class="chip ${s.stream_mode === 'proxy' ? 'g' : 'w'}">${s.stream_mode === 'proxy' ? '推流中转' : '推流直连'}</span>
           ${hosts.length ? `<span class="chip" title="${esc(hosts.join('\n'))}">推流域名 ${hosts.length}</span>` : ''}
+          ${kaOn(s.id) ? '<span class="chip g" title="已开启自动保号">保号</span>' : ''}
           ${s.forward_ip ? '<span class="chip">传真实IP</span>' : ''}${s.insecure_tls ? '<span class="chip w">不校验证书</span>' : s.ignore_expired ? '<span class="chip w">忽略证书过期</span>' : ''}</div>
         <div class="addr"><code title="${esc(addr)}">${esc(addr)}</code><button class="btn sm" data-act="copy" data-v="${esc(addr)}">复制</button></div>
         <div class="kv">上游 <b>${esc(s.upstream)}</b></div>
@@ -388,6 +391,8 @@ function openForm(s) {
   f.acct_user.value = (acc && acc.username) || '';
   f.acct_pass.value = (acc && acc.password) || '';
   f.acct_pass.type = 'password'; $('#btnShowPw').textContent = '显示';
+  f.acct_ka.checked = acc ? kaOn(s.id) : true; // 新填账号默认参与保号
+  $('#kaChk').style.display = S.keepalive ? '' : 'none';
   $('#acctErr').textContent = (acc && acc.error) || '';
   f.querySelector(`input[name=mode][value=${v.mode}]`).checked = true;
   f.querySelector(`input[name=stream_mode][value=${v.stream_mode || 'proxy'}]`).checked = true;
@@ -439,6 +444,8 @@ $('#form').onsubmit = async e => {
     try {
       if (au || ap) { if (!old || old.error || au !== old.username || ap !== old.password) await api('PUT', `/api/sites/${r.id}/account`, {username: au, password: ap}); }
       else if (old && !old.error) await api('DELETE', `/api/sites/${r.id}/account`);
+      const wantKa = !!(au || ap) && f.acct_ka.checked;
+      if (S.keepalive && wantKa !== kaOn(r.id)) await api('PUT', `/api/sites/${r.id}/keepalive`, {enabled: wantKa});
     } catch (err) { await load(); $('#ferr').textContent = '站点已保存，账号没有保存：' + err.message; return; }
     closeForm(); await load();
     toast(r.error ? '已保存，但：' + r.error : '已保存');
@@ -727,8 +734,8 @@ function renderKeepalive() {
   const txt = (name, label, v) => `<div class="f"><label>${label}</label><input type="text" name="${name}" value="${esc(v)}" required></div>`;
   $('#main').innerHTML = `<form class="panel" id="kf"><h3>自动保号</h3>
     <div class="help" style="margin-bottom:10px">定期用站点里保存的 Emby 账号登录，随机挑一部电影 / 剧集模拟播放几分钟，在服务器上留下观看记录，防止账号长期不用被清理。
-      经站点的客户端访问地址访问（上游看到的是负责节点的 IP）；站点停用或没有客户端访问地址时直接连上游。账号在「站点 → 编辑」里填写。</div>
-    <label class="chk"><input type="checkbox" name="enabled" ${c.enabled ? 'checked' : ''}><span>开启自动保号</span></label>
+      经站点的客户端访问地址访问（上游看到的是负责节点的 IP）；站点停用或没有客户端访问地址时直接连上游。账号在「站点 → 编辑」里填写，每个站点在下面的状态表里单独开关。</div>
+    <label class="chk"><input type="checkbox" name="enabled" ${c.enabled ? 'checked' : ''}><span>定时保号总开关（关闭后所有站点都暂停定时执行；「立即执行」不受影响）</span></label>
     <div class="kgrid">${num('interval_days', '每几天一次', 1, 365)}
       <div class="f"><label>几点执行</label><input type="time" name="run_at" value="${esc(c.run_at)}" required><small>服务器时区</small></div></div>
     <details><summary>播放参数</summary><div class="kgrid">
@@ -743,6 +750,13 @@ function renderKeepalive() {
       <div class="f"><label>Chat ID</label><input type="text" name="tg_chat" value="${esc(c.telegram_chat || '')}"></div></div></details>
     <div class="foot"><button type="button" class="btn" id="btnKaRun">立即执行</button><button class="btn pri">保存</button></div></form>
     <div class="panel" id="kaStatus">${kaStatusHTML()}</div>`;
+  $('#kaStatus').onchange = async e => {
+    const el = e.target.closest('input[data-ka]');
+    if (!el) return;
+    try { await api('PUT', `/api/sites/${el.dataset.ka}/keepalive`, {enabled: el.checked}); toast(el.checked ? '已开启保号' : '已关闭保号'); }
+    catch (err) { toast(err.message); el.checked = !el.checked; }
+    S = await api('GET', '/api/state'); $('#kaStatus').innerHTML = kaStatusHTML();
+  };
   $('#kf').onsubmit = async e => {
     e.preventDefault();
     const f = e.target, n = k => parseInt(f[k].value);
@@ -757,7 +771,7 @@ function renderKeepalive() {
     catch (err) { toast(err.message); }
   };
   $('#btnKaRun').onclick = async () => {
-    if (!confirm('立即对所有保存了账号的站点执行一轮保号？（每个账号要看几分钟）')) return;
+    if (!confirm('立即对开启了保号的站点执行一轮？（每个账号要看几分钟）')) return;
     try { const r = await api('POST', '/api/keepalive/run'); toast(`已开始，共 ${r.count} 个账号`); S = await api('GET', '/api/state'); $('#kaStatus').innerHTML = kaStatusHTML(); }
     catch (err) { toast(err.message); }
   };
@@ -766,11 +780,11 @@ function kaStatusHTML() {
   const k = S.keepalive;
   if (!k) return '';
   const t = v => v ? new Date(v * 1000).toLocaleString('zh-CN', {month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit'}) : '—';
-  const rows = k.sites.map(s => `<tr><td>${esc(s.name)}</td>
+  const rows = k.sites.map(s => `<tr><td><label class="toggle" title="这个站点的保号开关"><input type="checkbox" data-ka="${esc(s.id)}" ${s.on ? 'checked' : ''} ${s.error ? 'disabled' : ''}><span></span></label></td><td>${esc(s.name)}</td>
     <td>${s.running ? '<span class="ok">执行中…</span>' : esc(s.last_success || '—')}</td>
-    <td>${k.config.enabled && s.next && !s.running ? t(s.next) : '—'}</td>
+    <td>${s.next && !s.running ? t(s.next) : (s.on ? '—' : '<span class="kv">已关闭</span>')}</td>
     <td class="p">${s.error ? `<span class="bad">${esc(s.error)}</span>` : s.last_result ? `<span class="${s.last_ok ? 'ok' : 'bad'}">${esc(s.last_result)}</span> <span class="kv">${t(s.last_time)}</span>` : '—'}</td></tr>`).join('');
-  return `<h3>状态</h3>${k.sites.length ? `<div class="tw" style="max-height:none"><table><tr><th>站点</th><th>上次成功</th><th>下次执行</th><th>最近结果</th></tr>${rows}</table></div>`
+  return `<h3>状态</h3>${k.sites.length ? `<div class="tw" style="max-height:none"><table><tr><th>开关</th><th>站点</th><th>上次成功</th><th>下次执行</th><th>最近结果</th></tr>${rows}</table></div>`
     : '<div class="help">还没有站点保存了 Emby 账号，在「站点 → 编辑」里填写。</div>'}
     <pre class="out" style="max-height:280px;margin-top:10px">${esc(k.log.join('\n')) || '暂无保号日志'}</pre>`;
 }

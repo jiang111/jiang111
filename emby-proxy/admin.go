@@ -58,6 +58,7 @@ func (a *Admin) Handler() http.Handler {
 	mux.HandleFunc("POST /api/cluster/report", a.cluster.serveReport) // 令牌鉴权，从节点上报统计
 	mux.HandleFunc("PUT /api/keepalive", a.auth(a.nodeReadOnly(a.saveKeepalive)))
 	mux.HandleFunc("POST /api/keepalive/run", a.auth(a.nodeReadOnly(a.runKeepalive)))
+	mux.HandleFunc("PUT /api/sites/{id}/keepalive", a.auth(a.nodeReadOnly(a.setSiteKeepalive)))
 	mux.HandleFunc("PUT /api/cluster", a.auth(a.clusterSettings))
 	mux.HandleFunc("POST /api/cluster/rebalance", a.auth(a.rebalanceNow))
 	mux.HandleFunc("POST /api/cluster/sync-now", a.auth(func(w http.ResponseWriter, r *http.Request) {
@@ -372,7 +373,7 @@ func (a *Admin) deleteSite(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	m.cfg.Sites = sites
-	m.pruneAccounts()
+	m.pruneSiteData()
 	delete(m.stats, id)
 	m.reload()
 	m.mu.Unlock()
