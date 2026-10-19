@@ -12,51 +12,65 @@ try { const t = localStorage.getItem('ep_theme'); if (t === 'light' || t === 'da
 <meta name="referrer" content="no-referrer">
 <title>Emby 账号导出</title>
 <style>
-/* 和面板同一套视觉语言：系统字体、分组背景、圆角卡片、系统蓝；随系统浅色 / 深色切换 */
-:root{color-scheme:light dark;--bg:#f2f2f7;--card:#fff;--text:#000;--muted:rgba(60,60,67,.6);--line:rgba(60,60,67,.14);
-  --primary:#007aff;--tint:rgba(0,122,255,.1);--danger:#ff3b30;--warn:#ff9500;--chip:rgba(118,118,128,.12);--hud:rgba(28,28,30,.86);
-  --shadow:0 1px 2px rgba(0,0,0,.04),0 4px 14px rgba(0,0,0,.05);--ease:cubic-bezier(.32,.72,0,1)}
-@media (prefers-color-scheme: dark){:root:not([data-theme=light]){--bg:#000;--card:#1c1c1e;--text:#fff;--muted:rgba(235,235,245,.6);--line:rgba(84,84,88,.55);
-  --primary:#0a84ff;--tint:rgba(10,132,255,.18);--danger:#ff453a;--warn:#ff9f0a;--chip:rgba(118,118,128,.24);--hud:rgba(58,58,60,.92);--shadow:none}}
-:root[data-theme=dark]{color-scheme:dark;--bg:#000;--card:#1c1c1e;--text:#fff;--muted:rgba(235,235,245,.6);--line:rgba(84,84,88,.55);
-  --primary:#0a84ff;--tint:rgba(10,132,255,.18);--danger:#ff453a;--warn:#ff9f0a;--chip:rgba(118,118,128,.24);--hud:rgba(58,58,60,.92);--shadow:none}
+/* 和面板同一套视觉语言：apple.com 式底色与大圆角卡片、大号标题、胶囊按钮；卡片错峰上浮入场；随系统浅色 / 深色切换 */
+:root{color-scheme:light dark;--bg:#f5f5f7;--card:#fff;--text:#1d1d1f;--muted:#6e6e73;--line:rgba(0,0,0,.08);
+  --primary:#0071e3;--primary-2:#0077ed;--link:#0066cc;--tint:rgba(0,113,227,.08);--tint-2:rgba(0,113,227,.14);--danger:#d70015;--warn:#ff9500;--green:#34c759;--green-t:#248a3d;
+  --chip:rgba(0,0,0,.045);--hud:rgba(29,29,31,.86);--shadow:0 1px 2px rgba(0,0,0,.03),0 6px 24px rgba(0,0,0,.04);--ease:cubic-bezier(.32,.72,0,1);
+  --font:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Helvetica Neue","Microsoft YaHei",sans-serif;
+  --display:-apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang SC","Helvetica Neue","Microsoft YaHei",sans-serif;--mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace}
+@media (prefers-color-scheme: dark){:root:not([data-theme=light]){--bg:#000;--card:#161617;--text:#f5f5f7;--muted:#a1a1a6;--line:rgba(255,255,255,.1);
+  --primary:#0a84ff;--primary-2:#409cff;--link:#2997ff;--tint:rgba(41,151,255,.14);--tint-2:rgba(41,151,255,.22);--danger:#ff6961;--warn:#ff9f0a;--green:#30d158;--green-t:#30d158;
+  --chip:rgba(255,255,255,.07);--hud:rgba(48,48,50,.9);--shadow:inset 0 0 0 .5px rgba(255,255,255,.07)}}
+:root[data-theme=dark]{color-scheme:dark;--bg:#000;--card:#161617;--text:#f5f5f7;--muted:#a1a1a6;--line:rgba(255,255,255,.1);
+  --primary:#0a84ff;--primary-2:#409cff;--link:#2997ff;--tint:rgba(41,151,255,.14);--tint-2:rgba(41,151,255,.22);--danger:#ff6961;--warn:#ff9f0a;--green:#30d158;--green-t:#30d158;
+  --chip:rgba(255,255,255,.07);--hud:rgba(48,48,50,.9);--shadow:inset 0 0 0 .5px rgba(255,255,255,.07)}
 :root[data-theme=light]{color-scheme:light}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-body{margin:0;background:var(--bg);color:var(--text);font:15px/1.47 -apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Helvetica Neue","Microsoft YaHei",sans-serif;-webkit-font-smoothing:antialiased;letter-spacing:-.01em}
-main{max-width:760px;margin:0 auto;padding:24px 16px calc(40px + env(safe-area-inset-bottom))}
-h1{font-size:30px;line-height:1.1;font-weight:700;letter-spacing:-.03em;margin:8px 0 16px}
-.warn{background:color-mix(in srgb,var(--warn) 13%,var(--card));border-radius:14px;padding:12px 14px;font-size:13.5px;margin-bottom:18px;line-height:1.55}
-.card{background:var(--card);border-radius:16px;padding:16px;margin-bottom:14px;box-shadow:var(--shadow)}
-.card h2{font-size:18px;font-weight:600;letter-spacing:-.02em;margin:0 0 10px;display:flex;gap:8px;align-items:center}
-.tag{font-size:11.5px;font-weight:500;background:var(--chip);color:var(--muted);border-radius:6px;padding:2px 8px}
-.group{background:var(--chip);border-radius:12px;overflow:hidden}
-.kv{display:flex;gap:8px;align-items:center;font-size:13.5px;min-width:0;padding:8px 8px 8px 12px;min-height:42px}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.47 var(--font);-webkit-font-smoothing:antialiased;letter-spacing:-.01em}
+main{max-width:760px;margin:0 auto;padding:48px 16px calc(48px + env(safe-area-inset-bottom))}
+h1{font:700 44px/1.08 var(--display);letter-spacing:-.028em;margin:0 0 8px}
+.sub{font-size:19px;color:var(--muted);margin:0 0 28px;letter-spacing:-.012em}
+.warn{background:color-mix(in srgb,var(--warn) 12%,var(--card));border-radius:18px;padding:14px 16px;font-size:14px;margin-bottom:24px;line-height:1.6}
+.card{background:var(--card);border-radius:22px;padding:22px;margin-bottom:18px;box-shadow:var(--shadow)}
+.card h2{font:600 21px/1.25 var(--display);letter-spacing:-.022em;margin:0 0 14px;display:flex;gap:8px;align-items:center}
+.tag{font-size:12px;font-weight:500;background:var(--chip);color:var(--muted);border-radius:980px;padding:3px 10px;letter-spacing:0}
+.group{background:var(--chip);border-radius:14px;overflow:hidden}
+.kv{display:flex;gap:8px;align-items:center;font-size:14px;min-width:0;padding:8px 8px 8px 14px;min-height:46px}
 .kv + .kv{box-shadow:0 -.5px 0 var(--line)}
 .kv span{color:var(--muted);flex:none;width:52px}
-.kv code{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:13px ui-monospace,"SF Mono",Menlo,Consolas,monospace}
-.btn{border:0;background:var(--tint);color:var(--primary);padding:7px 14px;border-radius:10px;font-family:inherit;font-weight:600;font-size:13.5px;line-height:1.3;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;justify-content:center;white-space:nowrap;transition:transform .12s var(--ease)}
-.btn:active{transform:scale(.97)}
-.btn.sm{padding:4px 10px;font-size:12.5px;border-radius:8px}
+.kv code{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:13.5px var(--mono)}
+.btn{border:0;background:var(--tint);color:var(--link);padding:8px 17px;border-radius:980px;font:500 14px/1.3 var(--font);letter-spacing:-.01em;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;justify-content:center;white-space:nowrap;transition:transform .35s var(--ease),background-color .2s,color .2s}
+@media (hover:hover){.btn:hover{background:var(--tint-2)}.btn.pri:hover{background:var(--primary-2)}}
+.btn:active{transform:scale(.95);transition-duration:.08s}
+.btn.sm{padding:5px 12px;font-size:13px}
 .btn.pri{background:var(--primary);color:#fff}
-.links{display:grid;grid-template-columns:repeat(auto-fill,minmax(112px,1fr));gap:8px;margin-top:12px}
-.links a{flex-direction:column;padding:10px 6px;line-height:1.25;border-radius:12px;text-align:center;min-height:52px}
-.links a small{display:block;font-size:10.5px;font-weight:400;opacity:.75;margin-top:3px;white-space:normal}
+.btn.done{background:color-mix(in srgb,var(--green) 15%,transparent);color:var(--green-t)}
+/* 播放器按钮：圆角方块，像 App 图标下的标签 */
+.links{display:grid;grid-template-columns:repeat(auto-fill,minmax(116px,1fr));gap:10px;margin-top:14px}
+.links a{flex-direction:column;padding:12px 8px;line-height:1.25;border-radius:16px;text-align:center;min-height:58px;font-weight:600}
+.links a small{display:block;font-size:11px;font-weight:400;opacity:.75;margin-top:3px;white-space:normal}
 .links a.pri small{opacity:.85}
-.muted{color:var(--muted);font-size:12.5px}
+.muted{color:var(--muted);font-size:13px}
 .err{color:var(--danger)}
-textarea{width:100%;min-height:220px;border:0;border-radius:12px;background:var(--chip);color:var(--text);padding:10px 12px;font:12px/1.55 ui-monospace,"SF Mono",Menlo,Consolas,monospace;resize:vertical}
-.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:12px 0}
-.toast{position:fixed;left:50%;bottom:calc(28px + env(safe-area-inset-bottom));transform:translate(-50%,12px);opacity:0;pointer-events:none;background:var(--hud);color:#fff;-webkit-backdrop-filter:blur(20px);backdrop-filter:blur(20px);padding:10px 18px;border-radius:999px;font-size:13.5px;font-weight:500;z-index:9;max-width:calc(100vw - 32px);transition:opacity .25s ease,transform .35s var(--ease)}
-.toast.show{opacity:1;transform:translate(-50%,0)}
-ul{padding-left:18px;margin:8px 0 0;line-height:1.7}
-@media (prefers-reduced-motion: reduce){*{transition-duration:.1s !important}.btn:active{transform:none}}
-@media (prefers-reduced-transparency: reduce){.toast{background:#1c1c1e;-webkit-backdrop-filter:none;backdrop-filter:none}}
+textarea{width:100%;min-height:220px;border:0;border-radius:14px;background:var(--chip);color:var(--text);padding:12px 14px;font:12.5px/1.6 var(--mono);resize:vertical}
+textarea:focus{outline:0;box-shadow:0 0 0 1px var(--primary),0 0 0 4px color-mix(in srgb,var(--primary) 22%,transparent)}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:14px 0}
+.toast{position:fixed;left:50%;bottom:calc(32px + env(safe-area-inset-bottom));translate:-50% 0;transform:translateY(24px) scale(.92);opacity:0;pointer-events:none;background:var(--hud);color:#fff;-webkit-backdrop-filter:saturate(180%) blur(20px);backdrop-filter:saturate(180%) blur(20px);padding:11px 20px;border-radius:980px;font-size:14px;font-weight:500;z-index:9;max-width:calc(100vw - 32px);transition:opacity .25s ease,transform .5s var(--ease)}
+.toast.show{opacity:1;transform:none}
+ul{padding-left:18px;margin:8px 0 0;line-height:1.75}
+.rise{animation:rise .8s var(--ease) backwards;animation-delay:calc(var(--i,0) * 60ms)}
+@keyframes rise{from{opacity:0;translate:0 26px}}
+@keyframes fade{from{opacity:0}}
+@media (max-width:600px){main{padding-top:32px}h1{font-size:34px}.sub{font-size:16px;margin-bottom:22px}.card{padding:18px;border-radius:20px}}
+@media (prefers-reduced-motion: reduce){.rise{animation:fade .3s ease backwards !important}.btn:active{transform:none}.toast{transform:none}}
+@media (prefers-reduced-transparency: reduce){.toast{background:#1d1d1f;-webkit-backdrop-filter:none;backdrop-filter:none}}
 </style>
 </head>
 <body>
 <main>
-<h1>Emby 账号导出</h1>
-<div class="warn">这个页面包含全部 Emby 账号和密码，请不要截图或转发。导出链接一旦泄露，请到面板「导出账号」里重新生成，旧链接会立即失效。<br>
+<h1 class="rise">Emby 账号导出</h1>
+<p class="sub rise" style="--i:1">点按钮，把服务器一键导入播放器。</p>
+<div class="warn rise" style="--i:2">这个页面包含全部 Emby 账号和密码，请不要截图或转发。导出链接一旦泄露，请到面板「导出账号」里重新生成，旧链接会立即失效。<br>
 在手机上点按钮会打开对应的播放器，一个按钮导入一台服务器。</div>
 <div id="app"><div class="muted">加载中…</div></div>
 </main>
@@ -70,9 +84,15 @@ const el = (tag, attrs = {}, ...kids) => {
   return e;
 };
 function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('show'), 2000); }
-async function copy(text, what) {
-  try { await navigator.clipboard.writeText(text); toast('已复制' + what); }
-  catch (e) { toast('复制失败，请长按手动复制'); }
+// 复制成功时按钮就地变成「已复制」，失败才弹提示
+async function copy(text, what, btn) {
+  try {
+    await navigator.clipboard.writeText(text);
+    if (!btn) return toast('已复制' + what);
+    if (!btn._t0) btn._t0 = btn.textContent;
+    btn.textContent = '已复制'; btn.classList.add('done'); clearTimeout(btn._f);
+    btn._f = setTimeout(() => { btn.textContent = btn._t0; btn._t0 = null; btn.classList.remove('done'); }, 1500);
+  } catch (e) { toast('复制失败，请长按手动复制'); }
 }
 // 文本格式和常见 Emby 机器人发的一样：SenPlayer 新建服务器时可以识别剪贴板里的这段内容
 const block = s => `名称：${s.name}\n地址：${s.url}\n用户名：${s.username}\n密码：${s.password}`;
@@ -107,11 +127,11 @@ async function load() {
     let shown = false;
     const showBtn = el('button', {class: 'btn sm', text: '显示'});
     showBtn.onclick = () => { shown = !shown; pw.textContent = shown ? s.password : '••••••'; showBtn.textContent = shown ? '隐藏' : '显示'; };
-    const cp = (text, what) => { const b = el('button', {class: 'btn sm', text: '复制'}); b.onclick = () => copy(text, what); return b; };
+    const cp = (text, what) => { const b = el('button', {class: 'btn sm', text: '复制'}); b.onclick = () => copy(text, what, b); return b; };
     const links = el('div', {class: 'links'});
     for (const l of s.links) links.append(el('a', {class: 'btn' + (l.id === 'senplayer' ? ' pri' : ''), href: l.url}, l.name, l.note ? el('small', {text: l.note}) : null));
     const copyAll = el('button', {class: 'btn sm', text: '复制文本'});
-    copyAll.onclick = () => copy(block(s), '「' + s.name + '」的文本');
+    copyAll.onclick = () => copy(block(s), '「' + s.name + '」的文本', copyAll);
     app.append(el('div', {class: 'card'},
       el('h2', {}, s.name, s.disabled ? el('span', {class: 'tag', text: '站点已停用'}) : null),
       el('div', {class: 'group'},
@@ -125,7 +145,7 @@ async function load() {
 
   const all = d.sites.map(block).join('\n\n');
   const ta = el('textarea', {readonly: ''}); ta.value = all;
-  const bCopy = el('button', {class: 'btn pri', text: '复制全部'}); bCopy.onclick = () => copy(all, '全部账号');
+  const bCopy = el('button', {class: 'btn pri', text: '复制全部'}); bCopy.onclick = () => copy(all, '全部账号', bCopy);
   const bTxt = el('button', {class: 'btn', text: '下载 txt'}); bTxt.onclick = () => download('emby-accounts.txt', all, 'text/plain;charset=utf-8');
   const bJson = el('button', {class: 'btn', text: '下载 json'});
   bJson.onclick = () => download('emby-accounts.json', JSON.stringify(d.sites.map(({name, url, username, password}) => ({name, url, username, password})), null, 2), 'application/json');
@@ -139,6 +159,8 @@ async function load() {
     el('li', {text: 'Hills：Android；小幻影视：Windows；EplayerX：链接格式来自第三方，未实测。'}),
     el('li', {text: '网易爆米花：没装 App 时会打开网易的网页，账号和密码会随链接发给网易。'}),
     el('li', {text: 'Telegram 里点不开播放器链接，请在浏览器里打开本页。'}))));
+  // 卡片接在标题后面依次上浮
+  [...app.children].forEach((c, i) => { c.classList.add('rise'); c.style.setProperty('--i', Math.min(i + 3, 10)); });
 }
 load();
 </script>

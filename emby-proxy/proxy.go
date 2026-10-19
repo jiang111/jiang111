@@ -204,6 +204,8 @@ type reqCtx struct {
 	cw         *countWriter
 	ip         string // 客户端真实 IP（转来的请求为原始 IP）
 	play       string // 视频响应的播放去重 key（见 playKey）
+	report     string // 播放上报（/Sessions/Playing…）的「IP|片子」key，上游接受后记一次
+	reportStop bool   // 是 /Sessions/Playing/Stopped
 	errMsg     string
 }
 
@@ -365,11 +367,11 @@ func (s *SiteRT) serve(w http.ResponseWriter, r *http.Request, prefix string) {
 		node = "→ " + owner.Name + " 失联，本机处理"
 	}
 
-	st.begin()
+	st.begin(ip)
 	cw := &countWriter{ResponseWriter: w, st: st, tr: &s.m.traffic}
 	rc := &reqCtx{s: s, prefix: prefix, cw: cw, ip: ip}
 	defer func() {
-		st.end(rc.play)
+		st.end(rc.ip, rc.play)
 		if cw.status >= 500 {
 			st.Errors.Add(1)
 		}
@@ -415,6 +417,9 @@ func (s *SiteRT) serve(w http.ResponseWriter, r *http.Request, prefix string) {
 	}
 	unescRest, _ := url.PathUnescape(rest)
 	rc.matchPath = strings.ToLower(unescRest)
+	if stop, ok := playReportPath(r.Method, rc.matchPath); ok {
+		rc.report, rc.reportStop = ip+"|"+playReportItem(r), stop
+	}
 	rc.acceptGzip = strings.Contains(r.Header.Get("Accept-Encoding"), "gzip")
 	targetOrigin := target.Scheme + "://" + target.Host
 
@@ -508,6 +513,9 @@ func (rc *reqCtx) modifyResponse(resp *http.Response) error {
 		if v := h.Get(k); v != "" {
 			h.Set(k, rc.rewriteLocation(v))
 		}
+	}
+	if rc.report != "" && resp.StatusCode < 300 {
+		rc.s.stats.reportPlay(rc.report, rc.reportStop)
 	}
 	ct := strings.ToLower(h.Get("Content-Type"))
 	if (strings.HasPrefix(ct, "video/") || strings.HasPrefix(ct, "audio/")) && !strings.Contains(ct, "mpegurl") {

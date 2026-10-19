@@ -235,8 +235,16 @@ func (sn *statsSnapshot) site(id, self string, local StatsView, withSelf bool) (
 	}
 	sort.Slice(ns, func(i, j int) bool { return ns[i].Name < ns[j].Name })
 	sum := StatsView{Series: make([]int64, 60)}
+	ips := map[string]*ConnIP{} // 同一 IP 可能访问过几台：连接数相加，最后访问取最近，播放取或
 	for _, n := range ns {
 		v := n.Stats
+		for _, c := range v.IPs {
+			if p := ips[c.IP]; p != nil {
+				p.N, p.Last, p.Play = p.N+c.N, max(p.Last, c.Last), p.Play || c.Play
+			} else {
+				ips[c.IP] = &c
+			}
+		}
 		sum.Requests += v.Requests
 		sum.Bytes += v.Bytes
 		sum.Active += v.Active
@@ -249,6 +257,11 @@ func (sn *statsSnapshot) site(id, self string, local StatsView, withSelf bool) (
 			sum.Series[k] += v.Series[k]
 		}
 	}
+	sum.IPs = make([]ConnIP, 0, len(ips))
+	for _, c := range ips {
+		sum.IPs = append(sum.IPs, *c)
+	}
+	sortConnIPs(sum.IPs)
 	if !withSelf {
 		out := ns[:0]
 		for _, n := range ns {

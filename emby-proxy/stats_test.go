@@ -5,9 +5,12 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -88,6 +91,158 @@ func TestPlayDedupHTTP(t *testing.T) {
 	get(t, entry.URL+"/hk/emby/System/Info/Public", "X-Real-Ip", "203.0.113.3")
 	if n := st.view().Streams; n != 2 {
 		t.Fatalf("api request counted as play: %d", n)
+	}
+}
+
+// 播放上报：推流不经过本机时靠 /Sessions/Playing… 判断播放中；和视频响应同属一次播放时按 IP 取较大值，不重复；
+// Stopped 立即清，停发超过 playReportTTL 过期。
+func TestPlayReports(t *testing.T) {
+	now := time.Unix(1_000_000, 0)
+	st := &Stats{now: func() time.Time { return now }}
+	st.reportPlay("203.0.113.1|42", false)
+	if n := st.streams(); n != 1 {
+		t.Fatalf("report only: %d", n)
+	}
+	st.startPlay(playKey("203.0.113.1", "/magpiecdn")) // 同一次播放的推流（片子 key 对不上）
+	if n := st.streams(); n != 1 {
+		t.Fatalf("report + video same ip should be 1: %d", n)
+	}
+	st.startPlay(playKey("203.0.113.1", "/emby/videos/43/stream")) // 同一 IP 又开了一部，只有视频信号
+	if n := st.streams(); n != 2 {
+		t.Fatalf("two videos one report: %d", n)
+	}
+	st.reportPlay("203.0.113.2|42", false)
+	if n := st.streams(); n != 3 {
+		t.Fatalf("other ip: %d", n)
+	}
+	st.reportPlay("203.0.113.2|42", true)
+	if n := st.streams(); n != 2 {
+		t.Fatalf("stopped: %d", n)
+	}
+	st.endPlay(playKey("203.0.113.1", "/magpiecdn"))
+	st.endPlay(playKey("203.0.113.1", "/emby/videos/43/stream"))
+	now = now.Add(playLinger + time.Second)
+	if n := st.streams(); n != 1 {
+		t.Fatalf("report outlives video linger: %d", n)
+	}
+	now = now.Add(playReportTTL)
+	if n := st.streams(); n != 0 || len(st.reports) != 0 {
+		t.Fatalf("report ttl: %d %d", n, len(st.reports))
+	}
+}
+
+func TestPlayReportPath(t *testing.T) {
+	for _, c := range []struct {
+		m, p     string
+		stop, ok bool
+	}{
+		{"POST", "/emby/sessions/playing", false, true},
+		{"POST", "/sessions/playing/progress", false, true},
+		{"POST", "/emby/sessions/playing/stopped", true, true},
+		{"GET", "/emby/sessions/playing/progress", false, false},
+		{"POST", "/emby/sessions/capabilities", false, false},
+	} {
+		if stop, ok := playReportPath(c.m, c.p); stop != c.stop || ok != c.ok {
+			t.Errorf("%s %s = %v %v", c.m, c.p, stop, ok)
+		}
+	}
+}
+
+// 走一遍反代：进度上报计入播放中（ItemId 取自 query 或 JSON 请求体），请求体原样转给上游；上游拒绝时不计。
+func TestPlayReportHTTP(t *testing.T) {
+	var got []string
+	var mu sync.Mutex
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		got = append(got, string(b))
+		mu.Unlock()
+		if r.Header.Get("X-Emby-Token") == "bad" {
+			w.WriteHeader(401)
+			return
+		}
+		w.WriteHeader(204)
+	}))
+	defer up.Close()
+	site := Site{ID: "s1", Name: "t", Upstream: up.URL, Mode: "path", Path: "hk", StreamMode: "proxy", Enabled: true}
+	cfg := &Config{Listen: ":0", AdminListen: ":0", Sites: []*Site{&site}}
+	if err := validateSite(cfg, &site); err != nil {
+		t.Fatal(err)
+	}
+	m := NewManager(filepath.Join(t.TempDir(), "config.json"), cfg)
+	m.mu.Lock()
+	m.reload()
+	m.mu.Unlock()
+	entry := httptest.NewServer(m)
+	defer func() { entry.Close(); m.bg.Wait() }()
+	st := m.stats["s1"]
+	post := func(path, body, ip, token string) {
+		req, _ := http.NewRequest("POST", entry.URL+"/hk"+path, strings.NewReader(body))
+		req.Header.Set("X-Real-Ip", ip)
+		req.Header.Set("X-Emby-Token", token)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		waitIdle(st)
+	}
+	body := `{"ItemId":"42","PositionTicks":100,"PlaySessionId":"x"}`
+	post("/emby/Sessions/Playing/Progress", body, "203.0.113.1", "ok")
+	post("/emby/Sessions/Playing/Progress?ItemId=7", "", "203.0.113.2", "ok")
+	post("/emby/Sessions/Playing/Progress", `{"ItemId":"9"}`, "203.0.113.3", "bad")
+	if n := st.streams(); n != 2 {
+		t.Fatalf("streams: %d %v", n, st.reports)
+	}
+	if _, ok := st.reports["203.0.113.1|42"]; !ok {
+		t.Fatalf("item from body: %v", st.reports)
+	}
+	mu.Lock()
+	if got[0] != body {
+		t.Fatalf("body changed: %q", got[0])
+	}
+	mu.Unlock()
+	post("/emby/Sessions/Playing/Stopped", `{"ItemId":"42"}`, "203.0.113.1", "ok")
+	if n := st.streams(); n != 1 {
+		t.Fatalf("after stopped: %d", n)
+	}
+	if v := st.view(); v.Active != 0 || len(v.IPs) != 3 || v.IPs[0].N != 0 || !v.IPs[0].Play || v.IPs[0].IP != "203.0.113.2" || v.IPs[1].Play || v.IPs[2].Play {
+		t.Fatalf("ips: %+v", v.IPs)
+	}
+}
+
+// 连接 IP：列出最近 10 分钟访问过的 IP，带在途请求数、最后访问时间和是否在播；主节点汇总时同一 IP 跨节点合并。
+func TestConnIPs(t *testing.T) {
+	now := time.Unix(1_000_000, 0)
+	st := &Stats{now: func() time.Time { return now }}
+	st.begin("203.0.113.1")
+	st.begin("203.0.113.1")
+	st.begin("203.0.113.2")
+	st.begin("203.0.113.3")
+	st.reportPlay("203.0.113.3|42", false)
+	now = now.Add(time.Minute)
+	st.end("203.0.113.2", "")
+	st.end("203.0.113.3", "")
+	ips := st.connIPs()
+	want := []ConnIP{{"203.0.113.3", 0, now.Unix(), true}, {"203.0.113.1", 2, now.Add(-time.Minute).Unix(), false}, {"203.0.113.2", 0, now.Unix(), false}}
+	if len(ips) != 3 || ips[0] != want[0] || ips[1] != want[1] || ips[2] != want[2] {
+		t.Fatalf("ips: %+v", ips)
+	}
+	st.end("203.0.113.1", "")
+	st.end("203.0.113.1", "")
+	now = now.Add(ipRecent)
+	st.reportPlay("203.0.113.3|42", true)
+	if ips := st.connIPs(); len(ips) != 0 || st.Active.Load() != 0 {
+		t.Fatalf("should expire after %v: %+v", ipRecent, ips)
+	}
+
+	sn := &statsSnapshot{reports: map[string]*nodeReport{
+		"isif": {Time: now.Unix(), Sites: map[string]StatsView{"a": {IPs: []ConnIP{{"203.0.113.1", 1, 200, true}, {"203.0.113.9", 0, 50, false}}}}},
+	}, bases: map[string]map[string]statsBase{}, clearedMin: map[string]int64{}}
+	sum, _ := sn.site("a", "fx", StatsView{IPs: []ConnIP{{"203.0.113.1", 1, 300, false}}}, true)
+	if len(sum.IPs) != 2 || sum.IPs[0] != (ConnIP{"203.0.113.1", 2, 300, true}) || sum.IPs[1] != (ConnIP{"203.0.113.9", 0, 50, false}) {
+		t.Fatalf("merged ips: %+v", sum.IPs)
 	}
 }
 
@@ -345,12 +500,24 @@ func TestClusterLogs(t *testing.T) {
 		t.Fatalf("limit: %s", s)
 	}
 
+	// 同一用户固定同一台：fx 转给 isif 的请求两台各一条，全部服务器视图只留负责节点那条；选了服务器照常显示
+	master.logs.add(LogEntry{Time: 400, Site: id, Path: "/relay", Node: "→ isif"})
+	master.logs.add(LogEntry{Time: 401, Site: id, Path: "/lost", Node: "→ isif 失联，本机处理"})
+	node.logs.add(LogEntry{Time: 400, Site: id, Path: "/relay", Node: "← fx"})
+	nc.report()
+	if s := get("limit=3"); s != "fx/lost,isif/relay,isif/new" {
+		t.Fatalf("relay dup should be hidden: %s", s)
+	}
+	if s := get("server=fx&limit=2"); s != "fx/lost,fx/relay" {
+		t.Fatalf("server filter shows relay: %s", s)
+	}
+
 	// 上报失败不前进，下次重发
 	node.mu.Lock()
 	node.cfg.Cluster.Token = "wrong"
 	node.mu.Unlock()
 	node.logs.add(LogEntry{Time: 300, Site: id, Path: "/retry"})
-	if err := nc.report(); err == nil || nc.logSeq != 3 {
+	if err := nc.report(); err == nil || nc.logSeq != 4 {
 		t.Fatalf("failed report should not advance: %v %d", err, nc.logSeq)
 	}
 }

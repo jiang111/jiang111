@@ -325,12 +325,18 @@ func (a *Admin) logsAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	self := a.m.selfName()
+	// 「同一用户固定同一台」时，收到请求的服务器转给负责节点（记「→ 负责节点」），负责节点处理（记「← 来源」），
+	// 同一个请求两台各有一条。看全部服务器时只留负责节点那条；选了具体服务器照常全部显示。
+	// 负责节点的转发失联、本机兜底处理（「失联」）和视频直连跳转（「⇢」）只有一条，不隐藏。
+	relayDup := func(e *LogEntry) bool {
+		return server == "" && strings.HasPrefix(e.Node, "→ ") && !strings.Contains(e.Node, "失联")
+	}
 	match := func(e *LogEntry) bool {
-		return (site == "" || e.Site == site) && (server == "" || e.Server == server)
+		return (site == "" || e.Site == site) && (server == "" || e.Server == server) && !relayDup(e)
 	}
 	var local []LogEntry
 	if server == "" || server == self {
-		local = a.m.logs.list(func(e *LogEntry) bool { return site == "" || e.Site == site }, limit)
+		local = a.m.logs.list(func(e *LogEntry) bool { return (site == "" || e.Site == site) && !relayDup(e) }, limit)
 	}
 	for i := range local {
 		local[i].Server = self
