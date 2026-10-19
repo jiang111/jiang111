@@ -280,10 +280,8 @@ func (a *Admin) state(w http.ResponseWriter, r *http.Request) {
 			v.Stats = st.view()
 		}
 		if snap != nil {
-			// 只做控制的主节点（没填本机公网地址）本机没有流量时不列出，有人直连了它的端口时照常列出
-			st := v.Stats
-			withSelf := cluster.AdvertiseAddr != "" || st.Requests != 0 || st.Bytes != 0 || st.Active != 0 || st.Errors != 0 || st.RelayRequests != 0
-			cs, ns := snap.site(s.ID, cluster.SelfName, v.Stats, withSelf)
+			// 只做控制的主节点（没填本机公网地址）不在各节点拆分里列出本机
+			cs, ns := snap.site(s.ID, cluster.SelfName, v.Stats, cluster.AdvertiseAddr != "")
 			v.ClusterStats, v.NodeStats = &cs, ns
 		}
 		if e := m.siteErr[s.ID]; e != "" {

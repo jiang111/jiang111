@@ -122,6 +122,7 @@ type stateResp struct {
 
 func TestClusterReport(t *testing.T) {
 	master, c, do, id, _ := clusterMaster(t)
+	master.cfg.Cluster.AdvertiseAddr = "203.0.113.9" // 主节点也接流量
 	token := master.cfg.Cluster.Token
 	st := master.stats[id]
 	st.Requests.Store(10)
@@ -195,20 +196,13 @@ func TestClusterReport(t *testing.T) {
 		t.Fatalf("stale node should be offline: %+v", s.Nodes)
 	}
 
-	// 只做控制的主节点本机没有流量：不列出本机那一行
-	st.Requests.Store(0)
-	st.Bytes.Store(0)
-	st.Active.Store(0)
-	master.stats[id].clear()
-	report(token, StatsView{Requests: 20, Active: 1})
-	if ns := state().Sites[0].NodeStats; len(ns) != 1 || ns[0].Name != "isif" {
-		t.Fatalf("control-only master with no traffic should not be listed: %+v", ns)
-	}
+	// 只做控制的主节点：拆分里不列出本机，本机的计数仍计入总和
 	master.mu.Lock()
-	master.cfg.Cluster.AdvertiseAddr = "203.0.113.9" // 主节点也接流量：本机照常列出
+	master.cfg.Cluster.AdvertiseAddr = ""
 	master.mu.Unlock()
-	if ns := state().Sites[0].NodeStats; len(ns) != 2 || !ns[0].Self {
-		t.Fatalf("serving master should be listed: %+v", ns)
+	report(token, StatsView{Requests: 20, Active: 1})
+	if s := state().Sites[0]; len(s.NodeStats) != 1 || s.NodeStats[0].Name != "isif" || s.ClusterStats.Active != 2 {
+		t.Fatalf("control-only master should not be listed: %+v %+v", s.NodeStats, s.ClusterStats)
 	}
 
 	// 删除站点清掉基准

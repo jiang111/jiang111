@@ -225,12 +225,9 @@ func (sn *statsSnapshot) adjust(id, name string, v StatsView, repTime int64) Sta
 }
 
 // site 汇总一个站点：本机 + 各在线节点。返回总和与各节点拆分（按名称排序）。
-// withSelf 为 false 时不列出本机（只做控制的主节点本机没有流量，列出来只是一行 0）。
+// withSelf 为 false 时拆分里不列出本机（只做控制的主节点不处理播放，列出来只是一行 0），本机的零星计数仍计入总和。
 func (sn *statsSnapshot) site(id, self string, local StatsView, withSelf bool) (StatsView, []nodeStats) {
-	var ns []nodeStats
-	if withSelf {
-		ns = append(ns, nodeStats{Name: self, Stats: local, Self: true})
-	}
+	ns := []nodeStats{{Name: self, Stats: local, Self: true}}
 	for name, rep := range sn.reports {
 		if v, ok := rep.Sites[id]; ok {
 			ns = append(ns, nodeStats{Name: name, Stats: sn.adjust(id, name, v, rep.Time)})
@@ -251,6 +248,15 @@ func (sn *statsSnapshot) site(id, self string, local StatsView, withSelf bool) (
 		for k := 0; k < len(v.Series) && k < 60; k++ {
 			sum.Series[k] += v.Series[k]
 		}
+	}
+	if !withSelf {
+		out := ns[:0]
+		for _, n := range ns {
+			if !n.Self {
+				out = append(out, n)
+			}
+		}
+		ns = out
 	}
 	return sum, ns
 }
