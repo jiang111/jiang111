@@ -12,7 +12,7 @@ import (
 
 func TestAccountCrypto(t *testing.T) {
 	key := make([]byte, 32)
-	enc, err := sealAccount(key, "s1", siteAccount{"alice", "s3cret"})
+	enc, err := sealAccount(key, "s1", siteAccount{Username: "alice", Password: "s3cret"})
 	if err != nil || !strings.HasPrefix(enc, accountPrefix) || strings.Contains(enc, "alice") {
 		t.Fatalf("seal: %q %v", enc, err)
 	}

@@ -56,6 +56,8 @@ func (a *Admin) Handler() http.Handler {
 	mux.HandleFunc("POST /api/import", a.auth(a.nodeReadOnly(a.importConfig)))
 	mux.HandleFunc("GET /api/cluster/sync", a.cluster.serveSync)      // 令牌鉴权，供从节点拉取
 	mux.HandleFunc("POST /api/cluster/report", a.cluster.serveReport) // 令牌鉴权，从节点上报统计
+	mux.HandleFunc("PUT /api/keepalive", a.auth(a.nodeReadOnly(a.saveKeepalive)))
+	mux.HandleFunc("POST /api/keepalive/run", a.auth(a.nodeReadOnly(a.runKeepalive)))
 	mux.HandleFunc("PUT /api/cluster", a.auth(a.clusterSettings))
 	mux.HandleFunc("POST /api/cluster/rebalance", a.auth(a.rebalanceNow))
 	mux.HandleFunc("POST /api/cluster/sync-now", a.auth(func(w http.ResponseWriter, r *http.Request) {
@@ -248,6 +250,10 @@ func (a *Admin) state(w http.ResponseWriter, r *http.Request) {
 	if cluster.Role == "master" {
 		snap = a.cluster.statsSnapshot()
 	}
+	var ka *kaView
+	if cluster.Role != "node" {
+		ka = m.ka.view(time.Now())
+	}
 	var key []byte
 	var keyErr error
 	m.mu.RLock()
@@ -282,11 +288,12 @@ func (a *Admin) state(w http.ResponseWriter, r *http.Request) {
 			"port_bind": m.cfg.PortBind, "nginx_cert": m.cfg.NginxCert, "nginx_key": m.cfg.NginxKey, "nginx_ipv6": m.cfg.NginxIPv6,
 			"cert": m.certInfo(),
 		},
-		"sites":   views,
-		"nginx":   ngx,
-		"cluster": cluster,
-		"uptime":  int64(time.Since(m.started).Seconds()),
-		"version": version,
+		"sites":     views,
+		"nginx":     ngx,
+		"cluster":   cluster,
+		"keepalive": ka, // 自动保号（从节点为 null）
+		"uptime":    int64(time.Since(m.started).Seconds()),
+		"version":   version,
 	}
 	if snap != nil {
 		out["cluster_stats_nodes"] = snap.nodes // 上报过统计的从节点及最后上报时间

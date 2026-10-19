@@ -72,7 +72,7 @@ a.btn{text-decoration:none;display:inline-block}
 .f{margin-bottom:12px}
 .f>label{display:block;font-weight:600;margin-bottom:4px;font-size:13px}
 .f small{display:block;color:var(--muted);font-size:12px;margin-top:3px}
-input[type=text],input[type=number],input[type=password],select,textarea{width:100%;padding:7px 9px;border:1px solid var(--line);border-radius:6px;background:var(--input);color:var(--text);font:inherit;font-size:13px}
+input[type=text],input[type=number],input[type=password],input[type=time],select,textarea{width:100%;padding:7px 9px;border:1px solid var(--line);border-radius:6px;background:var(--input);color:var(--text);font:inherit;font-size:13px}
 textarea{min-height:64px;resize:vertical;font-family:ui-monospace,Menlo,Consolas,monospace}
 input:focus,select:focus,textarea:focus{outline:2px solid color-mix(in srgb,var(--primary) 40%,transparent);border-color:var(--primary)}
 .row{display:flex;gap:8px;align-items:center}
@@ -109,6 +109,7 @@ pre.out{white-space:pre-wrap;word-break:break-all;background:var(--chip);border-
 .login h2{margin:0 0 16px;font-size:18px;text-align:center}
 .help{color:var(--muted);font-size:13px;line-height:1.8}
 .help code{background:var(--chip);padding:1px 5px;border-radius:4px}
+.kgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:0 12px;margin-top:10px}
 .acct{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);flex-wrap:wrap}
 .acct b{color:var(--text);font-weight:500;font-family:ui-monospace,Menlo,Consolas,monospace;word-break:break-all}
 @media (max-width:520px){.grid{grid-template-columns:1fr}.nums b{font-size:14px}}
@@ -252,7 +253,7 @@ function renderLogin(msg) {
 function shell() {
   if ($('#main')) return;
   $('#app').innerHTML = `<header><div class="bar"><div class="logo"><i></i>Emby 反代</div>
-    <nav><button data-t="sites">站点</button><button data-t="logs">访问日志</button><button data-t="settings">设置</button><button data-t="help">说明</button></nav>
+    <nav><button data-t="sites">站点</button><button data-t="logs">访问日志</button><button data-t="keepalive">保号</button><button data-t="settings">设置</button><button data-t="help">说明</button></nav>
     <div class="sp"></div><span class="kv" id="uptime"></span><button class="btn sm" id="btnLogout">退出</button></div></header><main id="main"></main>`;
   document.querySelectorAll('nav button').forEach(b => b.onclick = () => { tab = b.dataset.t; render(); });
   $('#btnLogout').onclick = async () => { await api('POST', '/api/logout'); S = null; renderLogin(); };
@@ -261,11 +262,14 @@ function shell() {
 function render() {
   if (!S) return;
   shell();
+  if (isNode() && tab === 'keepalive') tab = 'sites';
   document.querySelectorAll('nav button').forEach(b => b.classList.toggle('on', b.dataset.t === tab));
+  $('nav button[data-t=keepalive]').style.display = isNode() ? 'none' : '';
   $('#uptime').textContent = `v${S.version} · 已运行 ${fmtUptime(S.uptime)}`;
   if (tab === 'sites') renderSites();
   else if (tab === 'logs') renderLogs();
   else if (tab === 'settings') renderSettings();
+  else if (tab === 'keepalive') renderKeepalive();
   else renderHelp();
 }
 
@@ -716,6 +720,61 @@ function renderSettings() {
   bindPassword(); bindCluster();
 }
 
+// ---- 自动保号 ----
+function renderKeepalive() {
+  const c = S.keepalive.config, cl = c.client || {};
+  const num = (name, label, min, max, tip) => `<div class="f"><label>${label}</label><input type="number" name="${name}" min="${min}" max="${max}" value="${esc(c[name])}" required>${tip ? `<small>${tip}</small>` : ''}</div>`;
+  const txt = (name, label, v) => `<div class="f"><label>${label}</label><input type="text" name="${name}" value="${esc(v)}" required></div>`;
+  $('#main').innerHTML = `<form class="panel" id="kf"><h3>自动保号</h3>
+    <div class="help" style="margin-bottom:10px">定期用站点里保存的 Emby 账号登录，随机挑一部电影 / 剧集模拟播放几分钟，在服务器上留下观看记录，防止账号长期不用被清理。
+      经站点的客户端访问地址访问（上游看到的是负责节点的 IP）；站点停用或没有客户端访问地址时直接连上游。账号在「站点 → 编辑」里填写。</div>
+    <label class="chk"><input type="checkbox" name="enabled" ${c.enabled ? 'checked' : ''}><span>开启自动保号</span></label>
+    <div class="kgrid">${num('interval_days', '每几天一次', 1, 365)}
+      <div class="f"><label>几点执行</label><input type="time" name="run_at" value="${esc(c.run_at)}" required><small>服务器时区</small></div></div>
+    <details><summary>播放参数</summary><div class="kgrid">
+      ${num('watch_min', '观看时长：最短（分钟）', 1, 180)}${num('watch_max', '最长（分钟）', 1, 180, '每次在范围内随机')}
+      ${num('report_interval', '进度上报间隔（秒）', 1, 300)}${num('stream_kbps', '同时拉流（kbps）', 0, 100000, '0 = 不拉流；服务器按流量判定时才需要')}
+      ${num('retries', '每个账号最多试几次', 1, 10, '账号密码被拒绝（401/403）不重试')}${num('retry_hours', '失败后几小时再试', 1, 72)}</div></details>
+    <details><summary>客户端身份（默认伪装 SenPlayer）</summary><div class="kgrid">
+      ${txt('cl_name', 'Client', cl.name)}${txt('cl_version', 'Version', cl.version)}${txt('cl_device', 'Device', cl.device)}${txt('cl_ua', 'User-Agent', cl.user_agent)}</div></details>
+    <details><summary>Telegram 通知（每轮结束推送结果）</summary><div class="kgrid">
+      <div class="f"><label>Bot Token</label><input type="password" name="tg_token" autocomplete="new-password" placeholder="${c.telegram_token ? '已设置（' + esc(c.telegram_token) + '），留空不修改' : '不填则不推送'}">
+        ${c.telegram_token ? '<label class="chk" style="margin-top:6px"><input type="checkbox" name="tg_clear"><span>清除令牌</span></label>' : ''}</div>
+      <div class="f"><label>Chat ID</label><input type="text" name="tg_chat" value="${esc(c.telegram_chat || '')}"></div></div></details>
+    <div class="foot"><button type="button" class="btn" id="btnKaRun">立即执行</button><button class="btn pri">保存</button></div></form>
+    <div class="panel" id="kaStatus">${kaStatusHTML()}</div>`;
+  $('#kf').onsubmit = async e => {
+    e.preventDefault();
+    const f = e.target, n = k => parseInt(f[k].value);
+    const body = {enabled: f.enabled.checked, interval_days: n('interval_days'), run_at: f.run_at.value,
+      watch_min: n('watch_min'), watch_max: n('watch_max'), report_interval: n('report_interval'), stream_kbps: n('stream_kbps'),
+      retries: n('retries'), retry_hours: n('retry_hours'),
+      client: {name: f.cl_name.value, version: f.cl_version.value, device: f.cl_device.value, user_agent: f.cl_ua.value},
+      telegram_chat: f.tg_chat.value};
+    if (f.tg_clear && f.tg_clear.checked) body.telegram_token = '';
+    else if (f.tg_token.value) body.telegram_token = f.tg_token.value;
+    try { await api('PUT', '/api/keepalive', body); S = await api('GET', '/api/state'); renderKeepalive(); toast('已保存'); }
+    catch (err) { toast(err.message); }
+  };
+  $('#btnKaRun').onclick = async () => {
+    if (!confirm('立即对所有保存了账号的站点执行一轮保号？（每个账号要看几分钟）')) return;
+    try { const r = await api('POST', '/api/keepalive/run'); toast(`已开始，共 ${r.count} 个账号`); S = await api('GET', '/api/state'); $('#kaStatus').innerHTML = kaStatusHTML(); }
+    catch (err) { toast(err.message); }
+  };
+}
+function kaStatusHTML() {
+  const k = S.keepalive;
+  if (!k) return '';
+  const t = v => v ? new Date(v * 1000).toLocaleString('zh-CN', {month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit'}) : '—';
+  const rows = k.sites.map(s => `<tr><td>${esc(s.name)}</td>
+    <td>${s.running ? '<span class="ok">执行中…</span>' : esc(s.last_success || '—')}</td>
+    <td>${k.config.enabled && s.next ? t(s.next) : '—'}</td>
+    <td class="p">${s.error ? `<span class="bad">${esc(s.error)}</span>` : s.last_result ? `<span class="${s.last_ok ? 'ok' : 'bad'}">${esc(s.last_result)}</span> <span class="kv">${t(s.last_time)}</span>` : '—'}</td></tr>`).join('');
+  return `<h3>状态</h3>${k.sites.length ? `<div class="tw" style="max-height:none"><table><tr><th>站点</th><th>上次成功</th><th>下次执行</th><th>最近结果</th></tr>${rows}</table></div>`
+    : '<div class="help">还没有站点保存了 Emby 账号，在「站点 → 编辑」里填写。</div>'}
+    <pre class="out" style="max-height:280px;margin-top:10px">${esc(k.log.join('\n')) || '暂无保号日志'}</pre>`;
+}
+
 function bindPassword() {
   $('#pf').onsubmit = async e => {
     e.preventDefault();
@@ -753,6 +812,7 @@ function startTimer() {
     try {
       if (tab === 'sites') { S = await api('GET', '/api/state'); render(); }
       else if (tab === 'logs' && !logPaused) refreshLogs();
+      else if (tab === 'keepalive' && $('#kaStatus')) { S = await api('GET', '/api/state'); $('#kaStatus').innerHTML = kaStatusHTML(); }
     } catch (e) {}
   }, 3000);
 }

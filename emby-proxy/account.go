@@ -33,6 +33,7 @@ var errNoAccountKey = errors.New("缺少 account.key，已保存的账号无法�
 type siteAccount struct {
 	Username string `json:"u"`
 	Password string `json:"p"`
+	DeviceID string `json:"d,omitempty"` // 保号用的设备 ID；空则按「上游地址 + 用户名」推算
 }
 
 // accountView 是面板上显示的账号（/api/state，登录后才能访问）。
@@ -166,12 +167,18 @@ func (a *Admin) saveAccount(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
+		DeviceID string `json:"device_id"` // 可选：不传则保留原来的
 	}
 	if err := readJSON(r, &body); err != nil {
 		writeErr(w, 400, "请求格式错误")
 		return
 	}
 	body.Username = strings.TrimSpace(body.Username)
+	body.DeviceID = strings.TrimSpace(body.DeviceID)
+	if len(body.DeviceID) > 100 || strings.ContainsAny(body.DeviceID, "\"\r\n") {
+		writeErr(w, 400, "设备 ID 不正确")
+		return
+	}
 	switch {
 	case body.Username == "":
 		writeErr(w, 400, "请填写用户名")
@@ -187,7 +194,15 @@ func (a *Admin) saveAccount(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, "读取 account.key 失败: "+err.Error())
 		return
 	}
-	enc, err := sealAccount(key, id, siteAccount{Username: body.Username, Password: body.Password})
+	if body.DeviceID == "" {
+		m.mu.RLock()
+		old := m.cfg.Accounts[id]
+		m.mu.RUnlock()
+		if prev, err := openAccount(key, id, old); old != "" && err == nil {
+			body.DeviceID = prev.DeviceID
+		}
+	}
+	enc, err := sealAccount(key, id, siteAccount{Username: body.Username, Password: body.Password, DeviceID: body.DeviceID})
 	if err != nil {
 		writeErr(w, 500, "加密失败: "+err.Error())
 		return

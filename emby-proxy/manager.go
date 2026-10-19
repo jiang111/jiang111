@@ -48,6 +48,8 @@ type Manager struct {
 
 	acctMu  sync.Mutex
 	acctKey []byte // 站点账号的加密密钥（data/account.key）
+
+	ka *keepalive // 自动保号
 }
 
 // TLS 校验方式
@@ -151,6 +153,7 @@ func NewManager(path string, cfg *Config) *Manager {
 	}
 	m.loadStats()
 	m.loadTraffic()
+	m.ka = newKeepalive(m)
 	return m
 }
 

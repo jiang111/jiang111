@@ -60,6 +60,8 @@ type Config struct {
 	Sites         []*Site       `json:"sites"`
 	// 站点账号：站点 ID → 密文（见 account.go）。只在本机，不同步、不导出
 	Accounts map[string]string `json:"accounts,omitempty"`
+	// 自动保号设置（见 keepalive.go）。只在本机，不同步、不导出
+	Keepalive *KeepaliveConfig `json:"keepalive,omitempty"`
 }
 
 func randHex(n int) string {
