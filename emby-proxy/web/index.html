@@ -168,6 +168,8 @@ pre.out{white-space:pre-wrap;word-break:break-all;background:var(--chip);border-
   </form>
 </div>
 
+<div class="mask" id="expMask"><div class="modal" id="expBox" style="max-width:560px"></div></div>
+
 <script>
 const $ = (s, el = document) => el.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -285,7 +287,7 @@ function renderSites() {
     ${tot.x ? `<div class="tot"><b>${fmtBytes(tot.x)}</b><span>节点间转发</span></div>` : ''}
   </div>
   ${isNode() ? `<div class="notice">这台服务器是<b>从节点</b>，站点和设置由主节点 <code>${esc(S.cluster.master_url)}</code> 同步，只能查看。本页只显示本机数据，全部节点的汇总看主节点。${syncLine()}</div>`
-    : `<div class="row" style="margin-bottom:12px"><div class="sp"></div><button class="btn pri" id="btnAdd">＋ 添加站点</button></div>`}`;
+    : `<div class="row" style="margin-bottom:12px"><div class="sp"></div><button class="btn" id="btnExport">导出账号</button><button class="btn pri" id="btnAdd">＋ 添加站点</button></div>`}`;
   if (!sites.length) {
     html += `<div class="empty">还没有站点。点「添加站点」，填入上游 Emby 地址即可生成一个反代地址。</div>`;
   } else {
@@ -317,6 +319,7 @@ function renderSites() {
   }
   $('#main').innerHTML = html;
   if ($('#btnAdd')) $('#btnAdd').onclick = () => openForm(null);
+  if ($('#btnExport')) $('#btnExport').onclick = () => { renderExport(); $('#expMask').classList.add('show'); };
   $('#main').querySelectorAll('[data-act]').forEach(el => el.onclick = e => siteAction(el, e));
   $('#main').querySelectorAll('.acct-edit input').forEach(el => el.onkeydown = e => {
     if (e.key === 'Enter') el.closest('.card').querySelector('[data-act=acctsave]').click();
@@ -439,6 +442,31 @@ function openForm(s) {
   setTimeout(() => f.name.focus(), 50);
 }
 function closeForm() { $('#mask').classList.remove('show'); }
+
+// ---- 一键导出账号 ----
+function renderExport() {
+  const k = S.export_key, link = k ? `${location.origin}/export?key=${k}` : '';
+  $('#expBox').innerHTML = `<h2>导出账号</h2>
+    <div class="help" style="margin-bottom:10px">导出页列出所有保存了账号的站点，每个播放器一个导入按钮（SenPlayer、Rex、Forward、Hills、小幻影视、网易爆米花、EplayerX，一个按钮导入一台），
+      另有文本清单可复制或下载。导出链接里带的是单独的<b>导出密码</b>，不是面板登录密码；页面本身不含账号，Telegram、微信等自动抓取链接预览时拿不到账号。
+      链接泄露了就「重新生成」，旧链接立即失效。</div>
+    ${k ? `<div class="addr"><code title="${esc(link)}">${esc(link)}</code><button class="btn sm" id="expCopy">复制</button></div>
+      <div class="foot"><button class="btn dan" id="expOff">关闭导出链接</button><button class="btn" id="expReset">重新生成</button><a class="btn pri" href="${esc(link)}" target="_blank" rel="noopener noreferrer">打开导出页</a><button class="btn" id="expClose">关闭</button></div>`
+    : `<div class="foot"><button class="btn" id="expClose">关闭</button><button class="btn pri" id="expReset">生成导出链接</button></div>`}`;
+  $('#expClose').onclick = () => $('#expMask').classList.remove('show');
+  $('#expReset').onclick = async () => {
+    if (k && !confirm('重新生成导出密码？旧的导出链接会立即失效。')) return;
+    try { const r = await api('POST', '/api/export-key'); S.export_key = r.key; renderExport(); toast('已生成新的导出链接'); } catch (err) { toast(err.message); }
+  };
+  if (k) {
+    $('#expCopy').onclick = async () => { try { await navigator.clipboard.writeText(link); toast('已复制导出链接'); } catch (e) { toast('复制失败，请手动选择复制'); } };
+    $('#expOff').onclick = async () => {
+      if (!confirm('关闭导出链接？之后需要重新生成才能导出。')) return;
+      try { await api('DELETE', '/api/export-key'); S.export_key = ''; renderExport(); toast('已关闭导出链接'); } catch (err) { toast(err.message); }
+    };
+  }
+}
+$('#expMask').addEventListener('mousedown', e => { if (e.target.id === 'expMask') $('#expMask').classList.remove('show'); });
 function syncMode() {
   const mode = $('#form').querySelector('input[name=mode]:checked').value;
   document.querySelectorAll('[data-mode]').forEach(el => el.style.display = el.dataset.mode === mode ? '' : 'none');
@@ -446,7 +474,7 @@ function syncMode() {
 document.querySelectorAll('#form input[name=mode]').forEach(r => r.onchange = syncMode);
 $('#btnCancel').onclick = closeForm;
 $('#mask').addEventListener('mousedown', e => { if (e.target.id === 'mask') closeForm(); });
-document.addEventListener('keydown', e => { if (e.key === 'Escape') closeForm(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeForm(); $('#expMask').classList.remove('show'); } });
 $('#btnTest').onclick = async () => {
   const f = $('#form');
   $('#testRes').innerHTML = '测试中…';
@@ -845,7 +873,7 @@ async function load() {
 function startTimer() {
   clearInterval(timer);
   timer = setInterval(async () => {
-    if (document.hidden || !S || $('#mask').classList.contains('show') || acctEdit) return;
+    if (document.hidden || !S || $('#mask').classList.contains('show') || $('#expMask').classList.contains('show') || acctEdit) return;
     try {
       if (tab === 'sites') { S = await api('GET', '/api/state'); render(); }
       else if (tab === 'logs' && !logPaused) refreshLogs();

@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<meta name="referrer" content="no-referrer">
+<title>Emby 账号导出</title>
+<style>
+:root{--bg:#f4f5f7;--card:#fff;--text:#1d2129;--muted:#6b7280;--line:#e5e7eb;--primary:#16a34a;--danger:#dc2626;--warn:#b45309;--chip:#f1f5f9}
+@media (prefers-color-scheme: dark){:root{--bg:#0f1115;--card:#171a21;--text:#e5e7eb;--muted:#9ca3af;--line:#2a2f3a;--chip:#222733;--warn:#f59e0b}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+main{max-width:760px;margin:0 auto;padding:16px}
+h1{font-size:19px;margin:6px 0 12px}
+.warn{background:color-mix(in srgb,var(--warn) 12%,var(--card));border:1px solid color-mix(in srgb,var(--warn) 40%,var(--line));border-radius:10px;padding:10px 12px;font-size:13px;margin-bottom:14px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:12px}
+.card h2{font-size:16px;margin:0 0 8px;display:flex;gap:8px;align-items:center}
+.tag{font-size:11px;font-weight:400;background:var(--chip);color:var(--muted);border-radius:4px;padding:1px 6px}
+.kv{display:flex;gap:6px;align-items:center;font-size:13px;margin:4px 0;min-width:0}
+.kv span{color:var(--muted);flex:none;width:48px}
+.kv code{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:13px ui-monospace,Menlo,Consolas,monospace}
+.btn{border:1px solid var(--line);background:var(--card);color:var(--text);padding:5px 10px;border-radius:8px;font-size:13px;cursor:pointer;text-decoration:none;display:inline-block;white-space:nowrap}
+.btn.sm{padding:2px 8px;font-size:12px}
+.btn.pri{background:var(--primary);border-color:var(--primary);color:#fff}
+.links{display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:8px;margin-top:10px}
+.links a{text-align:center;padding:8px 6px;line-height:1.25}
+.links a small{display:block;font-size:10.5px;color:var(--muted);margin-top:2px;white-space:normal}
+.muted{color:var(--muted);font-size:12px}
+.err{color:var(--danger)}
+textarea{width:100%;min-height:200px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--text);padding:8px;font:12px/1.5 ui-monospace,Menlo,Consolas,monospace}
+.row{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}
+.toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:#111827;color:#fff;padding:8px 16px;border-radius:8px;font-size:13px;display:none;z-index:9}
+ul{padding-left:18px;margin:6px 0}
+</style>
+</head>
+<body>
+<main>
+<h1>Emby 账号导出</h1>
+<div class="warn">这个页面包含全部 Emby 账号和密码，请不要截图或转发。导出链接一旦泄露，请到面板「导出账号」里重新生成，旧链接会立即失效。<br>
+在手机上点按钮会打开对应的播放器，一个按钮导入一台服务器。</div>
+<div id="app"><div class="muted">加载中…</div></div>
+</main>
+<div class="toast" id="toast"></div>
+<script>
+const $ = s => document.querySelector(s);
+const el = (tag, attrs = {}, ...kids) => {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) k === 'text' ? e.textContent = v : e.setAttribute(k, v);
+  kids.forEach(k => k && e.append(k));
+  return e;
+};
+function toast(msg) { const t = $('#toast'); t.textContent = msg; t.style.display = 'block'; clearTimeout(t._h); t._h = setTimeout(() => t.style.display = 'none', 2000); }
+async function copy(text, what) {
+  try { await navigator.clipboard.writeText(text); toast('已复制' + what); }
+  catch (e) { toast('复制失败，请长按手动复制'); }
+}
+// 文本格式和常见 Emby 机器人发的一样：SenPlayer 新建服务器时可以识别剪贴板里的这段内容
+const block = s => `名称：${s.name}\n地址：${s.url}\n用户名：${s.username}\n密码：${s.password}`;
+function download(name, text, type) {
+  const a = el('a', {href: URL.createObjectURL(new Blob([text], {type})), download: name});
+  document.body.append(a); a.click(); a.remove();
+}
+
+// 导出密码只在链接里出现一次：读出来后从地址栏和浏览历史里去掉，刷新时从本标签页的 sessionStorage 取
+let key = new URLSearchParams(location.search).get('key') || '';
+try {
+  if (key) sessionStorage.setItem('ep_export_key', key); else key = sessionStorage.getItem('ep_export_key') || '';
+} catch (e) {}
+if (location.search) history.replaceState(null, '', location.pathname);
+
+async function load() {
+  const app = $('#app');
+  if (!key) { app.innerHTML = '<div class="card err">链接里缺少导出密码，请到面板「导出账号」复制完整的导出链接。</div>'; return; }
+  let d;
+  try {
+    const r = await fetch('/export/data', {method: 'POST', headers: {'Content-Type': 'application/json', 'X-Emby-Proxy': '1'}, body: JSON.stringify({key})});
+    d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || 'HTTP ' + r.status);
+  } catch (e) {
+    app.replaceChildren(el('div', {class: 'card err', text: e.message}));
+    return;
+  }
+  app.replaceChildren();
+  if (!d.sites.length) app.append(el('div', {class: 'card', text: '还没有站点保存了 Emby 账号。'}));
+  for (const s of d.sites) {
+    const pw = el('code', {text: '••••••'});
+    let shown = false;
+    const showBtn = el('button', {class: 'btn sm', text: '显示'});
+    showBtn.onclick = () => { shown = !shown; pw.textContent = shown ? s.password : '••••••'; showBtn.textContent = shown ? '隐藏' : '显示'; };
+    const cp = (text, what) => { const b = el('button', {class: 'btn sm', text: '复制'}); b.onclick = () => copy(text, what); return b; };
+    const links = el('div', {class: 'links'});
+    for (const l of s.links) links.append(el('a', {class: 'btn' + (l.id === 'senplayer' ? ' pri' : ''), href: l.url}, l.name, l.note ? el('small', {text: l.note}) : null));
+    const copyAll = el('button', {class: 'btn sm', text: '复制文本'});
+    copyAll.onclick = () => copy(block(s), '「' + s.name + '」的文本');
+    app.append(el('div', {class: 'card'},
+      el('h2', {}, s.name, s.disabled ? el('span', {class: 'tag', text: '站点已停用'}) : null),
+      el('div', {class: 'kv'}, el('span', {text: '地址'}), el('code', {text: s.url}), cp(s.url, '地址')),
+      el('div', {class: 'kv'}, el('span', {text: '用户名'}), el('code', {text: s.username}), cp(s.username, '用户名')),
+      el('div', {class: 'kv'}, el('span', {text: '密码'}), pw, showBtn, cp(s.password, '密码')),
+      links,
+      el('div', {class: 'row'}, copyAll, el('span', {class: 'muted', text: '复制后在 SenPlayer 新建服务器时可自动识别，其它播放器手动填写'}))));
+  }
+  if (d.skipped.length) app.append(el('div', {class: 'card muted'}, '没有导出：', el('ul', {}, ...d.skipped.map(x => el('li', {text: x})))));
+
+  const all = d.sites.map(block).join('\n\n');
+  const ta = el('textarea', {readonly: ''}); ta.value = all;
+  const bCopy = el('button', {class: 'btn pri', text: '复制全部'}); bCopy.onclick = () => copy(all, '全部账号');
+  const bTxt = el('button', {class: 'btn', text: '下载 txt'}); bTxt.onclick = () => download('emby-accounts.txt', all, 'text/plain;charset=utf-8');
+  const bJson = el('button', {class: 'btn', text: '下载 json'});
+  bJson.onclick = () => download('emby-accounts.json', JSON.stringify(d.sites.map(({name, url, username, password}) => ({name, url, username, password})), null, 2), 'application/json');
+  app.append(el('div', {class: 'card'}, el('h2', {text: '文本清单'}),
+    el('div', {class: 'muted', text: 'VidHub、Infuse、Yamby 等不支持链接导入的播放器，按这里的信息手动添加。'}),
+    el('div', {class: 'row'}, bCopy, bTxt, bJson), ta));
+  app.append(el('div', {class: 'card muted'}, el('b', {text: '说明'}), el('ul', {},
+    el('li', {text: 'SenPlayer：官方支持（5.7.0 及以上），iPhone / iPad / Mac；Apple TV 通过 iCloud 同步。'}),
+    el('li', {text: 'Rex：链接格式来自第三方，未实测；免费版只能添加 1 个资源库。'}),
+    el('li', {text: 'Forward：官方支持，但 App 已下架，只对已经安装的有用。'}),
+    el('li', {text: 'Hills：Android；小幻影视：Windows；EplayerX：链接格式来自第三方，未实测。'}),
+    el('li', {text: '网易爆米花：没装 App 时会打开网易的网页，账号和密码会随链接发给网易。'}),
+    el('li', {text: 'Telegram 里点不开播放器链接，请在浏览器里打开本页。'}))));
+}
+load();
+</script>
+</body>
+</html>

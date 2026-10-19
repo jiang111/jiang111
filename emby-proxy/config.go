@@ -62,6 +62,8 @@ type Config struct {
 	Accounts map[string]string `json:"accounts,omitempty"`
 	// 自动保号设置（见 keepalive.go）。只在本机，不同步、不导出
 	Keepalive *KeepaliveConfig `json:"keepalive,omitempty"`
+	// 一键导出账号的导出密码（见 export.go），空 = 未开启。只在本机，不同步、不导出
+	ExportKey string `json:"export_key,omitempty"`
 }
 
 func randHex(n int) string {

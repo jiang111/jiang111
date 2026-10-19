@@ -143,6 +143,7 @@ server {
     ssl_certificate_key %[4]s;
     ssl_protocols       TLSv1.2 TLSv1.3;
     client_max_body_size 8m;
+    access_log off;  # 一键导出的链接里带导出密码，不写进日志
     location / {
         proxy_pass http://127.0.0.1:%[5]d;
         proxy_set_header Host $host:$server_port;

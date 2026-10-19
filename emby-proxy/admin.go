@@ -37,6 +37,10 @@ func (a *Admin) Handler() http.Handler {
 		w.Write(indexHTML)
 	})
 	mux.HandleFunc("POST /api/login", a.login)
+	mux.HandleFunc("GET /export", a.serveExportPage)  // 一键导出账号页（导出密码在链接里，不用登录）
+	mux.HandleFunc("POST /export/data", a.exportData) // 导出页脚本取数据（校验导出密码）
+	mux.HandleFunc("POST /api/export-key", a.auth(a.nodeReadOnly(a.resetExportKey)))
+	mux.HandleFunc("DELETE /api/export-key", a.auth(a.nodeReadOnly(a.resetExportKey)))
 	mux.HandleFunc("POST /api/logout", func(w http.ResponseWriter, r *http.Request) {
 		http.SetCookie(w, &http.Cookie{Name: cookieName, Value: "", Path: "/", MaxAge: -1})
 		writeJSON(w, 200, map[string]any{"ok": true})
@@ -252,8 +256,12 @@ func (a *Admin) state(w http.ResponseWriter, r *http.Request) {
 		snap = a.cluster.statsSnapshot()
 	}
 	var ka *kaView
+	exportKey := ""
 	if cluster.Role != "node" {
 		ka = m.ka.view(time.Now())
+		m.mu.RLock()
+		exportKey = m.cfg.ExportKey
+		m.mu.RUnlock()
 	}
 	var key []byte
 	var keyErr error
@@ -289,12 +297,13 @@ func (a *Admin) state(w http.ResponseWriter, r *http.Request) {
 			"port_bind": m.cfg.PortBind, "nginx_cert": m.cfg.NginxCert, "nginx_key": m.cfg.NginxKey, "nginx_ipv6": m.cfg.NginxIPv6,
 			"cert": m.certInfo(),
 		},
-		"sites":     views,
-		"nginx":     ngx,
-		"cluster":   cluster,
-		"keepalive": ka, // 自动保号（从节点为 null）
-		"uptime":    int64(time.Since(m.started).Seconds()),
-		"version":   version,
+		"sites":      views,
+		"nginx":      ngx,
+		"cluster":    cluster,
+		"keepalive":  ka,        // 自动保号（从节点为 null）
+		"export_key": exportKey, // 一键导出的导出密码（从节点为空）
+		"uptime":     int64(time.Since(m.started).Seconds()),
+		"version":    version,
 	}
 	if snap != nil {
 		out["cluster_stats_nodes"] = snap.nodes // 上报过统计的从节点及最后上报时间
