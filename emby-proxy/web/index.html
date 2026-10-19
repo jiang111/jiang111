@@ -332,19 +332,19 @@ function acctHTML(s) {
     const ok = a && !a.error;
     return `<div class="acct-edit"><input type="text" data-f="u" placeholder="Emby 用户名" value="${esc(ok ? a.username : '')}" autocomplete="off" spellcheck="false">
       <input type="password" data-f="p" placeholder="密码" value="${esc(ok ? a.password : '')}" autocomplete="new-password">
-      <button class="btn sm" data-act="acctpw">显示</button><button class="btn sm pri" data-act="acctsave">保存</button><button class="btn sm" data-act="acctcancel">取消</button>
-      ${a ? '<button class="btn sm dan" data-act="acctdel">删除账号</button>' : ''}</div>`;
+      <button class="btn sm" data-act="acctpw">显示</button><button class="btn sm pri" data-act="acctsave">保存</button><button class="btn sm" data-act="acctcancel">取消</button></div>`;
   }
   if (!a) return `<div class="acct">Emby 账号 未设置<button class="btn sm" data-act="acctedit">设置账号</button></div>`;
-  if (a.error) return `<div class="acct"><span class="bad">账号：${esc(a.error)}</span><button class="btn sm" data-act="acctedit">重新填写</button></div>`;
+  const ops = '<div class="sp"></div><button class="btn sm" data-act="acctedit">修改</button><button class="btn sm dan" data-act="acctdel">删除</button>';
+  if (a.error) return `<div class="acct"><span class="bad">账号：${esc(a.error)}</span>${ops}</div>`;
   const shown = shownPw.has(s.id);
   const t = v => new Date(v * 1000).toLocaleString('zh-CN', {month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit'});
   let kaInfo = '已关闭';
   if (ka && ka.on) kaInfo = ka.running ? '<span class="ok">执行中…</span>'
     : `上次 ${esc(ka.last_success || '—')} · ${ka.next ? '下次 ' + t(ka.next) : '总开关已关'}${ka.last_result && !ka.last_ok ? ` · <span class="bad" title="${esc(ka.last_result)}">最近失败</span>` : ''}`;
   return `<div class="acct">账号 <b>${esc(a.username)}</b><button class="btn sm" data-act="copyuser">复制</button>
-      密码 <b>${shown ? esc(a.password) || '（空）' : (a.password ? '••••••' : '（空）')}</b>${a.password ? `<button class="btn sm" data-act="pwshow">${shown ? '隐藏' : '显示'}</button><button class="btn sm" data-act="copypw">复制</button>` : ''}<button class="btn sm" data-act="acctedit">修改</button></div>
-    ${S.keepalive ? `<div class="acct">自动保号 <label class="toggle" title="这个站点的保号开关"><input type="checkbox" data-act="katoggle" ${ka && ka.on ? 'checked' : ''}><span></span></label>${kaInfo}</div>` : ''}`;
+      密码 <b>${shown ? esc(a.password) || '（空）' : (a.password ? '••••••' : '（空）')}</b>${a.password ? `<button class="btn sm" data-act="pwshow">${shown ? '隐藏' : '显示'}</button><button class="btn sm" data-act="copypw">复制</button>` : ''}</div>
+    <div class="acct">${S.keepalive ? `自动保号 <label class="toggle" title="这个站点的保号开关"><input type="checkbox" data-act="katoggle" ${ka && ka.on ? 'checked' : ''}><span></span></label>${kaInfo}` : ''}${ops}</div>`;
 }
 
 async function siteAction(el, e) {
