@@ -195,6 +195,22 @@ func TestClusterReport(t *testing.T) {
 		t.Fatalf("stale node should be offline: %+v", s.Nodes)
 	}
 
+	// 只做控制的主节点本机没有流量：不列出本机那一行
+	st.Requests.Store(0)
+	st.Bytes.Store(0)
+	st.Active.Store(0)
+	master.stats[id].clear()
+	report(token, StatsView{Requests: 20, Active: 1})
+	if ns := state().Sites[0].NodeStats; len(ns) != 1 || ns[0].Name != "isif" {
+		t.Fatalf("control-only master with no traffic should not be listed: %+v", ns)
+	}
+	master.mu.Lock()
+	master.cfg.Cluster.AdvertiseAddr = "203.0.113.9" // 主节点也接流量：本机照常列出
+	master.mu.Unlock()
+	if ns := state().Sites[0].NodeStats; len(ns) != 2 || !ns[0].Self {
+		t.Fatalf("serving master should be listed: %+v", ns)
+	}
+
 	// 删除站点清掉基准
 	do("DELETE", "/api/sites/"+id, "")
 	c.mu.Lock()
