@@ -7,31 +7,42 @@
 <meta name="referrer" content="no-referrer">
 <title>Emby 账号导出</title>
 <style>
-:root{--bg:#f4f5f7;--card:#fff;--text:#1d2129;--muted:#6b7280;--line:#e5e7eb;--primary:#16a34a;--danger:#dc2626;--warn:#b45309;--chip:#f1f5f9}
-@media (prefers-color-scheme: dark){:root{--bg:#0f1115;--card:#171a21;--text:#e5e7eb;--muted:#9ca3af;--line:#2a2f3a;--chip:#222733;--warn:#f59e0b}}
-*{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--text);font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
-main{max-width:760px;margin:0 auto;padding:16px}
-h1{font-size:19px;margin:6px 0 12px}
-.warn{background:color-mix(in srgb,var(--warn) 12%,var(--card));border:1px solid color-mix(in srgb,var(--warn) 40%,var(--line));border-radius:10px;padding:10px 12px;font-size:13px;margin-bottom:14px}
-.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:12px}
-.card h2{font-size:16px;margin:0 0 8px;display:flex;gap:8px;align-items:center}
-.tag{font-size:11px;font-weight:400;background:var(--chip);color:var(--muted);border-radius:4px;padding:1px 6px}
-.kv{display:flex;gap:6px;align-items:center;font-size:13px;margin:4px 0;min-width:0}
-.kv span{color:var(--muted);flex:none;width:48px}
-.kv code{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:13px ui-monospace,Menlo,Consolas,monospace}
-.btn{border:1px solid var(--line);background:var(--card);color:var(--text);padding:5px 10px;border-radius:8px;font-size:13px;cursor:pointer;text-decoration:none;display:inline-block;white-space:nowrap}
-.btn.sm{padding:2px 8px;font-size:12px}
-.btn.pri{background:var(--primary);border-color:var(--primary);color:#fff}
-.links{display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:8px;margin-top:10px}
-.links a{text-align:center;padding:8px 6px;line-height:1.25}
-.links a small{display:block;font-size:10.5px;color:var(--muted);margin-top:2px;white-space:normal}
-.muted{color:var(--muted);font-size:12px}
+/* 和面板同一套视觉语言：系统字体、分组背景、圆角卡片、系统蓝；随系统浅色 / 深色切换 */
+:root{color-scheme:light dark;--bg:#f2f2f7;--card:#fff;--text:#000;--muted:rgba(60,60,67,.6);--line:rgba(60,60,67,.14);
+  --primary:#007aff;--tint:rgba(0,122,255,.1);--danger:#ff3b30;--warn:#ff9500;--chip:rgba(118,118,128,.12);--hud:rgba(28,28,30,.86);
+  --shadow:0 1px 2px rgba(0,0,0,.04),0 4px 14px rgba(0,0,0,.05);--ease:cubic-bezier(.32,.72,0,1)}
+@media (prefers-color-scheme: dark){:root{--bg:#000;--card:#1c1c1e;--text:#fff;--muted:rgba(235,235,245,.6);--line:rgba(84,84,88,.55);
+  --primary:#0a84ff;--tint:rgba(10,132,255,.18);--danger:#ff453a;--warn:#ff9f0a;--chip:rgba(118,118,128,.24);--hud:rgba(58,58,60,.92);--shadow:none}}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.47 -apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Helvetica Neue","Microsoft YaHei",sans-serif;-webkit-font-smoothing:antialiased;letter-spacing:-.01em}
+main{max-width:760px;margin:0 auto;padding:24px 16px calc(40px + env(safe-area-inset-bottom))}
+h1{font-size:30px;line-height:1.1;font-weight:700;letter-spacing:-.03em;margin:8px 0 16px}
+.warn{background:color-mix(in srgb,var(--warn) 13%,var(--card));border-radius:14px;padding:12px 14px;font-size:13.5px;margin-bottom:18px;line-height:1.55}
+.card{background:var(--card);border-radius:16px;padding:16px;margin-bottom:14px;box-shadow:var(--shadow)}
+.card h2{font-size:18px;font-weight:600;letter-spacing:-.02em;margin:0 0 10px;display:flex;gap:8px;align-items:center}
+.tag{font-size:11.5px;font-weight:500;background:var(--chip);color:var(--muted);border-radius:6px;padding:2px 8px}
+.group{background:var(--chip);border-radius:12px;overflow:hidden}
+.kv{display:flex;gap:8px;align-items:center;font-size:13.5px;min-width:0;padding:8px 8px 8px 12px;min-height:42px}
+.kv + .kv{box-shadow:0 -.5px 0 var(--line)}
+.kv span{color:var(--muted);flex:none;width:52px}
+.kv code{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:13px ui-monospace,"SF Mono",Menlo,Consolas,monospace}
+.btn{border:0;background:var(--tint);color:var(--primary);padding:7px 14px;border-radius:10px;font-family:inherit;font-weight:600;font-size:13.5px;line-height:1.3;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;justify-content:center;white-space:nowrap;transition:transform .12s var(--ease)}
+.btn:active{transform:scale(.97)}
+.btn.sm{padding:4px 10px;font-size:12.5px;border-radius:8px}
+.btn.pri{background:var(--primary);color:#fff}
+.links{display:grid;grid-template-columns:repeat(auto-fill,minmax(112px,1fr));gap:8px;margin-top:12px}
+.links a{flex-direction:column;padding:10px 6px;line-height:1.25;border-radius:12px;text-align:center;min-height:52px}
+.links a small{display:block;font-size:10.5px;font-weight:400;opacity:.75;margin-top:3px;white-space:normal}
+.links a.pri small{opacity:.85}
+.muted{color:var(--muted);font-size:12.5px}
 .err{color:var(--danger)}
-textarea{width:100%;min-height:200px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--text);padding:8px;font:12px/1.5 ui-monospace,Menlo,Consolas,monospace}
-.row{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}
-.toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:#111827;color:#fff;padding:8px 16px;border-radius:8px;font-size:13px;display:none;z-index:9}
-ul{padding-left:18px;margin:6px 0}
+textarea{width:100%;min-height:220px;border:0;border-radius:12px;background:var(--chip);color:var(--text);padding:10px 12px;font:12px/1.55 ui-monospace,"SF Mono",Menlo,Consolas,monospace;resize:vertical}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:12px 0}
+.toast{position:fixed;left:50%;bottom:calc(28px + env(safe-area-inset-bottom));transform:translate(-50%,12px);opacity:0;pointer-events:none;background:var(--hud);color:#fff;-webkit-backdrop-filter:blur(20px);backdrop-filter:blur(20px);padding:10px 18px;border-radius:999px;font-size:13.5px;font-weight:500;z-index:9;max-width:calc(100vw - 32px);transition:opacity .25s ease,transform .35s var(--ease)}
+.toast.show{opacity:1;transform:translate(-50%,0)}
+ul{padding-left:18px;margin:8px 0 0;line-height:1.7}
+@media (prefers-reduced-motion: reduce){*{transition-duration:.1s !important}.btn:active{transform:none}}
+@media (prefers-reduced-transparency: reduce){.toast{background:#1c1c1e;-webkit-backdrop-filter:none;backdrop-filter:none}}
 </style>
 </head>
 <body>
@@ -50,7 +61,7 @@ const el = (tag, attrs = {}, ...kids) => {
   kids.forEach(k => k && e.append(k));
   return e;
 };
-function toast(msg) { const t = $('#toast'); t.textContent = msg; t.style.display = 'block'; clearTimeout(t._h); t._h = setTimeout(() => t.style.display = 'none', 2000); }
+function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('show'), 2000); }
 async function copy(text, what) {
   try { await navigator.clipboard.writeText(text); toast('已复制' + what); }
   catch (e) { toast('复制失败，请长按手动复制'); }
@@ -95,9 +106,10 @@ async function load() {
     copyAll.onclick = () => copy(block(s), '「' + s.name + '」的文本');
     app.append(el('div', {class: 'card'},
       el('h2', {}, s.name, s.disabled ? el('span', {class: 'tag', text: '站点已停用'}) : null),
-      el('div', {class: 'kv'}, el('span', {text: '地址'}), el('code', {text: s.url}), cp(s.url, '地址')),
-      el('div', {class: 'kv'}, el('span', {text: '用户名'}), el('code', {text: s.username}), cp(s.username, '用户名')),
-      el('div', {class: 'kv'}, el('span', {text: '密码'}), pw, showBtn, cp(s.password, '密码')),
+      el('div', {class: 'group'},
+        el('div', {class: 'kv'}, el('span', {text: '地址'}), el('code', {text: s.url}), cp(s.url, '地址')),
+        el('div', {class: 'kv'}, el('span', {text: '用户名'}), el('code', {text: s.username}), cp(s.username, '用户名')),
+        el('div', {class: 'kv'}, el('span', {text: '密码'}), pw, showBtn, cp(s.password, '密码'))),
       links,
       el('div', {class: 'row'}, copyAll, el('span', {class: 'muted', text: '复制后在 SenPlayer 新建服务器时可自动识别，其它播放器手动填写'}))));
   }
