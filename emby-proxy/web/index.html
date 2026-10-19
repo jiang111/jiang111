@@ -111,6 +111,8 @@ pre.out{white-space:pre-wrap;word-break:break-all;background:var(--chip);border-
 .help code{background:var(--chip);padding:1px 5px;border-radius:4px}
 .kgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:0 12px;margin-top:10px}
 .acct{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);flex-wrap:wrap}
+.acct-edit{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.acct-edit input{flex:1 1 120px;min-width:0}
 .acct b{color:var(--text);font-weight:500;font-family:ui-monospace,Menlo,Consolas,monospace;word-break:break-all}
 @media (max-width:520px){.grid{grid-template-columns:1fr}.nums b{font-size:14px}}
 </style>
@@ -160,13 +162,6 @@ pre.out{white-space:pre-wrap;word-break:break-all;background:var(--chip);border-
       <label class="chk"><input type="checkbox" name="insecure_tls"><span>完全不校验上游 HTTPS 证书（自签证书等）</span></label>
       <div class="f"><label>备注</label><input type="text" name="remark"></div>
     </details>
-    <div class="f">
-      <label>Emby 账号（可选，只做记录）</label>
-      <div class="row"><input type="text" name="acct_user" placeholder="用户名" autocomplete="off" spellcheck="false"><input type="password" name="acct_pass" placeholder="密码" autocomplete="new-password"><button type="button" class="btn" id="btnShowPw">显示</button></div>
-      <div class="err" id="acctErr"></div>
-      <label class="chk" id="kaChk" style="margin:6px 0 0"><input type="checkbox" name="acct_ka"><span>参与自动保号（在「保号」页设置时间）</span></label>
-      <small>登录面板后可以查看；加密保存在本机，不同步给从节点、不随导出。用户名和密码都清空表示删除。</small>
-    </div>
     <label class="chk"><input type="checkbox" name="enabled"><span>启用</span></label>
     <div class="err" id="ferr"></div>
     <div class="foot"><button type="button" class="btn" id="btnCancel">取消</button><button type="submit" class="btn pri">保存</button></div>
@@ -179,7 +174,7 @@ const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt
 const testRes = {};
 let S = null, tab = 'sites', editing = null, timer = null, logSite = '', logPaused = false;
 const shownPw = new Set(); // 卡片上点了「显示」的站点
-const kaOn = id => !!(S.keepalive && S.keepalive.sites.some(x => x.id === id && x.on)); // 站点的保号开关
+let acctEdit = null;        // 正在卡片上编辑账号的站点（编辑时暂停自动刷新）
 
 function toast(msg) {
   const t = $('#toast'); t.textContent = msg; t.style.display = 'block';
@@ -257,7 +252,7 @@ function shell() {
   $('#app').innerHTML = `<header><div class="bar"><div class="logo"><i></i>Emby 反代</div>
     <nav><button data-t="sites">站点</button><button data-t="logs">访问日志</button><button data-t="keepalive">保号</button><button data-t="settings">设置</button><button data-t="help">说明</button></nav>
     <div class="sp"></div><span class="kv" id="uptime"></span><button class="btn sm" id="btnLogout">退出</button></div></header><main id="main"></main>`;
-  document.querySelectorAll('nav button').forEach(b => b.onclick = () => { tab = b.dataset.t; render(); });
+  document.querySelectorAll('nav button').forEach(b => b.onclick = () => { tab = b.dataset.t; acctEdit = null; render(); });
   $('#btnLogout').onclick = async () => { await api('POST', '/api/logout'); S = null; renderLogin(); };
 }
 
@@ -304,14 +299,11 @@ function renderSites() {
         <div class="chips"><span class="chip">${esc(modeTxt)}</span>
           <span class="chip ${s.stream_mode === 'proxy' ? 'g' : 'w'}">${s.stream_mode === 'proxy' ? '推流中转' : '推流直连'}</span>
           ${hosts.length ? `<span class="chip" title="${esc(hosts.join('\n'))}">推流域名 ${hosts.length}</span>` : ''}
-          ${kaOn(s.id) ? '<span class="chip g" title="已开启自动保号">保号</span>' : ''}
           ${s.forward_ip ? '<span class="chip">传真实IP</span>' : ''}${s.insecure_tls ? '<span class="chip w">不校验证书</span>' : s.ignore_expired ? '<span class="chip w">忽略证书过期</span>' : ''}</div>
         <div class="addr"><code title="${esc(addr)}">${esc(addr)}</code><button class="btn sm" data-act="copy" data-v="${esc(addr)}">复制</button></div>
         <div class="kv">上游 <b>${esc(s.upstream)}</b></div>
         ${s.remark ? `<div class="kv">${esc(s.remark)}</div>` : ''}
-        ${s.account ? (s.account.error ? `<div class="err">账号：${esc(s.account.error)}</div>`
-          : `<div class="acct">账号 <b>${esc(s.account.username)}</b><button class="btn sm" data-act="copyuser">复制</button>
-            密码 <b>${shownPw.has(s.id) ? esc(s.account.password) || '（空）' : (s.account.password ? '••••••' : '（空）')}</b>${s.account.password ? `<button class="btn sm" data-act="pwshow">${shownPw.has(s.id) ? '隐藏' : '显示'}</button><button class="btn sm" data-act="copypw">复制</button>` : ''}</div>`) : ''}
+        ${acctHTML(s)}
         ${s.error ? `<div class="err">${esc(s.error)}</div>` : ''}
         <div class="nums"><div><b>${st(s).streams}</b>播放中</div><div><b>${st(s).active}</b>连接</div><div><b>${fmtBytes(st(s).bytes)}</b>流量</div><div><b>${st(s).requests}</b>请求</div></div>
         ${s.node_stats && s.node_stats.length > 1 ? `<div class="kv" title="各节点：播放中 / 连接">${s.node_stats.map(n => `${esc(n.name)} 播放${n.stats.streams} 连接${n.stats.active}`).join(' · ')}</div>` : ''}
@@ -326,6 +318,33 @@ function renderSites() {
   $('#main').innerHTML = html;
   if ($('#btnAdd')) $('#btnAdd').onclick = () => openForm(null);
   $('#main').querySelectorAll('[data-act]').forEach(el => el.onclick = e => siteAction(el, e));
+  $('#main').querySelectorAll('.acct-edit input').forEach(el => el.onkeydown = e => {
+    if (e.key === 'Enter') el.closest('.card').querySelector('[data-act=acctsave]').click();
+    else if (e.key === 'Escape') { acctEdit = null; renderSites(); }
+  });
+}
+
+// 卡片上的 Emby 账号和保号开关（账号只在主节点 / 单机）
+function acctHTML(s) {
+  if (isNode()) return '';
+  const a = s.account, ka = S.keepalive && S.keepalive.sites.find(x => x.id === s.id);
+  if (acctEdit === s.id) {
+    const ok = a && !a.error;
+    return `<div class="acct-edit"><input type="text" data-f="u" placeholder="Emby 用户名" value="${esc(ok ? a.username : '')}" autocomplete="off" spellcheck="false">
+      <input type="password" data-f="p" placeholder="密码" value="${esc(ok ? a.password : '')}" autocomplete="new-password">
+      <button class="btn sm" data-act="acctpw">显示</button><button class="btn sm pri" data-act="acctsave">保存</button><button class="btn sm" data-act="acctcancel">取消</button>
+      ${a ? '<button class="btn sm dan" data-act="acctdel">删除账号</button>' : ''}</div>`;
+  }
+  if (!a) return `<div class="acct">Emby 账号 未设置<button class="btn sm" data-act="acctedit">设置账号</button></div>`;
+  if (a.error) return `<div class="acct"><span class="bad">账号：${esc(a.error)}</span><button class="btn sm" data-act="acctedit">重新填写</button></div>`;
+  const shown = shownPw.has(s.id);
+  const t = v => new Date(v * 1000).toLocaleString('zh-CN', {month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit'});
+  let kaInfo = '已关闭';
+  if (ka && ka.on) kaInfo = ka.running ? '<span class="ok">执行中…</span>'
+    : `上次 ${esc(ka.last_success || '—')} · ${ka.next ? '下次 ' + t(ka.next) : '总开关已关'}${ka.last_result && !ka.last_ok ? ` · <span class="bad" title="${esc(ka.last_result)}">最近失败</span>` : ''}`;
+  return `<div class="acct">账号 <b>${esc(a.username)}</b><button class="btn sm" data-act="copyuser">复制</button>
+      密码 <b>${shown ? esc(a.password) || '（空）' : (a.password ? '••••••' : '（空）')}</b>${a.password ? `<button class="btn sm" data-act="pwshow">${shown ? '隐藏' : '显示'}</button><button class="btn sm" data-act="copypw">复制</button>` : ''}<button class="btn sm" data-act="acctedit">修改</button></div>
+    ${S.keepalive ? `<div class="acct">自动保号 <label class="toggle" title="这个站点的保号开关"><input type="checkbox" data-act="katoggle" ${ka && ka.on ? 'checked' : ''}><span></span></label>${kaInfo}</div>` : ''}`;
 }
 
 async function siteAction(el, e) {
@@ -340,6 +359,30 @@ async function siteAction(el, e) {
     catch (err) { toast('复制失败：浏览器不允许访问剪贴板'); }
   } else if (act === 'pwshow') {
     shownPw.has(id) ? shownPw.delete(id) : shownPw.add(id); renderSites();
+  } else if (act === 'acctedit') {
+    acctEdit = id; renderSites(); setTimeout(() => { const u = $(`.card[data-id="${id}"] [data-f=u]`); if (u) u.focus(); }, 30);
+  } else if (act === 'acctcancel') {
+    acctEdit = null; renderSites();
+  } else if (act === 'acctpw') {
+    const p = card.querySelector('[data-f=p]'); p.type = p.type === 'password' ? 'text' : 'password'; el.textContent = p.type === 'password' ? '显示' : '隐藏';
+  } else if (act === 'acctsave') {
+    const u = card.querySelector('[data-f=u]').value.trim(), p = card.querySelector('[data-f=p]').value;
+    if (!u) { toast('请填写用户名'); return; }
+    try {
+      await api('PUT', `/api/sites/${id}/account`, {username: u, password: p});
+      if (!s.account && S.keepalive) await api('PUT', `/api/sites/${id}/keepalive`, {enabled: true}); // 新填账号默认参与保号
+      acctEdit = null; await load(); toast('账号已保存');
+    } catch (err) { toast(err.message); }
+  } else if (act === 'acctdel') {
+    if (!confirm(`删除站点「${s.name}」的 Emby 账号？（同时关闭它的自动保号）`)) return;
+    try {
+      await api('DELETE', `/api/sites/${id}/account`);
+      if (S.keepalive) await api('PUT', `/api/sites/${id}/keepalive`, {enabled: false});
+      acctEdit = null; await load(); toast('账号已删除');
+    } catch (err) { toast(err.message); }
+  } else if (act === 'katoggle') {
+    try { await api('PUT', `/api/sites/${id}/keepalive`, {enabled: el.checked}); await load(); toast(el.checked ? '已开启自动保号' : '已关闭自动保号'); }
+    catch (err) { toast(err.message); el.checked = !el.checked; }
   } else if (act === 'edit') openForm(s);
   else if (act === 'logs') { logSite = id; tab = 'logs'; render(); }
   else if (act === 'toggle') {
@@ -387,13 +430,6 @@ function openForm(s) {
   f.headers.value = Object.entries(v.headers || {}).map(([k, x]) => `${k}: ${x}`).join('\n');
   f.routes.value = (v.routes || []).map(r => `${r.path} => ${r.target}`).join('\n');
   f.forward_ip.checked = !!v.forward_ip; f.insecure_tls.checked = !!v.insecure_tls; f.ignore_expired.checked = !!v.ignore_expired; f.enabled.checked = v.enabled !== false;
-  const acc = (s && s.account) || null;
-  f.acct_user.value = (acc && acc.username) || '';
-  f.acct_pass.value = (acc && acc.password) || '';
-  f.acct_pass.type = 'password'; $('#btnShowPw').textContent = '显示';
-  f.acct_ka.checked = acc ? kaOn(s.id) : true; // 新填账号默认参与保号
-  $('#kaChk').style.display = S.keepalive ? '' : 'none';
-  $('#acctErr').textContent = (acc && acc.error) || '';
   f.querySelector(`input[name=mode][value=${v.mode}]`).checked = true;
   f.querySelector(`input[name=stream_mode][value=${v.stream_mode || 'proxy'}]`).checked = true;
   if (!v.port && v.mode !== 'port') f.port.value = nextPort();
@@ -402,11 +438,7 @@ function openForm(s) {
   $('#mask').classList.add('show');
   setTimeout(() => f.name.focus(), 50);
 }
-function closeForm() { $('#form').acct_pass.value = ''; $('#mask').classList.remove('show'); }
-$('#btnShowPw').onclick = () => {
-  const p = $('#form').acct_pass, show = p.type === 'password';
-  p.type = show ? 'text' : 'password'; $('#btnShowPw').textContent = show ? '隐藏' : '显示';
-};
+function closeForm() { $('#mask').classList.remove('show'); }
 function syncMode() {
   const mode = $('#form').querySelector('input[name=mode]:checked').value;
   document.querySelectorAll('[data-mode]').forEach(el => el.style.display = el.dataset.mode === mode ? '' : 'none');
@@ -438,15 +470,6 @@ $('#form').onsubmit = async e => {
   };
   try {
     const r = editing ? await api('PUT', '/api/sites/' + editing, body) : await api('POST', '/api/sites', body);
-    const old = editing && (S.sites.find(x => x.id === editing) || {}).account;
-    editing = r.id;
-    const au = f.acct_user.value.trim(), ap = f.acct_pass.value;
-    try {
-      if (au || ap) { if (!old || old.error || au !== old.username || ap !== old.password) await api('PUT', `/api/sites/${r.id}/account`, {username: au, password: ap}); }
-      else if (old && !old.error) await api('DELETE', `/api/sites/${r.id}/account`);
-      const wantKa = !!(au || ap) && f.acct_ka.checked;
-      if (S.keepalive && wantKa !== kaOn(r.id)) await api('PUT', `/api/sites/${r.id}/keepalive`, {enabled: wantKa});
-    } catch (err) { await load(); $('#ferr').textContent = '站点已保存，账号没有保存：' + err.message; return; }
     closeForm(); await load();
     toast(r.error ? '已保存，但：' + r.error : '已保存');
   } catch (err) { $('#ferr').textContent = err.message; }
@@ -822,7 +845,7 @@ async function load() {
 function startTimer() {
   clearInterval(timer);
   timer = setInterval(async () => {
-    if (document.hidden || !S || $('#mask').classList.contains('show')) return;
+    if (document.hidden || !S || $('#mask').classList.contains('show') || acctEdit) return;
     try {
       if (tab === 'sites') { S = await api('GET', '/api/state'); render(); }
       else if (tab === 'logs' && !logPaused) refreshLogs();
