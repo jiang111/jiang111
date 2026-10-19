@@ -183,42 +183,53 @@ type LogEntry struct {
 	Ms       int64  `json:"ms"`
 	UA       string `json:"ua"`
 	Err      string `json:"err,omitempty"`
-	Node     string `json:"node,omitempty"` // 「→ 名称」转发给了该节点；「← 名称」由该节点转来
+	Node     string `json:"node,omitempty"`   // 「→ 名称」转发给了该节点；「← 名称」由该节点转来
+	Server   string `json:"server,omitempty"` // 处理这个请求的服务器（主节点汇总各节点日志时填写）
 }
 
+// LogRing 是内存里的访问日志（满了覆盖最旧的）。第 k 条（从 0 计）存在 buf[k % len(buf)]。
 type LogRing struct {
-	mu   sync.Mutex
-	buf  []LogEntry
-	next int
-	full bool
+	mu    sync.Mutex
+	buf   []LogEntry
+	total int64 // 累计加入的条数
 }
 
 func newLogRing(n int) *LogRing { return &LogRing{buf: make([]LogEntry, n)} }
 
 func (l *LogRing) add(e LogEntry) {
 	l.mu.Lock()
-	l.buf[l.next] = e
-	l.next = (l.next + 1) % len(l.buf)
-	if l.next == 0 {
-		l.full = true
-	}
+	l.buf[l.total%int64(len(l.buf))] = e
+	l.total++
 	l.mu.Unlock()
 }
 
-// list 返回最新在前的日志。
-func (l *LogRing) list(site string, limit int) []LogEntry {
+// list 返回最新在前、满足 match（nil 表示全部）的日志，最多 limit 条。
+func (l *LogRing) list(match func(*LogEntry) bool, limit int) []LogEntry {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	n := l.next
-	if l.full {
-		n = len(l.buf)
-	}
-	out := make([]LogEntry, 0, min(limit, n))
-	for k := 0; k < n && len(out) < limit; k++ {
-		i := (l.next - 1 - k + len(l.buf)) % len(l.buf)
-		if site == "" || l.buf[i].Site == site {
-			out = append(out, l.buf[i])
+	n := min(l.total, int64(len(l.buf)))
+	out := make([]LogEntry, 0, min(int64(limit), n))
+	for k := l.total - 1; k >= l.total-n && len(out) < limit; k-- {
+		e := &l.buf[k%int64(len(l.buf))]
+		if match == nil || match(e) {
+			out = append(out, *e)
 		}
 	}
 	return out
+}
+
+// since 返回序号 seq 之后新增的日志（按时间先后），最多 limit 条（更早的已被覆盖或超出的丢掉），以及新的序号。
+// 从节点上报统计时用它把增量日志带给主节点。
+func (l *LogRing) since(seq int64, limit int) ([]LogEntry, int64) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if seq > l.total { // 不会发生（序号和日志一起在内存里），防御一下
+		seq = 0
+	}
+	start := max(seq, l.total-int64(len(l.buf)), l.total-int64(limit), 0)
+	out := make([]LogEntry, 0, l.total-start)
+	for k := start; k < l.total; k++ {
+		out = append(out, l.buf[k%int64(len(l.buf))])
+	}
+	return out, l.total
 }

@@ -251,6 +251,100 @@ func TestNodeReport(t *testing.T) {
 	}
 }
 
+func TestLogRingSince(t *testing.T) {
+	l := newLogRing(4)
+	add := func(from, to int) {
+		for i := from; i < to; i++ {
+			l.add(LogEntry{Time: int64(i)})
+		}
+	}
+	times := func(es []LogEntry) (out []int64) {
+		for _, e := range es {
+			out = append(out, e.Time)
+		}
+		return
+	}
+	add(0, 3)
+	es, seq := l.since(0, 10)
+	if fmt.Sprint(times(es)) != "[0 1 2]" || seq != 3 {
+		t.Fatalf("first: %v %d", times(es), seq)
+	}
+	add(3, 5)
+	if es, seq = l.since(seq, 10); fmt.Sprint(times(es)) != "[3 4]" || seq != 5 {
+		t.Fatalf("incremental: %v %d", times(es), seq)
+	}
+	if es, _ = l.since(seq, 10); len(es) != 0 {
+		t.Fatal("nothing new")
+	}
+	add(5, 15) // 环只有 4 格：之前没取的被覆盖，只能拿到最近 4 条
+	if es, seq = l.since(seq, 10); fmt.Sprint(times(es)) != "[11 12 13 14]" || seq != 15 {
+		t.Fatalf("overwritten: %v %d", times(es), seq)
+	}
+	add(15, 18)
+	if es, _ = l.since(seq, 2); fmt.Sprint(times(es)) != "[16 17]" {
+		t.Fatalf("limit keeps newest: %v", times(es))
+	}
+	if got := times(l.list(func(e *LogEntry) bool { return e.Time%2 == 1 }, 10)); fmt.Sprint(got) != "[17 15]" {
+		t.Fatalf("list newest first with filter: %v", got)
+	}
+}
+
+// 访问日志汇总：从节点上报时带上增量日志（成功才前进），主节点合并本机和各节点、按时间倒序，可按站点 / 服务器筛选。
+func TestClusterLogs(t *testing.T) {
+	master, mc, do, id, masterURL := clusterMaster(t)
+	master.logs.add(LogEntry{Time: 100, Site: id, Path: "/master"})
+
+	node, _, _ := newAdmin(t, &Config{})
+	node.mu.Lock()
+	node.cfg.Sites = []*Site{{ID: id, Name: "A"}}
+	node.cfg.Cluster = ClusterConfig{Role: "node", NodeName: "isif", Token: master.cfg.Cluster.Token, MasterURL: masterURL}
+	node.mu.Unlock()
+	node.logs.add(LogEntry{Time: 50, Site: id, Path: "/old"})
+	node.logs.add(LogEntry{Time: 150, Site: "other", Path: "/other"})
+	nc := newCluster(node)
+	if err := nc.report(); err != nil || nc.logSeq != 2 {
+		t.Fatalf("report: %v seq=%d", err, nc.logSeq)
+	}
+	node.logs.add(LogEntry{Time: 200, Site: id, Path: "/new"})
+	nc.report()
+	if n := mc.remoteLogs.total; n != 3 {
+		t.Fatalf("each entry should be sent once: %d", n)
+	}
+
+	var got []LogEntry
+	get := func(q string) string {
+		_, out := do("GET", "/api/logs?"+q, "")
+		got = nil
+		json.Unmarshal([]byte(out), &got)
+		s := []string{}
+		for _, e := range got {
+			s = append(s, e.Server+e.Path)
+		}
+		return strings.Join(s, ",")
+	}
+	if s := get("limit=10"); s != "isif/new,isif/other,fx/master,isif/old" {
+		t.Fatalf("merged: %s", s)
+	}
+	if s := get("server=isif&site=" + id); s != "isif/new,isif/old" {
+		t.Fatalf("filtered: %s", s)
+	}
+	if s := get("server=fx"); s != "fx/master" {
+		t.Fatalf("self: %s", s)
+	}
+	if s := get("limit=2"); s != "isif/new,isif/other" {
+		t.Fatalf("limit: %s", s)
+	}
+
+	// 上报失败不前进，下次重发
+	node.mu.Lock()
+	node.cfg.Cluster.Token = "wrong"
+	node.mu.Unlock()
+	node.logs.add(LogEntry{Time: 300, Site: id, Path: "/retry"})
+	if err := nc.report(); err == nil || nc.logSeq != 3 {
+		t.Fatalf("failed report should not advance: %v %d", err, nc.logSeq)
+	}
+}
+
 // 加权分配：权重都为 1 时与不加权完全一致；权重 3:1 时约 75% 的 IP 归权重高的；调高权重只会把 IP 拉过来，不会推走。
 func TestWeightedOwner(t *testing.T) {
 	owner := func(ms []Member, ip string) string {

@@ -89,16 +89,19 @@ type Cluster struct {
 	reports    map[string]*nodeReport          // 节点名 → 最近一次上报
 	bases      map[string]map[string]statsBase // 站点 ID → 节点名 → 清零基准
 	clearedMin map[string]int64                // 站点 ID → 清零时的分钟（Unix/60）
+	remoteLogs *LogRing                        // 各从节点上报的访问日志（主节点「访问日志」汇总显示）
 
-	// 从节点：上报日志限频（只在 reportLoop 里用）
+	// 从节点：上报日志限频、已上报的访问日志序号（只在 reportLoop 里用）
 	repOld   bool
 	repErr   string
 	repLogAt time.Time
+	logSeq   int64
 }
 
 func newCluster(m *Manager) *Cluster {
 	c := &Cluster{m: m, nodes: map[string]*nodeInfo{}, kick: make(chan struct{}, 1),
-		reports: map[string]*nodeReport{}, bases: map[string]map[string]statsBase{}, clearedMin: map[string]int64{}}
+		reports: map[string]*nodeReport{}, bases: map[string]map[string]statsBase{}, clearedMin: map[string]int64{},
+		remoteLogs: newLogRing(3000)}
 	m.cluster = c
 	return c
 }

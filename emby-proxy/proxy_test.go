@@ -1114,7 +1114,7 @@ func TestStickyAcrossNodes(t *testing.T) {
 		ownerA := strings.TrimPrefix(strings.Fields(viaA)[0], "node=")
 		ownerB := strings.TrimPrefix(strings.Fields(viaB)[0], "node=")
 		if ownerA != ownerB || !strings.Contains(viaB, "body=progress") {
-			t.Fatalf("client %s: via A → %q, via B → %q (should be same node, body kept)\nA logs: %+v", client, viaA, viaB, nodes["A"].m.logs.list("", 2))
+			t.Fatalf("client %s: via A → %q, via B → %q (should be same node, body kept)\nA logs: %+v", client, viaA, viaB, nodes["A"].m.logs.list(nil, 2))
 		}
 		seen[ownerA] = true
 	}
@@ -1151,10 +1151,10 @@ func TestStickyAcrossNodes(t *testing.T) {
 		t.Fatalf("forged hop should be ignored: %q", got)
 	}
 	// 访问日志：A 上记录转发给 B，B 上记录由 A 转来，客户端 IP 是原始 IP
-	if l := nodes["A"].m.logs.list("", 1)[0]; l.Node != "→ B" || l.IP != clientB {
+	if l := nodes["A"].m.logs.list(nil, 1)[0]; l.Node != "→ B" || l.IP != clientB {
 		t.Fatalf("A log: %+v", l)
 	}
-	if l := nodes["B"].m.logs.list("", 1)[0]; l.Node != "← A" || l.IP != clientB {
+	if l := nodes["B"].m.logs.list(nil, 1)[0]; l.Node != "← A" || l.IP != clientB {
 		t.Fatalf("B log: %+v", l)
 	}
 
@@ -1207,7 +1207,7 @@ func TestStickyAcrossNodes(t *testing.T) {
 			t.Fatalf("direct stream %s: %d %q", p, code, loc)
 		}
 	}
-	if l := nodes["A"].m.logs.list("", 1)[0]; l.Node != "⇢ B 直连" || l.Status != http.StatusFound {
+	if l := nodes["A"].m.logs.list(nil, 1)[0]; l.Node != "⇢ B 直连" || l.Status != http.StatusFound {
 		t.Fatalf("direct log: %+v", l)
 	}
 	waitIdle(stA)
@@ -1245,7 +1245,7 @@ func TestStickyAcrossNodes(t *testing.T) {
 	if a1 = stA.view(); a1.Requests != a0.Requests+1 || a1.Bytes <= a0.Bytes || a1.RelayRequests != a0.RelayRequests || a1.Active != 0 {
 		t.Fatalf("fallback stats: before %+v after %+v", a0, a1)
 	}
-	if l := nodes["A"].m.logs.list("", 1)[0]; !strings.Contains(l.Node, "失联") {
+	if l := nodes["A"].m.logs.list(nil, 1)[0]; !strings.Contains(l.Node, "失联") {
 		t.Fatalf("fallback log: %+v", l)
 	}
 }

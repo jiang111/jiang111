@@ -174,7 +174,7 @@ pre.out{white-space:pre-wrap;word-break:break-all;background:var(--chip);border-
 const $ = (s, el = document) => el.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const testRes = {};
-let S = null, tab = 'sites', editing = null, timer = null, logSite = '', logPaused = false;
+let S = null, tab = 'sites', editing = null, timer = null, logSite = '', logServer = '', logPaused = false;
 const shownPw = new Set(); // 卡片上点了「显示」的站点
 let acctEdit = null;        // 正在卡片上编辑账号的站点（编辑时暂停自动刷新）
 
@@ -504,15 +504,20 @@ $('#form').onsubmit = async e => {
   } catch (err) { $('#ferr').textContent = err.message; }
 };
 
+const isMaster = () => S.cluster && S.cluster.role === 'master';
 async function renderLogs() {
   if (!$('#logTable')) {
+    // 主节点汇总本机和各从节点上报的日志，可按服务器筛选
+    const servers = isMaster() ? [S.cluster.self_name, ...(S.cluster.nodes || []).map(n => n.name)] : [];
     $('#main').innerHTML = `<div class="row" style="margin-bottom:10px;flex-wrap:wrap">
       <select id="logSite" style="max-width:240px"><option value="">全部站点</option>${S.sites.map(s => `<option value="${esc(s.id)}">${esc(s.name)}</option>`).join('')}</select>
+      ${servers.length ? `<select id="logServer" style="max-width:180px"><option value="">全部服务器</option>${servers.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join('')}</select>` : ''}
       <label class="chk" style="margin:0"><input type="checkbox" id="logPause">暂停刷新</label><div class="sp"></div>
-      <span class="kv">敏感参数（api_key / token）已打码 · 最多保留最近 1000 条</span></div>
-      <div class="tw"><table><thead><tr><th>时间</th><th>站点</th><th>客户端 IP</th><th>状态</th><th>方法</th><th>路径</th><th>流量</th><th>耗时</th><th>节点</th><th>客户端</th></tr></thead><tbody id="logTable"></tbody></table></div>`;
+      <span class="kv">敏感参数（api_key / token）已打码 · ${isMaster() ? '汇总各服务器的日志，最多保留最近 3000 条' : '最多保留最近 1000 条'} · 只在内存里，重启清空</span></div>
+      <div class="tw"><table><thead><tr><th>时间</th>${servers.length ? '<th>服务器</th>' : ''}<th>站点</th><th>客户端 IP</th><th>状态</th><th>方法</th><th>路径</th><th>流量</th><th>耗时</th><th>节点</th><th>客户端</th></tr></thead><tbody id="logTable"></tbody></table></div>`;
     $('#logSite').value = logSite;
     $('#logSite').onchange = e => { logSite = e.target.value; refreshLogs(); };
+    if ($('#logServer')) { $('#logServer').value = logServer; $('#logServer').onchange = e => { logServer = e.target.value; refreshLogs(); }; }
     $('#logPause').checked = logPaused;
     $('#logPause').onchange = e => logPaused = e.target.checked;
   }
@@ -520,13 +525,14 @@ async function renderLogs() {
 }
 async function refreshLogs() {
   const tb = $('#logTable'); if (!tb) return;
-  const rows = await api('GET', '/api/logs?limit=300&site=' + encodeURIComponent(logSite));
+  const srvCol = !!$('#logServer');
+  const rows = await api('GET', '/api/logs?limit=300&site=' + encodeURIComponent(logSite) + (srvCol ? '&server=' + encodeURIComponent(logServer) : ''));
   tb.innerHTML = rows.length ? rows.map(l => {
     const t = new Date(l.t * 1000), cls = 's' + String(l.status)[0];
-    return `<tr><td>${t.toLocaleTimeString('zh-CN', {hour12: false})}</td><td>${esc(l.site_name)}</td><td>${esc(l.ip)}</td>
+    return `<tr><td>${t.toLocaleTimeString('zh-CN', {hour12: false})}</td>${srvCol ? `<td>${esc(l.server || '')}</td>` : ''}<td>${esc(l.site_name)}</td><td>${esc(l.ip)}</td>
       <td class="${cls}" title="${esc(l.err || '')}">${l.status === 499 ? '499 客户端断开' : l.status}</td><td>${esc(l.method)}</td><td class="p">${esc(l.path)}</td>
       <td>${fmtBytes(l.bytes)}</td><td>${l.ms < 1000 ? l.ms + 'ms' : (l.ms / 1000).toFixed(1) + 's'}</td><td>${esc(l.node || '')}</td><td title="${esc(l.ua)}">${esc(l.ua.slice(0, 28))}</td></tr>`;
-  }).join('') : '<tr><td colspan="10" style="text-align:center;color:var(--muted);padding:30px">暂无记录</td></tr>';
+  }).join('') : `<tr><td colspan="${srvCol ? 11 : 10}" style="text-align:center;color:var(--muted);padding:30px">暂无记录</td></tr>`;
 }
 
 function certStatus(st) {

@@ -311,12 +311,39 @@ func (a *Admin) state(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, out)
 }
 
+// logsAPI：GET /api/logs?site=&server=&limit=。主节点合并本机和各从节点上报的日志（按时间，最新在前）。
 func (a *Admin) logsAPI(w http.ResponseWriter, r *http.Request) {
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	q := r.URL.Query()
+	limit, _ := strconv.Atoi(q.Get("limit"))
 	if limit <= 0 || limit > 1000 {
 		limit = 200
 	}
-	writeJSON(w, 200, a.m.logs.list(r.URL.Query().Get("site"), limit))
+	site, server := q.Get("site"), q.Get("server")
+	if !a.m.isMaster() {
+		writeJSON(w, 200, a.m.logs.list(func(e *LogEntry) bool { return site == "" || e.Site == site }, limit))
+		return
+	}
+	self := a.m.selfName()
+	match := func(e *LogEntry) bool {
+		return (site == "" || e.Site == site) && (server == "" || e.Server == server)
+	}
+	var local []LogEntry
+	if server == "" || server == self {
+		local = a.m.logs.list(func(e *LogEntry) bool { return site == "" || e.Site == site }, limit)
+	}
+	for i := range local {
+		local[i].Server = self
+	}
+	remote := a.cluster.remoteLogs.list(match, limit)
+	out := make([]LogEntry, 0, min(limit, len(local)+len(remote)))
+	for i, j := 0, 0; len(out) < limit && (i < len(local) || j < len(remote)); {
+		if j >= len(remote) || (i < len(local) && local[i].Time >= remote[j].Time) {
+			out, i = append(out, local[i]), i+1
+		} else {
+			out, j = append(out, remote[j]), j+1
+		}
+	}
+	writeJSON(w, 200, out)
 }
 
 func (a *Admin) saveSite(w http.ResponseWriter, r *http.Request) {

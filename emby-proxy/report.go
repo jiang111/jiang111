@@ -15,12 +15,14 @@ import (
 )
 
 // 统计汇总：从节点每 10 秒把本机各站点的统计上报给主节点（POST /api/cluster/report，同步令牌鉴权），
-// 主节点面板显示「本机 + 各在线节点」之和以及各节点拆分。超过 45 秒没上报的节点不计入，
+// 主节点面板显示「本机 + 各在线节点」之和以及各节点拆分。同时带上这 10 秒新增的访问日志（最多 maxReportLogs 条），
+// 主节点「访问日志」汇总显示各服务器的日志（只在内存里，重启清空）。超过 45 秒没上报的节点不计入，
 // 避免死节点的连接数、播放数一直停在最后的值。上报数据只在内存里，主节点重启后等下一轮上报即可。
 
 const (
 	reportInterval = 10 * time.Second
 	reportMaxAge   = 45 * time.Second
+	maxReportLogs  = 500
 )
 
 type nodeReport struct {
@@ -87,12 +89,20 @@ func (c *Cluster) serveReport(w http.ResponseWriter, r *http.Request) {
 		Name    string               `json:"name"`
 		Sites   map[string]StatsView `json:"sites"`
 		Traffic *trafficInfo         `json:"traffic"`
+		Logs    []LogEntry           `json:"logs"`
 	}
 	if err := readJSON(r, &body); err != nil {
 		writeErr(w, 400, "请求格式错误")
 		return
 	}
 	name := nodeName(r, body.Name)
+	if len(body.Logs) > maxReportLogs {
+		body.Logs = body.Logs[len(body.Logs)-maxReportLogs:]
+	}
+	for _, e := range body.Logs {
+		e.Server = name
+		c.remoteLogs.add(e)
+	}
 	// 只保留本机存在的站点（先于 c.mu 拿 m.mu，两把锁不嵌套）
 	c.m.mu.RLock()
 	sites := make(map[string]StatsView, len(c.m.cfg.Sites))
@@ -298,7 +308,8 @@ func (c *Cluster) report() error {
 	}
 	var tr trafficInfo
 	tr.Month, tr.Bytes = m.traffic.get(time.Now())
-	data, err := json.Marshal(map[string]any{"name": name, "sites": sites, "traffic": tr})
+	logs, seq := m.logs.since(c.logSeq, maxReportLogs)
+	data, err := json.Marshal(map[string]any{"name": name, "sites": sites, "traffic": tr, "logs": logs})
 	if err != nil {
 		return err
 	}
@@ -317,6 +328,7 @@ func (c *Cluster) report() error {
 	resp.Body.Close()
 	switch resp.StatusCode {
 	case 200:
+		c.logSeq = seq // 上报成功才前进；失败的下次连同新的一起发（最多 maxReportLogs 条）
 		return nil
 	case http.StatusNotFound, http.StatusMethodNotAllowed:
 		return errReportUnsupported
