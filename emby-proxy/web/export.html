@@ -3,6 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<script>
+// 外观：auto（跟随系统）/ light / dark，存在本机浏览器；渲染前先应用，避免先闪一下浅色
+try { const t = localStorage.getItem('ep_theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch (e) {}
+</script>
+
 <meta name="robots" content="noindex, nofollow">
 <meta name="referrer" content="no-referrer">
 <title>Emby 账号导出</title>
@@ -11,8 +16,11 @@
 :root{color-scheme:light dark;--bg:#f2f2f7;--card:#fff;--text:#000;--muted:rgba(60,60,67,.6);--line:rgba(60,60,67,.14);
   --primary:#007aff;--tint:rgba(0,122,255,.1);--danger:#ff3b30;--warn:#ff9500;--chip:rgba(118,118,128,.12);--hud:rgba(28,28,30,.86);
   --shadow:0 1px 2px rgba(0,0,0,.04),0 4px 14px rgba(0,0,0,.05);--ease:cubic-bezier(.32,.72,0,1)}
-@media (prefers-color-scheme: dark){:root{--bg:#000;--card:#1c1c1e;--text:#fff;--muted:rgba(235,235,245,.6);--line:rgba(84,84,88,.55);
+@media (prefers-color-scheme: dark){:root:not([data-theme=light]){--bg:#000;--card:#1c1c1e;--text:#fff;--muted:rgba(235,235,245,.6);--line:rgba(84,84,88,.55);
   --primary:#0a84ff;--tint:rgba(10,132,255,.18);--danger:#ff453a;--warn:#ff9f0a;--chip:rgba(118,118,128,.24);--hud:rgba(58,58,60,.92);--shadow:none}}
+:root[data-theme=dark]{color-scheme:dark;--bg:#000;--card:#1c1c1e;--text:#fff;--muted:rgba(235,235,245,.6);--line:rgba(84,84,88,.55);
+  --primary:#0a84ff;--tint:rgba(10,132,255,.18);--danger:#ff453a;--warn:#ff9f0a;--chip:rgba(118,118,128,.24);--hud:rgba(58,58,60,.92);--shadow:none}
+:root[data-theme=light]{color-scheme:light}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 body{margin:0;background:var(--bg);color:var(--text);font:15px/1.47 -apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Helvetica Neue","Microsoft YaHei",sans-serif;-webkit-font-smoothing:antialiased;letter-spacing:-.01em}
 main{max-width:760px;margin:0 auto;padding:24px 16px calc(40px + env(safe-area-inset-bottom))}

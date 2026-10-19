@@ -3,6 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<script>
+// 外观：auto（跟随系统）/ light / dark，存在本机浏览器；渲染前先应用，避免先闪一下浅色
+try { const t = localStorage.getItem('ep_theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch (e) {}
+</script>
+
 <title>Emby 反代面板</title>
 <style>
 /* 视觉语言参照 iOS / macOS 系统应用：系统字体、分组背景、圆角卡片、半透明毛玻璃顶栏、系统蓝主色。
@@ -16,15 +21,22 @@
   --shadow:0 1px 2px rgba(0,0,0,.04),0 4px 14px rgba(0,0,0,.05);--shadow-lg:0 12px 40px rgba(0,0,0,.18);
   --r:16px;--r-sm:10px;--ease:cubic-bezier(.32,.72,0,1);--ease-in:cubic-bezier(.32,0,.67,0);
 }
-@media (prefers-color-scheme: dark){:root{
+@media (prefers-color-scheme: dark){:root:not([data-theme=light]){
   --bg:#000;--card:#1c1c1e;--elev:#2c2c2e;--text:#fff;--muted:rgba(235,235,245,.6);--line:rgba(84,84,88,.55);
   --primary:#0a84ff;--primary-2:#409cff;--tint:rgba(10,132,255,.18);--danger:#ff453a;--warn:#ff9f0a;--green:#30d158;
   --chip:rgba(118,118,128,.24);--input:rgba(118,118,128,.24);--seg:#636366;--bar:rgba(22,22,24,.72);--hud:rgba(58,58,60,.92);
   --shadow:none;--shadow-lg:0 12px 40px rgba(0,0,0,.6);
 }}
+:root[data-theme=dark]{color-scheme:dark;
+  --bg:#000;--card:#1c1c1e;--elev:#2c2c2e;--text:#fff;--muted:rgba(235,235,245,.6);--line:rgba(84,84,88,.55);
+  --primary:#0a84ff;--primary-2:#409cff;--tint:rgba(10,132,255,.18);--danger:#ff453a;--warn:#ff9f0a;--green:#30d158;
+  --chip:rgba(118,118,128,.24);--input:rgba(118,118,128,.24);--seg:#636366;--bar:rgba(22,22,24,.72);--hud:rgba(58,58,60,.92);
+  --shadow:none;--shadow-lg:0 12px 40px rgba(0,0,0,.6);
+}
+:root[data-theme=light]{color-scheme:light}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html{-webkit-text-size-adjust:100%}
-body{margin:0;background:var(--bg);color:var(--text);font:15px/1.47 -apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Helvetica Neue","Microsoft YaHei",sans-serif;-webkit-font-smoothing:antialiased;letter-spacing:-.01em}
+body{margin:0;transition:background-color .3s ease,color .3s ease;background:var(--bg);color:var(--text);font:15px/1.47 -apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Helvetica Neue","Microsoft YaHei",sans-serif;-webkit-font-smoothing:antialiased;letter-spacing:-.01em}
 a{color:var(--primary);text-decoration:none}
 code,pre,td.p,.mono{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace}
 :focus-visible{outline:3px solid color-mix(in srgb,var(--primary) 45%,transparent);outline-offset:2px}
@@ -354,6 +366,10 @@ function spark(series) {
   }).join('') + '</svg>';
 }
 
+function themeButton() {
+  const t = document.documentElement.dataset.theme || 'auto';
+  $('#btnTheme').textContent = {auto: '◐ 自动', light: '☀︎ 浅色', dark: '☾ 深色'}[t];
+}
 function renderLogin(msg) {
   clearInterval(timer);
   $('#app').innerHTML = `<form class="login" id="lf"><div class="icon"></div><h2>Emby 反代面板</h2>
@@ -372,10 +388,17 @@ function shell() {
   if ($('#main')) return;
   $('#app').innerHTML = `<header><div class="bar"><div class="logo"><i></i>Emby 反代</div>
     <nav><button data-t="sites">站点</button><button data-t="logs">访问日志</button><button data-t="keepalive">保号</button><button data-t="settings">设置</button><button data-t="help">说明</button></nav>
-    <div class="sp"></div><span class="kv" id="uptime"></span><button class="btn sm" id="btnLogout">退出</button></div></header>
+    <div class="sp"></div><span class="kv" id="uptime"></span><button class="btn sm" id="btnTheme" title="外观：自动跟随系统 / 浅色 / 深色"></button><button class="btn sm" id="btnLogout">退出</button></div></header>
     <div class="wrap"><div class="pagehead"><h1 id="ptitle"></h1><div class="sp"></div><div id="pacts"></div></div><main id="main"></main></div>`;
   document.querySelectorAll('nav button').forEach(b => b.onclick = () => { tab = b.dataset.t; acctEdit = null; render(); });
   $('#btnLogout').onclick = async () => { await api('POST', '/api/logout'); S = null; renderLogin(); };
+  themeButton();
+  $('#btnTheme').onclick = () => {
+    const next = {auto: 'light', light: 'dark', dark: 'auto'}[document.documentElement.dataset.theme || 'auto'];
+    if (next === 'auto') delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = next;
+    try { next === 'auto' ? localStorage.removeItem('ep_theme') : localStorage.setItem('ep_theme', next); } catch (e) {}
+    themeButton(); toast({auto: '外观：跟随系统', light: '外观：浅色', dark: '外观：深色'}[next]);
+  };
 }
 
 function render() {
