@@ -574,36 +574,64 @@ func (c *embyClient) playbackInfo(ctx context.Context, id string) (session, sour
 	return
 }
 
-// stream 按 kbps 限速拉取视频流（和 SenPlayer 直接播放时请求的地址一致），直到 ctx 结束。
-func (c *embyClient) stream(ctx context.Context, id, source, session, container string, kbps int, sec time.Duration) error {
+// stream 模拟边播边下载，直到 ctx 结束，返回拉取的字节数。每 10「秒」用 Range 请求一小段（kbps × 10 秒的量），
+// 和播放器断点续传一样，而不是慢慢读一条长连接：服务器之间的 TCP 缓冲区很大时，上游几秒就把几十 MB 塞进缓冲区，
+// 之后 nginx 超过 60 秒（send_timeout）写不出去就断开，上游据此判定播放已停止（有的服务器随后让播放会话失效）。
+func (c *embyClient) stream(ctx context.Context, id, source, session, container string, kbps int, sec time.Duration) (int64, error) {
 	q := url.Values{"DeviceId": {c.deviceID}, "MediaSourceId": {source}, "PlaySessionId": {session},
 		"api_key": {c.token}, "X-Emby-Token": {c.token}}
-	req, err := c.newReq(ctx, "GET", "/videos/"+id+"/original."+container, q, nil)
-	if err != nil {
-		return err
-	}
-	resp, err := c.hc.Do(req)
-	if err != nil {
-		if ctx.Err() != nil {
-			return nil
-		}
-		return errors.New(simplifyNetErr(err))
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		return &embyHTTPError{resp.StatusCode, ""}
-	}
-	buf := make([]byte, max(kbps*1024/8, 4096))
+	chunk := max(int64(kbps)*1024/8*10, 64<<10)
+	var off, total int64
+	fails := 0
 	for {
-		if _, err := io.ReadFull(resp.Body, buf); err != nil {
-			return nil // 读完或被取消
+		n, err := c.streamChunk(ctx, "/videos/"+id+"/original."+container, q, off, chunk)
+		if ctx.Err() != nil {
+			return total, nil
+		}
+		total += n
+		switch {
+		case err != nil:
+			if fails++; fails >= 3 {
+				return total, err
+			}
+		case n < chunk:
+			off, fails = 0, 0 // 到文件尾（或服务器忽略了 Range），从头再来
+		default:
+			off, fails = off+n, 0
 		}
 		select {
 		case <-ctx.Done():
-			return nil
-		case <-time.After(sec):
+			return total, nil
+		case <-time.After(10 * sec):
 		}
 	}
+}
+
+// streamChunk 请求 [off, off+n) 这一段并读完；416（超出文件长度）当作读到文件尾。
+func (c *embyClient) streamChunk(ctx context.Context, path string, q url.Values, off, n int64) (int64, error) {
+	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+	req, err := c.newReq(ctx, "GET", path, q, nil)
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", off, off+n-1))
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return 0, errors.New(simplifyNetErr(err))
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
+		return 0, nil
+	}
+	if resp.StatusCode >= 400 {
+		return 0, &embyHTTPError{resp.StatusCode, ""}
+	}
+	got, err := io.Copy(io.Discard, io.LimitReader(resp.Body, n))
+	if err != nil && got == 0 {
+		return 0, errors.New(simplifyNetErr(err))
+	}
+	return got, nil
 }
 
 // watch 模拟一次播放，返回「《片名》N 分钟」。
@@ -646,11 +674,13 @@ func (k *keepalive) watch(t kaTarget, cfg KeepaliveConfig) (string, error) {
 
 	sctx, stop := context.WithCancel(ctx)
 	var sw sync.WaitGroup
+	var pulled int64
 	if cfg.StreamKbps > 0 {
 		sw.Add(1)
 		go func() {
 			defer sw.Done()
-			if err := c.stream(sctx, item.Id, source, session, container, cfg.StreamKbps, k.sec); err != nil {
+			var err error
+			if pulled, err = c.stream(sctx, item.Id, source, session, container, cfg.StreamKbps, k.sec); err != nil {
 				k.logf("[%s]   拉流失败（不影响播放上报）：%v", t.Name, err)
 			}
 		}()
@@ -673,10 +703,16 @@ func (k *keepalive) watch(t kaTarget, cfg KeepaliveConfig) (string, error) {
 			k.logf("[%s]   进度上报失败（继续）：%v", t.Name, err)
 		}
 	}
+	stop()
+	sw.Wait()
 	if err := c.call(ctx, "POST", "/Sessions/Playing/Stopped", nil, body(pos), nil); err != nil {
 		return "", fmt.Errorf("上报停止播放失败：%w", err)
 	}
-	return fmt.Sprintf("《%s》%d 分钟", title, (pos-start)/60), nil
+	msg := fmt.Sprintf("《%s》%d 分钟", title, (pos-start)/60)
+	if cfg.StreamKbps > 0 {
+		msg += fmt.Sprintf("，拉流 %.1f MB", float64(pulled)/(1<<20))
+	}
+	return msg, nil
 }
 
 var telegramAPI = "https://api.telegram.org" // 测试时替换

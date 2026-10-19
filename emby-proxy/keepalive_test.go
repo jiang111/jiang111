@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -87,7 +88,7 @@ type kaFakeEmby struct {
 	logins    int
 	auth      string
 	ua        string
-	streamed  int
+	ranges    []string
 	itemsCode int
 	positions []int64
 }
@@ -124,18 +125,9 @@ func newKaFakeEmby(t *testing.T) (*kaFakeEmby, *httptest.Server) {
 			if q := r.URL.Query(); q.Get("MediaSourceId") != "ms" || q.Get("PlaySessionId") != "ps" || q.Get("api_key") != "tok" {
 				t.Errorf("stream query: %s", r.URL.RawQuery)
 			}
+			f.ranges = append(f.ranges, r.Header.Get("Range"))
 			f.mu.Unlock()
-			buf := make([]byte, 4096)
-			for i := 0; i < 1000; i++ {
-				if _, err := w.Write(buf); err != nil {
-					break
-				}
-				w.(http.Flusher).Flush()
-				f.mu.Lock()
-				f.streamed += len(buf)
-				f.mu.Unlock()
-				time.Sleep(time.Millisecond)
-			}
+			http.ServeContent(w, r, "v.mkv", time.Time{}, bytes.NewReader(make([]byte, 100<<10))) // 100 KB 的片子
 			f.mu.Lock()
 		case r.Method == "POST" && strings.HasPrefix(r.URL.Path, "/emby/Sessions/"):
 			ev := strings.TrimPrefix(r.URL.Path, "/emby/Sessions/")
@@ -210,8 +202,9 @@ func TestKeepaliveRun(t *testing.T) {
 	if !strings.HasPrefix(ev, "Playing,Playing/Progress,Playing/Progress") || !strings.HasSuffix(ev, "Playing/Stopped,Logout") {
 		t.Errorf("events: %s", ev)
 	}
-	if f.streamed == 0 {
-		t.Error("stream not pulled")
+	// 每 10「秒」用 Range 请求一段（至少 64 KB）；读到文件尾后从头再来
+	if len(f.ranges) < 3 || f.ranges[0] != "bytes=0-65535" || f.ranges[1] != "bytes=65536-131071" || f.ranges[2] != "bytes=0-65535" {
+		t.Errorf("stream ranges: %v", f.ranges)
 	}
 	if !strings.Contains(f.auth, `Client="SenPlayer"`) || !strings.Contains(f.auth, `DeviceId="`+uuid5URL(srv.URL+"alice")+`"`) || f.ua != "SenPlayer/6.2.1" {
 		t.Errorf("client identity: %s / %s", f.auth, f.ua)
@@ -224,7 +217,7 @@ func TestKeepaliveRun(t *testing.T) {
 	f.mu.Unlock()
 
 	st := m.ka.state["s1"]
-	if !st.LastOK || st.LastSuccess != time.Now().Format(dayLayout) || st.LastAttempt != 0 || !strings.Contains(st.LastResult, "《某剧 - 第1集》") {
+	if !st.LastOK || st.LastSuccess != time.Now().Format(dayLayout) || st.LastAttempt != 0 || !strings.Contains(st.LastResult, "《某剧 - 第1集》") || !strings.Contains(st.LastResult, "拉流 0.") {
 		t.Fatalf("state: %+v", st)
 	}
 	if data, _ := os.ReadFile(filepath.Join(dir, "keepalive.json")); !strings.Contains(string(data), time.Now().Format(dayLayout)) {
