@@ -27,7 +27,9 @@ import (
 // 服务器地址用站点的客户端访问地址（和播放器一样经过反代，上游看到的仍是负责节点的 IP）；
 // 站点停用或没有客户端访问地址时直接连上游。
 // 每个站点有自己的开关；定时执行要总开关和站点开关都打开，「立即执行」只看站点开关。
-// 调度按站点：上次成功日期 + N 天的设定时刻执行；失败的过几小时只重跑它自己。同一批到期的并行执行，
+// 调度按站点：上次成功日期 + N 天的设定时刻执行；失败的过几小时只重跑它自己。
+// 账号密码被拒绝（401/403）的站点停止定时保号（反复登录只会触发上游的登录限流甚至封号），推送 Telegram 提醒；
+// 更新账号、重新打开站点开关，或「立即执行」成功后恢复。同一批到期的并行执行，
 // 开始时间错开几秒，结束后推送一条 Telegram 汇总。
 // 只在主节点 / 单机运行（账号只在这里），设置和状态都不同步给从节点、不随导出。
 
@@ -105,6 +107,17 @@ type kaSiteState struct {
 	LastTime    int64  `json:"last_time,omitempty"`    // 最近一次结束的时间
 	LastOK      bool   `json:"last_ok"`
 	LastResult  string `json:"last_result,omitempty"`
+	AuthFailed  bool   `json:"auth_failed,omitempty"` // 账号密码被拒绝，停止定时保号，等更新账号
+}
+
+// resetAuthFailed 在更新账号、重新打开站点开关时调用：恢复定时保号。
+func (k *keepalive) resetAuthFailed(id string) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if st := k.state[id]; st != nil && st.AuthFailed {
+		st.AuthFailed, st.LastAttempt = false, 0
+		k.saveLocked()
+	}
 }
 
 type keepalive struct {
@@ -283,7 +296,8 @@ func (k *keepalive) due(now time.Time) ([]kaTarget, KeepaliveConfig) {
 	var due []kaTarget
 	k.mu.Lock()
 	for _, t := range ts {
-		if t.On && !k.running[t.ID] && !now.Before(kaNext(cfg, k.state[t.ID], now)) {
+		st := k.state[t.ID]
+		if t.On && !k.running[t.ID] && (st == nil || !st.AuthFailed) && !now.Before(kaNext(cfg, st, now)) {
 			due = append(due, t)
 		}
 	}
@@ -316,8 +330,9 @@ func (k *keepalive) runNow() (int, error) {
 }
 
 type kaResult struct {
-	ok  bool
-	msg string
+	ok   bool
+	auth bool // 账号密码被拒绝
+	msg  string
 }
 
 func (k *keepalive) runBatch(ts []kaTarget, cfg KeepaliveConfig, manual bool) {
@@ -355,6 +370,7 @@ func (k *keepalive) runBatch(ts []kaTarget, cfg KeepaliveConfig, manual bool) {
 			k.mu.Lock()
 			st := k.state[t.ID]
 			st.LastTime, st.LastOK, st.LastResult = time.Now().Unix(), res[i].ok, res[i].msg
+			st.AuthFailed = res[i].auth
 			if res[i].ok {
 				st.LastSuccess, st.LastAttempt = time.Now().Format(dayLayout), 0
 			} else {
@@ -369,19 +385,26 @@ func (k *keepalive) runBatch(ts []kaTarget, cfg KeepaliveConfig, manual bool) {
 		}
 	}
 	wg.Wait()
-	allOK := true
+	retry, denied := 0, 0
 	lines := []string{}
 	for i, r := range res {
-		allOK = allOK && r.ok
 		mark := "✅ "
-		if !r.ok {
-			mark = "❌ "
+		switch {
+		case r.auth:
+			mark, denied = "🔒 ", denied+1
+		case !r.ok:
+			mark, retry = "❌ ", retry+1
 		}
 		lines = append(lines, mark+run[i].Name+"："+r.msg)
 	}
 	title := "Emby 保号全部成功 ✅"
-	if !allOK {
+	switch {
+	case retry > 0 && denied > 0:
+		title = fmt.Sprintf("Emby 保号有失败 ❌（%d 个 %d 小时后再试；%d 个账号密码被拒绝，已停止保号）", retry, cfg.RetryHours, denied)
+	case retry > 0:
 		title = fmt.Sprintf("Emby 保号有失败 ❌（%d 小时后再试失败的）", cfg.RetryHours)
+	case denied > 0:
+		title = "Emby 保号：有账号密码被拒绝 🔒，请到面板更新账号"
 	}
 	summary := title + "\n" + strings.Join(lines, "\n")
 	k.logf("%s", strings.ReplaceAll(summary, "\n", " | "))
@@ -396,7 +419,7 @@ func (k *keepalive) runBatch(ts []kaTarget, cfg KeepaliveConfig, manual bool) {
 func (k *keepalive) runSite(t kaTarget, cfg KeepaliveConfig) (res kaResult) {
 	defer func() {
 		if r := recover(); r != nil {
-			res = kaResult{false, fmt.Sprintf("失败 - 程序出错: %v", r)}
+			res = kaResult{msg: fmt.Sprintf("失败 - 程序出错: %v", r)}
 		}
 	}()
 	var err error
@@ -404,19 +427,19 @@ func (k *keepalive) runSite(t kaTarget, cfg KeepaliveConfig) (res kaResult) {
 		var msg string
 		if msg, err = k.watch(t, cfg); err == nil {
 			k.logf("[%s] ✅ 完成，%s", t.Name, msg)
-			return kaResult{true, msg}
+			return kaResult{ok: true, msg: msg}
 		}
 		var he *embyHTTPError
 		if errors.As(err, &he) && (he.Code == 401 || he.Code == 403) {
-			k.logf("[%s] ❌ 被拒绝，不再重试：%v", t.Name, err)
-			break
+			k.logf("[%s] 🔒 账号密码被拒绝，停止自动保号：%v", t.Name, err)
+			return kaResult{auth: true, msg: "账号密码被拒绝（" + err.Error() + "），已停止自动保号，请到面板更新账号密码"}
 		}
 		k.logf("[%s] ❌ 第 %d 次失败：%v", t.Name, attempt, err)
 		if attempt < cfg.Retries {
 			time.Sleep(time.Duration(60*attempt) * k.sec)
 		}
 	}
-	return kaResult{false, "失败 - " + err.Error()}
+	return kaResult{msg: "失败 - " + err.Error()}
 }
 
 // ---- Emby 客户端 ----
@@ -749,7 +772,8 @@ func telegramSend(token, chat, text string) error {
 type kaSiteView struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
-	On          bool   `json:"on"` // 站点的保号开关
+	On          bool   `json:"on"`                    // 站点的保号开关
+	AuthFailed  bool   `json:"auth_failed,omitempty"` // 账号密码被拒绝，已停止定时保号
 	LastSuccess string `json:"last_success,omitempty"`
 	Next        int64  `json:"next,omitempty"` // 开关打开时的下次执行时间
 	Running     bool   `json:"running"`
@@ -795,10 +819,11 @@ func (k *keepalive) view(now time.Time) *kaView {
 	defer k.mu.Unlock()
 	for _, r := range rows {
 		sv := kaSiteView{ID: r.id, Name: r.name, On: r.on, Running: k.running[r.id], Error: r.err}
-		if st := k.state[r.id]; st != nil {
-			sv.LastSuccess, sv.LastOK, sv.LastTime, sv.LastResult = st.LastSuccess, st.LastOK, st.LastTime, st.LastResult
+		st := k.state[r.id]
+		if st != nil {
+			sv.LastSuccess, sv.LastOK, sv.LastTime, sv.LastResult, sv.AuthFailed = st.LastSuccess, st.LastOK, st.LastTime, st.LastResult, st.AuthFailed
 		}
-		if cfg.Enabled && r.on && r.err == "" {
+		if cfg.Enabled && r.on && r.err == "" && !sv.AuthFailed {
 			sv.Next = kaNext(cfg, k.state[r.id], now).Unix()
 		}
 		v.Sites = append(v.Sites, sv)
@@ -867,6 +892,9 @@ func (a *Admin) setSiteKeepalive(w http.ResponseWriter, r *http.Request) {
 		delete(m.cfg.Keepalive.Sites, id)
 	}
 	m.mu.Unlock()
+	if body.Enabled {
+		m.ka.resetAuthFailed(id)
+	}
 	if err := m.save(); err != nil {
 		writeErr(w, 500, "保存失败: "+err.Error())
 		return

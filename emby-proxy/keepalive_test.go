@@ -235,15 +235,41 @@ func TestKeepaliveRun(t *testing.T) {
 func TestKeepaliveFailures(t *testing.T) {
 	f, srv := newKaFakeEmby(t)
 	m, _ := kaManager(t, srv.URL, "alice", "wrong")
+	var tgText string
+	tg := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.ParseForm()
+		tgText = r.Form.Get("text")
+	}))
+	defer tg.Close()
+	old := telegramAPI
+	telegramAPI = tg.URL
+	defer func() { telegramAPI = old }()
 	cfg := fastKeepalive()
+	cfg.TelegramToken, cfg.TelegramChat = "123:abc", "42"
 	ts, _ := m.ka.targets()
 	m.ka.runBatch(ts, cfg, false)
 	if f.logins != 1 {
 		t.Fatalf("401 should not retry: %d logins", f.logins)
 	}
 	st := m.ka.state["s1"]
-	if st.LastOK || st.LastSuccess != "" || st.LastAttempt == 0 || !strings.Contains(st.LastResult, "401") {
+	if st.LastOK || st.LastSuccess != "" || !st.AuthFailed || !strings.Contains(st.LastResult, "401") || !strings.Contains(st.LastResult, "已停止自动保号") {
 		t.Fatalf("state: %+v", st)
+	}
+	if !strings.Contains(tgText, "有账号密码被拒绝") || !strings.Contains(tgText, "🔒 A服：账号密码被拒绝") {
+		t.Fatalf("telegram: %s", tgText)
+	}
+	// 被拒绝后不再定时重试（普通失败过几小时会再试）；更新账号或重新打开开关后恢复
+	cfg.Enabled, cfg.Sites = true, map[string]bool{"s1": true}
+	m.cfg.Keepalive = &cfg
+	if due, _ := m.ka.due(time.Now().Add(24 * time.Hour)); len(due) != 0 {
+		t.Fatal("auth-failed site must not be retried")
+	}
+	if v := m.ka.view(time.Now()); len(v.Sites) != 1 || !v.Sites[0].AuthFailed || v.Sites[0].Next != 0 {
+		t.Fatalf("view: %+v", v.Sites)
+	}
+	m.ka.resetAuthFailed("s1")
+	if due, _ := m.ka.due(time.Now()); len(due) != 1 {
+		t.Fatal("should be due again after the account is updated")
 	}
 
 	f2, srv2 := newKaFakeEmby(t)
@@ -365,8 +391,13 @@ func TestKeepaliveAPI(t *testing.T) {
 	if code, _ := do("PUT", "/api/sites/nope/keepalive", `{"enabled":true}`); code != 404 {
 		t.Fatalf("unknown site: %d", code)
 	}
-	if code, out := do("PUT", "/api/sites/"+r.ID+"/keepalive", `{"enabled":true}`); code != 200 {
-		t.Fatal(out)
+	m.ka.state[r.ID] = &kaSiteState{AuthFailed: true, LastAttempt: 1}
+	if code, out := do("PUT", "/api/sites/"+r.ID+"/keepalive", `{"enabled":true}`); code != 200 || m.ka.state[r.ID].AuthFailed {
+		t.Fatalf("enabling the switch should resume: %d %s", code, out)
+	}
+	m.ka.state[r.ID].AuthFailed = true
+	if do("PUT", "/api/sites/"+r.ID+"/account", `{"username":"alice","password":"new"}`); m.ka.state[r.ID].AuthFailed {
+		t.Fatal("saving the account should resume")
 	}
 	do("PUT", "/api/keepalive", body(`,"sites":{}`))
 	if !m.cfg.Keepalive.Sites[r.ID] {

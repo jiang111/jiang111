@@ -344,6 +344,7 @@ function acctHTML(s) {
   const t = v => new Date(v * 1000).toLocaleString('zh-CN', {month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit'});
   let kaInfo = '已关闭';
   if (ka && ka.on) kaInfo = ka.running ? '<span class="ok">执行中…</span>'
+    : ka.auth_failed ? `<span class="bad" title="${esc(ka.last_result || '')}">账号密码被拒绝，已停止保号，修改账号后恢复</span>`
     : `上次 ${esc(ka.last_success || '—')} · ${ka.next ? '下次 ' + t(ka.next) : '总开关已关'}${ka.last_result && !ka.last_ok ? ` · <span class="bad" title="${esc(ka.last_result)}">最近失败</span>` : ''}`;
   return `<div class="acct">账号 <b>${esc(a.username)}</b><button class="btn sm" data-act="copyuser">复制</button>
       密码 <b>${shown ? esc(a.password) || '（空）' : (a.password ? '••••••' : '（空）')}</b>${a.password ? `<button class="btn sm" data-act="pwshow">${shown ? '隐藏' : '显示'}</button><button class="btn sm" data-act="copypw">复制</button>` : ''}</div>
@@ -833,7 +834,7 @@ function kaStatusHTML() {
   const t = v => v ? new Date(v * 1000).toLocaleString('zh-CN', {month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit'}) : '—';
   const rows = k.sites.map(s => `<tr><td><label class="toggle" title="这个站点的保号开关"><input type="checkbox" data-ka="${esc(s.id)}" ${s.on ? 'checked' : ''} ${s.error ? 'disabled' : ''}><span></span></label></td><td>${esc(s.name)}</td>
     <td>${s.running ? '<span class="ok">执行中…</span>' : esc(s.last_success || '—')}</td>
-    <td>${s.next && !s.running ? t(s.next) : (s.on ? '—' : '<span class="kv">已关闭</span>')}</td>
+    <td>${s.next && !s.running ? t(s.next) : !s.on ? '<span class="kv">已关闭</span>' : s.auth_failed ? '<span class="bad">已停止（账号被拒绝）</span>' : '—'}</td>
     <td class="p">${s.error ? `<span class="bad">${esc(s.error)}</span>` : s.last_result ? `<span class="${s.last_ok ? 'ok' : 'bad'}">${esc(s.last_result)}</span> <span class="kv">${t(s.last_time)}</span>` : '—'}</td></tr>`).join('');
   return `<h3>状态</h3>${k.sites.length ? `<div class="tw" style="max-height:none"><table><tr><th>开关</th><th>站点</th><th>上次成功</th><th>下次执行</th><th>最近结果</th></tr>${rows}</table></div>`
     : '<div class="help">还没有站点保存了 Emby 账号，在「站点 → 编辑」里填写。</div>'}

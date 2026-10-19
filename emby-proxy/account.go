@@ -228,6 +228,7 @@ func (a *Admin) saveAccount(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, "保存失败: "+err.Error())
 		return
 	}
+	m.ka.resetAuthFailed(id) // 账号更新了，之前被拒绝而停掉的保号恢复
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
