@@ -32,7 +32,7 @@ func TestAccountCrypto(t *testing.T) {
 	}
 }
 
-// 账号接口：加密落盘；状态、导出、同步都不带密码；查看明文要面板密码并受次数限制；密码留空保留；删站点一起删。
+// 账号接口：加密落盘；登录后状态里能看到，没登录看不到；导出、同步不带；删站点一起删。
 func TestAccountAPI(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &Config{AdminPassword: "pw123456", Secret: "s", AdminListen: ":1", Listen: ":2", ClusterSecret: randHex(16)}
@@ -77,10 +77,16 @@ func TestAccountAPI(t *testing.T) {
 		t.Fatalf("account.key: %v %v", fi, err)
 	}
 
-	// 状态只有用户名和有没有密码
+	// 登录后状态里直接有账号密码；没登录访问不到
 	_, st := do("GET", "/api/state", "")
-	if strings.Contains(st, "s3cret-pass") || !strings.Contains(st, `"account":{"username":"alice-user","has_password":true}`) {
+	if !strings.Contains(st, `"account":{"username":"alice-user","password":"s3cret-pass"}`) {
 		t.Fatalf("state: %s", st)
+	}
+	if code, out := adminDo(t, srv, nil, "GET", "/api/state", ""); code != 401 || strings.Contains(out, "s3cret") {
+		t.Fatalf("state without login: %d %s", code, out)
+	}
+	if code, _ := adminDo(t, srv, nil, "PUT", "/api/sites/"+id+"/account", `{"username":"x","password":"y"}`, csrfHeader, "1"); code != 401 {
+		t.Fatalf("save without login: %d", code)
 	}
 	_, exp := do("GET", "/api/export", "")
 	secret("export", exp)
@@ -93,44 +99,15 @@ func TestAccountAPI(t *testing.T) {
 		t.Fatalf("sync payload carries accounts: %s", data)
 	}
 
-	// 查看明文：要面板密码；没登录不行
-	if code, _ := adminDo(t, srv, nil, "POST", "/api/sites/"+id+"/account/reveal", `{"password":"pw123456"}`, csrfHeader, "1"); code != 401 {
-		t.Fatalf("reveal without login: %d", code)
-	}
-	if code, out := do("POST", "/api/sites/"+id+"/account/reveal", `{"password":"wrong"}`); code != 403 || strings.Contains(out, "s3cret") {
-		t.Fatalf("reveal wrong password: %d %s", code, out)
-	}
-	req := httptest.NewRequest("POST", "/api/sites/"+id+"/account/reveal", strings.NewReader(`{"password":"pw123456"}`))
-	req.Header.Set(csrfHeader, "1")
-	req.AddCookie(ck)
-	rec := httptest.NewRecorder()
-	a.Handler().ServeHTTP(rec, req)
-	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"password":"s3cret-pass"`) || rec.Header().Get("Cache-Control") != "no-store" {
-		t.Fatalf("reveal: %d %s %v", rec.Code, rec.Body, rec.Header())
-	}
-
-	// 密码留空：保留原密码，只改用户名
+	// 整体保存：密码可以改成空
 	if code, out := do("PUT", "/api/sites/"+id+"/account", `{"username":"bob","password":""}`); code != 200 {
 		t.Fatal(out)
 	}
-	if _, out := do("POST", "/api/sites/"+id+"/account/reveal", `{"password":"pw123456"}`); !strings.Contains(out, `"username":"bob"`) || !strings.Contains(out, `"password":"s3cret-pass"`) {
-		t.Fatalf("keep password: %s", out)
+	if _, st := do("GET", "/api/state", ""); !strings.Contains(st, `"account":{"username":"bob","password":""}`) {
+		t.Fatalf("empty password: %s", st)
 	}
 
-	// 和登录共用失败次数限额：超限后密码正确也拒绝
-	a.failMu.Lock()
-	for i := 0; i < loginPerIP; i++ {
-		a.failures["127.0.0.1"] = append(a.failures["127.0.0.1"], time.Now())
-	}
-	a.failMu.Unlock()
-	if code, out := do("POST", "/api/sites/"+id+"/account/reveal", `{"password":"pw123456"}`); code != 429 {
-		t.Fatalf("rate limit: %d %s", code, out)
-	}
-	a.failMu.Lock()
-	a.failures = map[string][]time.Time{}
-	a.failMu.Unlock()
-
-	// 缺少 account.key：显示无法解密；查看明文报错；密码留空不能保存；重新填写可以
+	// 缺少 account.key：显示无法解密；重新填写可以
 	os.Remove(filepath.Join(dir, "account.key"))
 	m.acctMu.Lock()
 	m.acctKey = nil
@@ -138,17 +115,11 @@ func TestAccountAPI(t *testing.T) {
 	if _, st := do("GET", "/api/state", ""); !strings.Contains(st, "缺少 account.key") {
 		t.Fatalf("missing key state: %s", st)
 	}
-	if code, _ := do("POST", "/api/sites/"+id+"/account/reveal", `{"password":"pw123456"}`); code != 409 {
-		t.Fatalf("reveal without key: %d", code)
-	}
-	if code, out := do("PUT", "/api/sites/"+id+"/account", `{"username":"bob","password":""}`); code != 400 || !strings.Contains(out, "无法解密") {
-		t.Fatalf("keep password without key: %d %s", code, out)
-	}
 	if code, out := do("PUT", "/api/sites/"+id+"/account", `{"username":"bob","password":"new-pass"}`); code != 200 {
 		t.Fatal(out)
 	}
-	if _, out := do("POST", "/api/sites/"+id+"/account/reveal", `{"password":"pw123456"}`); !strings.Contains(out, `"password":"new-pass"`) {
-		t.Fatalf("re-entered: %s", out)
+	if _, st := do("GET", "/api/state", ""); !strings.Contains(st, `"password":"new-pass"`) {
+		t.Fatalf("re-entered: %s", st)
 	}
 
 	// 删除账号、删除站点

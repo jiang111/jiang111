@@ -48,7 +48,6 @@ func (a *Admin) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/sites/{id}", a.auth(a.nodeReadOnly(a.deleteSite)))
 	mux.HandleFunc("PUT /api/sites/{id}/account", a.auth(a.nodeReadOnly(a.saveAccount)))
 	mux.HandleFunc("DELETE /api/sites/{id}/account", a.auth(a.nodeReadOnly(a.deleteAccount)))
-	mux.HandleFunc("POST /api/sites/{id}/account/reveal", a.auth(a.nodeReadOnly(a.revealAccount)))
 	mux.HandleFunc("POST /api/sites/{id}/clear-stats", a.auth(a.clearStats))
 	mux.HandleFunc("POST /api/test", a.auth(a.test))
 	mux.HandleFunc("PUT /api/settings", a.auth(a.settings))
@@ -236,7 +235,7 @@ type siteView struct {
 	// 仅主节点：本机 + 各在线节点之和，及各节点拆分
 	ClusterStats *StatsView   `json:"cluster_stats,omitempty"`
 	NodeStats    []nodeStats  `json:"node_stats,omitempty"`
-	Account      *accountView `json:"account,omitempty"` // 只有用户名和有没有密码
+	Account      *accountView `json:"account,omitempty"` // 站点账号（登录后才能看到）
 }
 
 func (a *Admin) state(w http.ResponseWriter, r *http.Request) {
