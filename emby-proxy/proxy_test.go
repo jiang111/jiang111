@@ -1199,7 +1199,7 @@ func TestStickyAcrossNodes(t *testing.T) {
 	var clientB string
 	for i := 0; i < 50; i++ {
 		c := fmt.Sprintf("198.51.100.%d", i)
-		if o, _ := nodes["A"].m.owner(c); o.Name == "B" {
+		if o, _ := nodes["A"].m.owner(c, nil); o.Name == "B" {
 			clientB = c
 			break
 		}

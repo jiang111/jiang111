@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -38,6 +39,7 @@ type Site struct {
 	UserAgent     string            `json:"user_agent,omitempty"`
 	Headers       map[string]string `json:"headers,omitempty"` // 值支持 {public_base} {public_origin} {client_ip}
 	Routes        []Route           `json:"routes,omitempty"`
+	ExcludeNodes  []string          `json:"exclude_nodes,omitempty"` // 不分配到这些节点（如上游封了它的 IP），其用户改由其它节点访问本站
 	Remark        string            `json:"remark,omitempty"`
 }
 
@@ -192,6 +194,13 @@ func normalizeSite(s *Site) {
 		}
 	}
 	s.StreamHosts = hosts
+	var ex []string
+	for _, n := range s.ExcludeNodes {
+		if n = strings.TrimSpace(n); n != "" && !slices.Contains(ex, n) {
+			ex = append(ex, n)
+		}
+	}
+	s.ExcludeNodes = ex
 	for k, v := range s.Headers {
 		if strings.TrimSpace(k) == "" {
 			delete(s.Headers, k)

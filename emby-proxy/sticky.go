@@ -15,6 +15,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -87,8 +88,8 @@ func (m *Manager) members() []Member {
 	return out
 }
 
-// owner 用 rendezvous 哈希为客户端 IP 选出负责节点；跳过本机认为暂时连不上的节点。
-func (m *Manager) owner(clientIP string) (Member, bool) {
+// owner 用 rendezvous 哈希为客户端 IP 选出负责节点；跳过本机认为暂时连不上的节点和 exclude 里的节点。
+func (m *Manager) owner(clientIP string, exclude []string) (Member, bool) {
 	ms := m.members()
 	if len(ms) < 2 {
 		return Member{}, false
@@ -97,7 +98,7 @@ func (m *Manager) owner(clientIP string) (Member, bool) {
 	var bestScore float64
 	found := false
 	for _, mb := range ms {
-		if m.peerDown(mb.Name) {
+		if m.peerDown(mb.Name) || slices.Contains(exclude, mb.Name) {
 			continue
 		}
 		sum := sha256.Sum256([]byte(mb.Name + "|" + clientIP))

@@ -410,6 +410,7 @@ pre.out{white-space:pre-wrap;word-break:break-all;background:var(--chip);border-
       <div class="f"><label>覆盖 User-Agent（可选）</label><input type="text" name="user_agent" placeholder="留空则透传客户端自己的 UA"></div>
       <div class="f"><label>自定义请求头（可选）</label><textarea name="headers" placeholder="每行一个，如&#10;MagpieCDN: {public_base}"></textarea><small>值里可用占位符：<code>{public_base}</code> 客户端访问地址（含路径前缀）、<code>{public_origin}</code> 不含路径、<code>{client_ip}</code> 客户端 IP。</small></div>
       <div class="f"><label>额外转发规则（可选）</label><textarea name="routes" placeholder="每行一个：路径 => 目标，如&#10;/magpiecdn => https://{arg.load}.example.com"></textarea><small>服务器自带推流路径时使用：匹配该路径的请求（路径和参数原样）转发到目标。<code>{arg.名称}</code> 取请求参数，只允许字母数字和 -。</small></div>
+      <div class="f"><label>不分配到这些节点（可选）</label><input type="text" name="exclude_nodes" placeholder="节点名，多个用逗号分隔，如 gv-jp"><small>上游封了某台服务器的 IP（如禁日本 IP）时填写：本站的用户改由其它节点访问上游，落到这台的请求会转给其它节点。</small></div>
       <label class="chk"><input type="checkbox" name="forward_ip"><span>把客户端真实 IP 传给上游（X-Forwarded-For / X-Real-IP）。默认不传，上游只看到本机 IP。</span></label>
       <label class="chk"><input type="checkbox" name="ignore_expired"><span>上游证书过期仍然连接（仍校验域名和签发机构，比「不校验证书」安全）</span></label>
       <label class="chk"><input type="checkbox" name="insecure_tls"><span>完全不校验上游 HTTPS 证书（自签证书等）</span></label>
@@ -764,7 +765,7 @@ function renderSites(entering) {
         <div class="chips"><span class="chip">${esc(modeTxt)}</span>
           <span class="chip ${s.stream_mode === 'proxy' ? 'g' : 'w'}">${s.stream_mode === 'proxy' ? '推流中转' : '推流直连'}</span>
           ${hosts.length ? `<span class="chip" title="${esc(hosts.join('\n'))}">推流域名 ${hosts.length}</span>` : ''}
-          ${s.forward_ip ? '<span class="chip">传真实IP</span>' : ''}${s.insecure_tls ? '<span class="chip w">不校验证书</span>' : s.ignore_expired ? '<span class="chip w">忽略证书过期</span>' : ''}</div>
+          ${s.forward_ip ? '<span class="chip">传真实IP</span>' : ''}${(s.exclude_nodes || []).length ? `<span class="chip w">不分配 ${esc(s.exclude_nodes.join(', '))}</span>` : ''}${s.insecure_tls ? '<span class="chip w">不校验证书</span>' : s.ignore_expired ? '<span class="chip w">忽略证书过期</span>' : ''}</div>
         <div class="addr"><code title="${esc(addr)}">${esc(addr)}</code><button class="btn sm" data-act="copy" data-v="${esc(addr)}">复制</button></div>
         <div class="kv">上游 <b>${esc(s.upstream)}</b></div>
         ${s.remark ? `<div class="kv">${esc(s.remark)}</div>` : ''}
@@ -902,11 +903,12 @@ function openForm(s) {
   f.stream_hosts.value = (v.stream_hosts || []).join('\n');
   f.headers.value = Object.entries(v.headers || {}).map(([k, x]) => `${k}: ${x}`).join('\n');
   f.routes.value = (v.routes || []).map(r => `${r.path} => ${r.target}`).join('\n');
+  f.exclude_nodes.value = (v.exclude_nodes || []).join(', ');
   f.forward_ip.checked = !!v.forward_ip; f.insecure_tls.checked = !!v.insecure_tls; f.ignore_expired.checked = !!v.ignore_expired; f.enabled.checked = v.enabled !== false;
   f.querySelector(`input[name=mode][value=${v.mode}]`).checked = true;
   f.querySelector(`input[name=stream_mode][value=${v.stream_mode || 'proxy'}]`).checked = true;
   if (!v.port && v.mode !== 'port') f.port.value = nextPort();
-  f.querySelector('details').open = !!(v.public_url || v.user_agent || v.forward_ip || v.insecure_tls || v.ignore_expired || (v.headers && Object.keys(v.headers).length) || (v.routes && v.routes.length));
+  f.querySelector('details').open = !!(v.public_url || v.user_agent || v.forward_ip || v.insecure_tls || v.ignore_expired || (v.headers && Object.keys(v.headers).length) || (v.routes && v.routes.length) || (v.exclude_nodes && v.exclude_nodes.length));
   syncMode();
   openMask('#mask');
   setTimeout(() => f.name.focus(), 50);
@@ -965,6 +967,7 @@ $('#form').onsubmit = async e => {
     stream_hosts_base: formHostsBase,
     forward_ip: f.forward_ip.checked, insecure_tls: f.insecure_tls.checked, ignore_expired: f.ignore_expired.checked, user_agent: f.user_agent.value,
     headers, remark: f.remark.value, enabled: f.enabled.checked,
+    exclude_nodes: f.exclude_nodes.value.split(/[,，\s]+/).map(x => x.trim()).filter(Boolean),
     routes: f.routes.value.split('\n').map(l => l.split('=>')).filter(p => p.length === 2).map(([p, t]) => ({path: p.trim(), target: t.trim()})),
   };
   try {

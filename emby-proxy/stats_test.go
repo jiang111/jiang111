@@ -526,7 +526,7 @@ func TestClusterLogs(t *testing.T) {
 func TestWeightedOwner(t *testing.T) {
 	owner := func(ms []Member, ip string) string {
 		m := &Manager{cfg: &Config{Cluster: ClusterConfig{Role: "node", Sticky: true}, Members: ms}, downUntil: map[string]time.Time{}}
-		o, _ := m.owner(ip)
+		o, _ := m.owner(ip, nil)
 		return o.Name
 	}
 	plain := func(ip string) string { // 原来的不加权算法

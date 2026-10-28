@@ -133,7 +133,7 @@ func TestProbePeers(t *testing.T) {
 	ownedByB := func() int {
 		n := 0
 		for i := 0; i < 200; i++ {
-			if o, _ := m.owner(fmt.Sprintf("198.51.100.%d", i)); o.Name == "B" {
+			if o, _ := m.owner(fmt.Sprintf("198.51.100.%d", i), nil); o.Name == "B" {
 				n++
 			}
 		}
@@ -141,6 +141,12 @@ func TestProbePeers(t *testing.T) {
 	}
 	if ownedByB() == 0 {
 		t.Fatal("B should own some clients while healthy")
+	}
+	// 站点排除 B（上游封了它的 IP）：该站点的用户都不分给 B
+	for i := 0; i < 200; i++ {
+		if o, ok := m.owner(fmt.Sprintf("198.51.100.%d", i), []string{"B"}); !ok || o.Name != "A" {
+			t.Fatalf("excluded B chosen: %+v %v", o, ok)
+		}
 	}
 	for i := 0; i < 2; i++ {
 		m.probePeers(now, fail)
@@ -168,7 +174,7 @@ func TestProbePeers(t *testing.T) {
 		m.probePeers(now, fail)
 	}
 	for i := 0; i < 50; i++ {
-		if o, _ := m.owner(fmt.Sprintf("198.51.100.%d", i)); o.Name != "A" {
+		if o, _ := m.owner(fmt.Sprintf("198.51.100.%d", i), nil); o.Name != "A" {
 			t.Fatal("down peer chosen as owner")
 		}
 	}

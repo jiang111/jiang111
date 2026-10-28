@@ -343,7 +343,7 @@ func (s *SiteRT) serve(w http.ResponseWriter, r *http.Request, prefix string) {
 	// 由负责节点计数，避免两台相加时重复。
 	if hip, from, ok := s.m.verifyHop(r.Header.Get(hopHeader), s.cfg.ID); ok {
 		ip, node = hip, "← "+from
-	} else if owner, ok := s.m.owner(ip); ok && owner.Name != s.m.selfName() && s.cfg.PublicURL != "" {
+	} else if owner, ok := s.m.owner(ip, s.cfg.ExcludeNodes); ok && owner.Name != s.m.selfName() && s.cfg.PublicURL != "" {
 		if loc := s.directURL(r, prefix, owner); loc != "" {
 			// 视频直连：推流请求让客户端直接连负责节点，本机不转发视频
 			rw := &countWriter{ResponseWriter: w, st: st, relay: true, tr: &s.m.traffic}
