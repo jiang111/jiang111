@@ -18,10 +18,11 @@ import (
 
 // Site 是一个反代站点：把一台上游 Emby 服务器通过 端口 / 路径 / 域名 暴露给客户端。
 type Site struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	Enabled  bool   `json:"enabled"`
-	Upstream string `json:"upstream"` // 上游地址，如 https://emby.example.com 或 http://1.2.3.4:8096
+	ID       string   `json:"id"`
+	Name     string   `json:"name"`
+	Enabled  bool     `json:"enabled"`
+	Upstream string   `json:"upstream"`          // 上游地址，如 https://emby.example.com 或 http://1.2.3.4:8096
+	Backups  []string `json:"backups,omitempty"` // 备用线路：同一台 Emby 的其它入口，自动测速选路、故障切换（见 lines.go）
 
 	Mode string `json:"mode"`           // port | path | host
 	Port int    `json:"port,omitempty"` // mode=port：独立监听端口
@@ -39,7 +40,12 @@ type Site struct {
 	UserAgent     string            `json:"user_agent,omitempty"`
 	Headers       map[string]string `json:"headers,omitempty"` // 值支持 {public_base} {public_origin} {client_ip}
 	Routes        []Route           `json:"routes,omitempty"`
-	ExcludeNodes  []string          `json:"exclude_nodes,omitempty"` // 不分配到这些节点（如上游封了它的 IP），其用户改由其它节点访问本站
+	ExcludeNodes  []string          `json:"exclude_nodes,omitempty"`  // 不分配到这些节点（如上游封了它的 IP），其用户改由其它节点访问本站
+	AccessKey     string            `json:"access_key,omitempty"`     // 访问密钥：客户端地址后面要加 /密钥，否则 404（挡扫描器）
+	Icon          string            `json:"icon,omitempty"`           // 图标地址（面板和导出页显示）
+	IPPref        string            `json:"ip_pref,omitempty"`        // 连上游优先用 v4 / v6，空 = 跟随全局设置
+	ForceOrigin   bool              `json:"force_origin,omitempty"`   // 总是带 Origin / Referer（上游防盗链 403 时用）
+	EPCredentials bool              `json:"ep_credentials,omitempty"` // 推流域名（与上游不同域名）也带 Emby 登录凭据
 	Remark        string            `json:"remark,omitempty"`
 }
 
@@ -66,6 +72,16 @@ type Config struct {
 	Keepalive *KeepaliveConfig `json:"keepalive,omitempty"`
 	// 一键导出账号的导出密码（见 export.go），空 = 未开启。只在本机，不同步、不导出
 	ExportKey string `json:"export_key,omitempty"`
+	// 访问控制（见 access.go），同步给从节点
+	Access *AccessConfig `json:"access,omitempty"`
+	// 连上游优先用 IPv4 / IPv6（auto | v4 | v6），同步给从节点；站点可单独设置
+	IPPref string `json:"ip_pref,omitempty"`
+	// 只读账号的密码（见 viewer.go）。只在本机，不同步、不导出
+	ViewerPasswords []string `json:"viewer_passwords,omitempty"`
+	// 通用反代地址（见 universal.go），同步给从节点
+	Universal *UniversalConfig `json:"universal,omitempty"`
+	// Telegram 助手（见 tg.go），只在本机，不同步、不导出
+	TG *TGConfig `json:"tg,omitempty"`
 }
 
 func randHex(n int) string {
@@ -167,6 +183,13 @@ func normalizeSite(s *Site) {
 	s.Name = strings.TrimSpace(s.Name)
 	s.Upstream = strings.TrimSpace(s.Upstream)
 	s.Upstream = addScheme(s.Upstream)
+	var backups []string
+	for _, b := range s.Backups {
+		if b = addScheme(strings.TrimSpace(b)); b != "" && b != s.Upstream && !slices.Contains(backups, b) {
+			backups = append(backups, b)
+		}
+	}
+	s.Backups = backups
 	s.Mode = strings.ToLower(strings.TrimSpace(s.Mode))
 	if s.Mode == "" {
 		s.Mode = "port"
@@ -181,6 +204,8 @@ func normalizeSite(s *Site) {
 		s.Host = h
 	}
 	s.PublicURL = strings.TrimRight(strings.TrimSpace(s.PublicURL), "/")
+	s.AccessKey = strings.Trim(strings.TrimSpace(s.AccessKey), "/")
+	s.Icon = strings.TrimSpace(s.Icon)
 	if s.StreamMode != "direct" {
 		s.StreamMode = "proxy"
 	}
@@ -218,6 +243,27 @@ func validateSite(cfg *Config, s *Site) error {
 	}
 	if _, err := parseUpstream(s.Upstream); err != nil {
 		return err
+	}
+	if s.AccessKey != "" && !accessKeyRe.MatchString(s.AccessKey) {
+		return errors.New("访问密钥只能是 4-64 位字母、数字、_ 或 -")
+	}
+	if s.Icon != "" {
+		if u, err := url.Parse(s.Icon); err != nil || (u.Scheme != "http" && u.Scheme != "https") || len(s.Icon) > 500 {
+			return errors.New("图标地址应为 http(s):// 开头的图片地址")
+		}
+	}
+	switch s.IPPref {
+	case "", "v4", "v6":
+	default:
+		return errors.New("IP 优先只能是 v4 / v6 或留空")
+	}
+	if len(s.Backups) > 8 {
+		return errors.New("备用线路最多 8 条")
+	}
+	for _, b := range s.Backups {
+		if _, err := parseUpstream(b); err != nil {
+			return fmt.Errorf("备用线路 %s：%v", b, err)
+		}
 	}
 	routes, err := validateRoutes(s.Routes)
 	if err != nil {
@@ -291,4 +337,28 @@ func addScheme(raw string) string {
 		return "http://" + raw
 	}
 	return "https://" + raw
+}
+
+// dupUpstream 检查有没有别的站点用了同一个上游（任意一条线路相同），有则返回提示（不阻止保存）。
+func dupUpstream(cfg *Config, s *Site) string {
+	mine, err := siteLines(*s)
+	if err != nil {
+		return ""
+	}
+	keys := map[string]bool{}
+	for _, ln := range mine {
+		keys[ln.key] = true
+	}
+	for _, o := range cfg.Sites {
+		if o.ID == s.ID {
+			continue
+		}
+		ls, _ := siteLines(*o)
+		for _, ln := range ls {
+			if keys[ln.key] {
+				return "站点「" + o.Name + "」也用了这个上游地址，确认不是重复添加"
+			}
+		}
+	}
+	return ""
 }

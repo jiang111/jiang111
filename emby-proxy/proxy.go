@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -31,7 +32,12 @@ type SiteRT struct {
 	upPort   string
 	upBase   string // 上游 base path（已转义），如 /emby-base
 	stats    *Stats
-	epKey    []byte // 推流地址签名密钥（集群共享）
+	epKey    []byte    // 推流地址签名密钥（集群共享）
+	lines    []*upLine // 主线路 + 备用线路（见 lines.go），lines[0] 即 upstream
+	pref     string    // 连上游优先 v4 / v6（站点设置，没有则用全局）
+
+	embyLearned atomic.Bool  // 上游要加 /emby 前缀才认（自动学到）
+	embyMiss    atomic.Int32 // 补 /emby 重试连续没用的次数，够多就不再试
 
 	hostsMu    sync.Mutex
 	hosts      map[string]bool // 学习到的推流源（scheme://host:port），允许经 /__ep/ 代理
@@ -103,7 +109,15 @@ func newSiteRT(m *Manager, s Site, st *Stats) (*SiteRT, error) {
 	if err != nil {
 		return nil, err
 	}
-	rt := &SiteRT{m: m, cfg: s, upstream: u, stats: st, hosts: map[string]bool{}, routeHosts: map[string]bool{}}
+	lines, err := siteLines(s)
+	if err != nil {
+		return nil, err
+	}
+	rt := &SiteRT{m: m, cfg: s, upstream: u, stats: st, lines: lines, hosts: map[string]bool{}, routeHosts: map[string]bool{}}
+	rt.pref = s.IPPref
+	if rt.pref == "" && m != nil && m.cfg != nil {
+		rt.pref = m.cfg.IPPref // reload 时调用方持有 m.mu
+	}
 	rt.upHost, rt.upPort = splitHP(u.Host, u.Scheme)
 	rt.upBase = u.EscapedPath()
 	for _, h := range s.StreamHosts {
@@ -113,22 +127,39 @@ func newSiteRT(m *Manager, s Site, st *Stats) (*SiteRT, error) {
 }
 
 func (s *SiteRT) roundTripper(rc *reqCtx) http.RoundTripper {
-	base := s.m.transport(s.cfg.InsecureTLS, s.cfg.IgnoreExpired)
+	var base http.RoundTripper = &lineTransport{base: s.m.transportPref(s.cfg.InsecureTLS, s.cfg.IgnoreExpired, s.pref), s: s, rc: rc}
 	if s.cfg.StreamMode == "proxy" {
 		return &followTransport{base: base, s: s, rc: rc}
 	}
 	return base
 }
 
+// isUpstream 判断地址是否指向上游自己（任意一条线路）。
 func (s *SiteRT) isUpstream(scheme, host, port string) bool {
-	if host != s.upHost {
-		return false
+	for _, ln := range s.lines {
+		if host != ln.host {
+			continue
+		}
+		if scheme == ln.u.Scheme && port == ln.port {
+			return true
+		}
+		// http://a.com 与 https://a.com（都是默认端口）视为同一台
+		if port == defaultPort(scheme) && ln.port == defaultPort(ln.u.Scheme) {
+			return true
+		}
 	}
-	if scheme == s.upstream.Scheme && port == s.upPort {
-		return true
+	return false
+}
+
+// sameDomain 判断主机名是否和上游（任意一条线路）同属一个域名。
+func (s *SiteRT) sameDomain(h string) bool {
+	pd := parentDomain(h)
+	for _, ln := range s.lines {
+		if parentDomain(ln.host) == pd {
+			return true
+		}
 	}
-	// http://a.com 与 https://a.com（都是默认端口）视为同一台
-	return port == defaultPort(scheme) && s.upPort == defaultPort(s.upstream.Scheme)
+	return false
 }
 
 func (s *SiteRT) learnHost(key string) {
@@ -199,14 +230,31 @@ type reqCtx struct {
 	publicBase string // 客户端看到的地址，如 https://proxy.com/hk
 	target     *url.URL
 	ep         bool
-	matchPath  string // 小写、已解码、去掉前缀和 base 的路径，用于判断接口
+	route      bool    // 命中了额外转发规则（目标是站点配置里写明的）
+	line       *upLine // 这个请求用的上游线路（换线重试后更新）
+	rest       string  // 去掉路径前缀后的请求路径（已转义），换线重试时拼到新线路的 base 后面
+	matchPath  string  // 小写、已解码、去掉前缀和 base 的路径，用于判断接口
 	acceptGzip bool
 	cw         *countWriter
 	ip         string // 客户端真实 IP（转来的请求为原始 IP）
 	play       string // 视频响应的播放去重 key（见 playKey）
 	report     string // 播放上报（/Sessions/Playing…）的「IP|片子」key，上游接受后记一次
 	reportStop bool   // 是 /Sessions/Playing/Stopped
+	imgKey     string // 图片缓存 key（不能缓存的请求为空）
 	errMsg     string
+}
+
+// imageCacheKey 返回请求的图片缓存 key，不能走缓存时为空。
+func (s *SiteRT) imageCacheKey(r *http.Request, prefix string) string {
+	esc := r.URL.EscapedPath()
+	if len(prefix) > 0 && len(esc) >= len(prefix) {
+		esc = esc[len(prefix):]
+	}
+	p, err := url.PathUnescape(esc)
+	if err != nil {
+		return ""
+	}
+	return imageKey(s.cfg.ID, r, strings.ToLower(p))
 }
 
 func firstHeader(r *http.Request, k string) string {
@@ -219,7 +267,7 @@ func firstHeader(r *http.Request, k string) string {
 
 func (s *SiteRT) publicBase(r *http.Request, prefix string) string {
 	if s.cfg.PublicURL != "" {
-		return s.cfg.PublicURL
+		return clientBase(&s.cfg)
 	}
 	scheme := strings.ToLower(firstHeader(r, "X-Forwarded-Proto"))
 	if scheme != "http" && scheme != "https" {
@@ -314,7 +362,7 @@ func (s *SiteRT) epSegment(u *url.URL) string {
 
 var stripReqHeaders = []string{
 	"X-Real-Ip", "Forwarded", "Via", "Cf-Connecting-Ip", "True-Client-Ip", "X-Client-Ip",
-	"Cdn-Loop", "Cf-Ipcountry", "Cf-Ray", "Cf-Visitor", "Cf-Worker", "X-Forwarded-Port", "X-Forwarded-Prefix", hopHeader,
+	"Cdn-Loop", "Cf-Ipcountry", "Cf-Ray", "Cf-Visitor", "Cf-Worker", "X-Forwarded-Port", "X-Forwarded-Prefix", hopHeader, selfHeader,
 }
 
 func (s *SiteRT) serve(w http.ResponseWriter, r *http.Request, prefix string) {
@@ -322,6 +370,7 @@ func (s *SiteRT) serve(w http.ResponseWriter, r *http.Request, prefix string) {
 		w.Write([]byte("ok"))
 		return
 	}
+	defer clearWriteDeadline(w)
 	start := time.Now()
 	st := s.stats
 	ip := clientIP(r)
@@ -335,14 +384,51 @@ func (s *SiteRT) serve(w http.ResponseWriter, r *http.Request, prefix string) {
 			Time: start.Unix(), Site: s.cfg.ID, SiteName: s.cfg.Name, IP: ip, Method: r.Method,
 			Path: maskURI(r.URL.RequestURI()), Status: status, Bytes: cw.n,
 			Ms: time.Since(start).Milliseconds(), UA: shortUA(r.UserAgent()), Err: errMsg, Node: node,
+			CC: s.m.geoLookupStr(ip),
 		})
 	}
 
 	// 同一用户固定同一台：由其它节点转来的请求直接处理；否则不是自己负责的用户就转给负责节点。
 	// 转发出去的请求只计入「转发」（RelayRequests/RelayBytes），不计入本站请求/连接/播放/流量，
 	// 由负责节点计数，避免两台相加时重复。
+	hopped := false
 	if hip, from, ok := s.m.verifyHop(r.Header.Get(hopHeader), s.cfg.ID); ok {
-		ip, node = hip, "← "+from
+		ip, node, hopped = hip, "← "+from, true
+	} else if reason, ok := s.m.checkAccess(r, ip); !ok {
+		// 访问控制：转来的请求已由收到它的节点检查过
+		cw := &countWriter{ResponseWriter: w, st: st, tr: &s.m.traffic}
+		cw.status = s.m.denyPage(cw, ip, reason)
+		node = "拦截：" + reason
+		logReq(cw, "")
+		return
+	}
+	{
+		cw := &countWriter{ResponseWriter: w, st: st, tr: &s.m.traffic}
+		p, ok := s.keyGate(cw, r, prefix, ip)
+		if !ok {
+			node = "访问密钥不对"
+			logReq(cw, "")
+			return
+		}
+		prefix = p
+	}
+	// 图片缓存命中：本机直接返回，不访问上游，也不用转给负责节点
+	imgKey := s.imageCacheKey(r, prefix)
+	if e := s.m.imgs.get(imgKey); e != nil {
+		st.begin(ip)
+		cw := &countWriter{ResponseWriter: w, st: st, tr: &s.m.traffic}
+		e.serve(cw, r)
+		st.end(ip, "")
+		s.m.imgs.saved.Add(int64(len(e.body)))
+		if node == "" {
+			node = "缓存"
+		} else {
+			node += " · 缓存"
+		}
+		logReq(cw, "")
+		return
+	}
+	if hopped {
 	} else if owner, ok := s.m.owner(ip, s.cfg.ExcludeNodes); ok && owner.Name != s.m.selfName() && s.cfg.PublicURL != "" {
 		if loc := s.directURL(r, prefix, owner); loc != "" {
 			// 视频直连：推流请求让客户端直接连负责节点，本机不转发视频
@@ -368,8 +454,9 @@ func (s *SiteRT) serve(w http.ResponseWriter, r *http.Request, prefix string) {
 	}
 
 	st.begin(ip)
+	s.m.daily.visit(s.cfg.ID, ip)
 	cw := &countWriter{ResponseWriter: w, st: st, tr: &s.m.traffic}
-	rc := &reqCtx{s: s, prefix: prefix, cw: cw, ip: ip}
+	rc := &reqCtx{s: s, prefix: prefix, cw: cw, ip: ip, imgKey: imgKey}
 	defer func() {
 		st.end(rc.ip, rc.play)
 		if cw.status >= 500 {
@@ -388,8 +475,10 @@ func (s *SiteRT) serve(w http.ResponseWriter, r *http.Request, prefix string) {
 		rest = "/" + rest
 	}
 
-	target := s.upstream
-	outPath := s.upBase + rest
+	ln := s.activeLine()
+	rc.line, rc.rest = ln, rest
+	target := ln.u
+	outPath := ln.base + rest
 	if strings.HasPrefix(rest, epPrefix) {
 		t, remainder, ok := s.parseEP(rest)
 		if !ok {
@@ -406,7 +495,7 @@ func (s *SiteRT) serve(w http.ResponseWriter, r *http.Request, prefix string) {
 		}
 		// 路由目标当作推流域名处理：路径原样转发，响应里指向它的地址改写回 /__ep/
 		s.learnRouteHost(t)
-		target, outPath, rc.ep = t, rest, true
+		target, outPath, rc.ep, rc.route = t, rest, true, true
 	}
 	rc.target = target
 	unescOut, err := url.PathUnescape(outPath)
@@ -417,6 +506,11 @@ func (s *SiteRT) serve(w http.ResponseWriter, r *http.Request, prefix string) {
 	}
 	unescRest, _ := url.PathUnescape(rest)
 	rc.matchPath = strings.ToLower(unescRest)
+	if isPlaybackInfo(rc.matchPath) && !rc.ep {
+		if item := playItem(rc.matchPath); item != "" {
+			s.m.daily.play(s.cfg.ID, ip, item)
+		}
+	}
 	if stop, ok := playReportPath(r.Method, rc.matchPath); ok {
 		rc.report, rc.reportStop = ip+"|"+playReportItem(r), stop
 	}
@@ -440,11 +534,17 @@ func (s *SiteRT) serve(w http.ResponseWriter, r *http.Request, prefix string) {
 				h.Set("X-Forwarded-For", ip)
 				h.Set("X-Real-Ip", ip)
 			}
-			if h.Get("Origin") != "" {
+			if h.Get("Origin") != "" || s.cfg.ForceOrigin {
 				h.Set("Origin", targetOrigin)
 			}
-			if h.Get("Referer") != "" {
+			if h.Get("Referer") != "" || s.cfg.ForceOrigin {
 				h.Set("Referer", targetOrigin+"/")
+			}
+			// 自动学到的推流域名和上游不是同一个域名时，不把 Emby 登录凭据带过去（链接里自带的参数照常保留）
+			if rc.ep && !rc.route && !s.cfg.EPCredentials && !s.sameDomain(splitHost(target)) {
+				for _, k := range credentialHeaders {
+					h.Del(k)
+				}
 			}
 			// 只允许 gzip（需要改写的响应要能解压），客户端不支持或 Range 请求时不压缩。
 			// 显式设置后 Transport 不会自动解压，其它类型（如网页版 JS）保持压缩原样转给客户端。
@@ -493,6 +593,11 @@ func stripPanelCookie(h http.Header) {
 	}
 }
 
+// clearWriteDeadline 清掉 countWriter 设置的写超时，保持连接（keep-alive）的下一个请求不受影响。
+func clearWriteDeadline(w http.ResponseWriter) {
+	http.NewResponseController(w).SetWriteDeadline(time.Time{})
+}
+
 func (rc *reqCtx) errorHandler(w http.ResponseWriter, r *http.Request, err error) {
 	if errors.Is(err, context.Canceled) || r.Context().Err() != nil {
 		rc.cw.status = 499 // 客户端主动断开（拖动进度条、切换视频时很常见）
@@ -514,8 +619,14 @@ func (rc *reqCtx) modifyResponse(resp *http.Response) error {
 			h.Set(k, rc.rewriteLocation(v))
 		}
 	}
+	if resp.StatusCode == http.StatusUnauthorized && resp.Request.Method == http.MethodPost && isLoginPath(rc.matchPath) {
+		rc.s.m.noteFailure(rc.ip, "多次登录失败")
+	}
 	if rc.report != "" && resp.StatusCode < 300 {
 		rc.s.stats.reportPlay(rc.report, rc.reportStop)
+	}
+	if rc.imgKey != "" && cacheableImage(resp) {
+		rc.s.m.imgs.tee(rc.imgKey, resp)
 	}
 	ct := strings.ToLower(h.Get("Content-Type"))
 	if (strings.HasPrefix(ct, "video/") || strings.HasPrefix(ct, "audio/")) && !strings.Contains(ct, "mpegurl") {
@@ -556,16 +667,24 @@ func (rc *reqCtx) externalRedirectOK(loc string) bool {
 		return false
 	}
 	h, _ := splitHP(u.Host, u.Scheme)
-	return parentDomain(h) == parentDomain(rc.s.upHost)
+	return rc.s.sameDomain(h)
 }
 
 func (s *SiteRT) stripBase(tail string) string {
-	b := s.upBase
+	for _, ln := range s.lines {
+		if r, ok := stripOne(ln.base, tail); ok {
+			return r
+		}
+	}
+	return tail
+}
+
+func stripOne(b, tail string) (string, bool) {
 	if b == "" || !strings.HasPrefix(strings.ToLower(tail), strings.ToLower(b)) {
-		return tail
+		return tail, false
 	}
 	if len(tail) == len(b) {
-		return "/"
+		return "/", true
 	}
 	switch tail[len(b)] {
 	case '/', '?', '#':
@@ -573,9 +692,9 @@ func (s *SiteRT) stripBase(tail string) string {
 		if r[0] != '/' {
 			r = "/" + r
 		}
-		return r
+		return r, true
 	}
-	return tail
+	return tail, false
 }
 
 // rewriteAbs 改写一个绝对 URL：
@@ -664,7 +783,8 @@ func (rc *reqCtx) resolveSelf(loc *url.URL) (*url.URL, bool) {
 		return nil, false
 	}
 	s := rc.s
-	target, out := s.upstream, s.upBase+rest
+	ln := s.activeLine()
+	target, out := ln.u, ln.base+rest
 	if strings.HasPrefix(rest, epPrefix) {
 		t, remainder, ok := s.parseEP(rest)
 		if !ok {
@@ -694,6 +814,7 @@ type countWriter struct {
 	relay  bool
 	n      int64
 	status int
+	rc     *http.ResponseController
 }
 
 func (c *countWriter) WriteHeader(code int) {
@@ -703,10 +824,19 @@ func (c *countWriter) WriteHeader(code int) {
 	c.ResponseWriter.WriteHeader(code)
 }
 
+// writeStall：客户端多久读不走数据就断开（播放器卡死、网络半断时连接和上游拉流会一直挂着）。
+// 每次写之前重新设置写超时，请求结束时清掉（见 serve），所以正常的暂停、慢速播放不受影响。
+// 前面有 nginx 时 nginx 自己的 send_timeout 会先断开，这里主要保护直接对外的独立端口。
+var writeStall = 3 * time.Minute
+
 func (c *countWriter) Write(b []byte) (int, error) {
 	if c.status == 0 {
 		c.status = http.StatusOK
 	}
+	if c.rc == nil {
+		c.rc = http.NewResponseController(c.ResponseWriter)
+	}
+	c.rc.SetWriteDeadline(time.Now().Add(writeStall))
 	n, err := c.ResponseWriter.Write(b)
 	c.n += int64(n)
 	c.tr.add(int64(n))
@@ -750,4 +880,9 @@ func shortUA(ua string) string {
 		return ua[:80]
 	}
 	return ua
+}
+
+func splitHost(u *url.URL) string {
+	h, _ := splitHP(u.Host, u.Scheme)
+	return h
 }

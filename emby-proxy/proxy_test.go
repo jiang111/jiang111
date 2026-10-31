@@ -253,7 +253,7 @@ func checkWS(t *testing.T, entryURL, prefix string) {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	fmt.Fprintf(c, "GET "+prefix+"/embywebsocket?api_key=x HTTP/1.1\r\nHost: x\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n")
+	fmt.Fprint(c, "GET "+prefix+"/embywebsocket?api_key=x HTTP/1.1\r\nHost: x\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n")
 	br := bufio.NewReader(c)
 	resp, err := http.ReadResponse(br, nil)
 	if err != nil || resp.StatusCode != 101 {

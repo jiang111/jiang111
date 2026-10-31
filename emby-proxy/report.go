@@ -26,9 +26,10 @@ const (
 )
 
 type nodeReport struct {
-	Time    int64                // 主节点收到的时间
-	Sites   map[string]StatsView // 站点 ID → 统计；收到后整体替换，不再修改
-	Traffic *trafficInfo         // 节点本月反代流量（流量均衡用；旧版本节点没有）
+	Time    int64                         // 主节点收到的时间
+	Sites   map[string]StatsView          // 站点 ID → 统计；收到后整体替换，不再修改
+	Traffic *trafficInfo                  // 节点本月反代流量（流量均衡用；旧版本节点没有）
+	Daily   map[string]map[string]DayStat // 最近 7 天的每日统计（旧版本节点没有）
 }
 
 // statsBase 是主节点「清零统计」时记下的某节点累计值，汇总时显示 上报值 - 基准。
@@ -86,10 +87,11 @@ func (c *Cluster) serveReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Name    string               `json:"name"`
-		Sites   map[string]StatsView `json:"sites"`
-		Traffic *trafficInfo         `json:"traffic"`
-		Logs    []LogEntry           `json:"logs"`
+		Name    string                        `json:"name"`
+		Sites   map[string]StatsView          `json:"sites"`
+		Traffic *trafficInfo                  `json:"traffic"`
+		Logs    []LogEntry                    `json:"logs"`
+		Daily   map[string]map[string]DayStat `json:"daily"`
 	}
 	if err := readJSON(r, &body); err != nil {
 		writeErr(w, 400, "请求格式错误")
@@ -128,7 +130,10 @@ func (c *Cluster) serveReport(w http.ResponseWriter, r *http.Request) {
 	if body.Traffic != nil && body.Traffic.Bytes < 0 {
 		body.Traffic.Bytes = 0
 	}
-	c.reports[name] = &nodeReport{Time: time.Now().Unix(), Sites: body.Sites, Traffic: body.Traffic}
+	if len(body.Daily) > 31 {
+		body.Daily = nil
+	}
+	c.reports[name] = &nodeReport{Time: time.Now().Unix(), Sites: body.Sites, Traffic: body.Traffic, Daily: body.Daily}
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
@@ -332,7 +337,7 @@ func (c *Cluster) report() error {
 	var tr trafficInfo
 	tr.Month, tr.Bytes = m.traffic.get(time.Now())
 	logs, seq := m.logs.since(c.logSeq, maxReportLogs)
-	data, err := json.Marshal(map[string]any{"name": name, "sites": sites, "traffic": tr, "logs": logs})
+	data, err := json.Marshal(map[string]any{"name": name, "sites": sites, "traffic": tr, "logs": logs, "daily": m.daily.export(7)})
 	if err != nil {
 		return err
 	}

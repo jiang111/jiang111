@@ -120,7 +120,7 @@ func (t *followTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			next.Method = http.MethodGet
 		}
 		// 跳到与上游无关的第三方域名（网盘直链等）时，不把 Emby 凭据带过去
-		if parentDomain(host) != parentDomain(t.s.upHost) {
+		if !t.s.sameDomain(host) {
 			for _, k := range credentialHeaders {
 				next.Header.Del(k)
 			}

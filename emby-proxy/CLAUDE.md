@@ -1,6 +1,6 @@
 # emby-proxy
 
-Emby 反代面板（Go，无第三方依赖，Docker 部署）。用户的服务器部署和配置按 **docs/配置手册.md** 执行。
+Emby 反代面板（Go，Docker 部署；除可选的 Telegram 助手外无第三方依赖）。用户的服务器部署和配置按 **docs/配置手册.md** 执行。
 
 ## 帮用户配置服务器时
 
@@ -19,4 +19,7 @@ Emby 反代面板（Go，无第三方依赖，Docker 部署）。用户的服务
 - 主要文件：`proxy.go`（反代核心、地址改写、推流签名）、`rewrite.go`（响应体改写）、`follow.go`（推流跳转跟随）、
   `route.go`（额外转发规则）、`sticky.go`（同一用户固定同一台、节点间转发）、`cluster.go`（主从同步）、
   `nginx.go`（生成 nginx 配置）、`cert.go`、`backup.go`、`admin.go`（面板 API）、`web/index.html`（面板前端）、
-  `install.sh`、`nginx-reload.sh`（宿主机自动应用 nginx 配置）。
+  `install.sh`、`nginx-reload.sh`（宿主机自动应用 nginx 配置）、`lines.go`（多线路选路）、`imgcache.go`（图片缓存）、
+  `access.go` / `geo.go`（访问控制、国家数据、自动封禁、访问密钥）、`viewer.go`（只读账号）、`daily.go`（每日统计）、
+  `update.go` / `update.sh`（在线更新）、`tg.go` / `tg_gotd.go` / `tg_admin.go`（Telegram 助手，可选模块）。
+- 依赖：除 Telegram 助手用的 `github.com/gotd/td`（Telegram 协议）外不引入第三方库。gotd 固定在支持 Go 1.24 的版本（Dockerfile 用 golang:1.24）。

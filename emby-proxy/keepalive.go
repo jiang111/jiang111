@@ -56,6 +56,7 @@ type KeepaliveConfig struct {
 	Client         KeepaliveClient `json:"client"`          // 伪装的客户端身份
 	TelegramToken  string          `json:"telegram_token,omitempty"`
 	TelegramChat   string          `json:"telegram_chat,omitempty"`
+	Bark           string          `json:"bark,omitempty"` // Bark 推送地址（iPhone），如 https://api.day.app/你的Key，只填 Key 也行
 }
 
 func defaultKeepalive() KeepaliveConfig {
@@ -93,6 +94,12 @@ func (c *KeepaliveConfig) validate() error {
 		}
 	}
 	c.TelegramToken, c.TelegramChat = strings.TrimSpace(c.TelegramToken), strings.TrimSpace(c.TelegramChat)
+	c.Bark = strings.TrimSpace(c.Bark)
+	if c.Bark != "" {
+		if _, err := barkURL(c.Bark); err != nil {
+			return err
+		}
+	}
 	if len(c.TelegramToken) > 200 || len(c.TelegramChat) > 100 || strings.ContainsAny(c.TelegramToken, "/?# ") {
 		return errors.New("Telegram 设置不正确")
 	}
@@ -248,9 +255,14 @@ func (k *keepalive) targets() ([]kaTarget, map[string]string) {
 		}
 		t := kaTarget{ID: s.ID, Name: s.Name, Acc: acc, On: m.cfg.Keepalive != nil && m.cfg.Keepalive.Sites[s.ID]}
 		if s.Enabled && s.PublicURL != "" {
-			t.Base, t.Transport = s.PublicURL, m.trs[tlsVerify]
+			// 经自己的客户端地址访问：带上本机签名，访问控制（白名单、国家）不拦自己
+			t.Base, t.Transport = clientBase(s), selfTransport{m.transport(false, false), m}
 		} else {
-			t.Base, t.Transport = s.Upstream, m.transport(s.InsecureTLS, s.IgnoreExpired)
+			pref := s.IPPref
+			if pref == "" {
+				pref = m.cfg.IPPref
+			}
+			t.Base, t.Transport = m.activeUpstreamLocked(s), m.transportPref(s.InsecureTLS, s.IgnoreExpired, pref)
 		}
 		out = append(out, t)
 	}
@@ -408,10 +420,8 @@ func (k *keepalive) runBatch(ts []kaTarget, cfg KeepaliveConfig, manual bool) {
 	}
 	summary := title + "\n" + strings.Join(lines, "\n")
 	k.logf("%s", strings.ReplaceAll(summary, "\n", " | "))
-	if cfg.TelegramToken != "" && cfg.TelegramChat != "" {
-		if err := telegramSend(cfg.TelegramToken, cfg.TelegramChat, summary); err != nil {
-			k.logf("Telegram 通知失败：%v", err)
-		}
+	for _, err := range notifyAll(cfg, summary) {
+		k.logf("通知失败：%v", err)
 	}
 }
 
@@ -793,6 +803,9 @@ type kaView struct {
 func (k *keepalive) view(now time.Time) *kaView {
 	cfg := k.m.keepaliveConfig()
 	ts, bad := k.targets()
+	if cfg.Bark != "" {
+		cfg.Bark = maskBark(cfg.Bark)
+	}
 	if cfg.TelegramToken != "" {
 		cfg.TelegramToken = cfg.TelegramToken[:min(4, len(cfg.TelegramToken))] + "…"
 	}
@@ -837,6 +850,7 @@ func (a *Admin) saveKeepalive(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		KeepaliveConfig
 		TelegramToken *string `json:"telegram_token"`
+		Bark          *string `json:"bark"`
 	}
 	if err := readJSON(r, &body); err != nil {
 		writeErr(w, 400, "请求格式错误")
@@ -848,6 +862,10 @@ func (a *Admin) saveKeepalive(w http.ResponseWriter, r *http.Request) {
 	c.TelegramToken = old.TelegramToken
 	if body.TelegramToken != nil {
 		c.TelegramToken = *body.TelegramToken
+	}
+	c.Bark = old.Bark
+	if body.Bark != nil {
+		c.Bark = *body.Bark
 	}
 	if err := c.validate(); err != nil {
 		writeErr(w, 400, err.Error())

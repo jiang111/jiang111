@@ -364,6 +364,7 @@ type LogEntry struct {
 	Err      string `json:"err,omitempty"`
 	Node     string `json:"node,omitempty"`   // 「→ 名称」转发给了该节点；「← 名称」由该节点转来
 	Server   string `json:"server,omitempty"` // 处理这个请求的服务器（主节点汇总各节点日志时填写）
+	CC       string `json:"cc,omitempty"`     // 客户端 IP 的归属国家（有国家数据时）
 }
 
 // LogRing 是内存里的访问日志（满了覆盖最旧的）。第 k 条（从 0 计）存在 buf[k % len(buf)]。

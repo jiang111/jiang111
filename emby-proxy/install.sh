@@ -38,15 +38,54 @@ if [ ! -f "$DIR/src.new/main.go" ]; then
     echo -e "${RED}下载源码失败${NC}"
     exit 1
 fi
-rm -rf "$DIR/src"
+# 记录版本（GitHub 上 emby-proxy 目录的提交号），面板据此判断有没有新版本
+COMMIT=${EMBY_PROXY_COMMIT:-}
+if [ -z "$COMMIT" ] && [ ! -f "$DIR/src.new/VERSION" ]; then
+    COMMIT=$(curl -fsS --max-time 10 "https://api.github.com/repos/jiang111/jiang111/commits?sha=master&path=emby-proxy&per_page=1" 2>/dev/null \
+        | grep -m1 -o '"sha": *"[0-9a-f]\{40\}"' | grep -o '[0-9a-f]\{40\}' || true)
+fi
+[ -n "$COMMIT" ] && echo "$COMMIT" > "$DIR/src.new/VERSION"
+rm -rf "$DIR/src.prev"
+[ -d "$DIR/src" ] && mv "$DIR/src" "$DIR/src.prev"
 mv "$DIR/src.new" "$DIR/src"
 cp "$DIR/src/docker-compose.yml" "$DIR/docker-compose.yml"
 
 cd "$DIR"
 echo "正在构建镜像（首次需要拉取 golang 镜像，稍等一两分钟）..."
-$COMPOSE up -d --build
+if ! $COMPOSE up -d --build; then
+    echo -e "${RED}构建失败，旧版本继续运行${NC}"
+    rm -rf "$DIR/src" && [ -d "$DIR/src.prev" ] && mv "$DIR/src.prev" "$DIR/src"
+    exit 1
+fi
 
 sleep 2
+
+# ---- 面板一键更新：面板写 data/update/request，宿主机的 systemd path 单元看到后执行 update.sh ----
+if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ] && [ "${EMBY_PROXY_NO_UPDATER:-}" != "1" ]; then
+    install -m 755 "$DIR/src/update.sh" "$DIR/update.sh"
+    mkdir -p "$DIR/data/update"
+    cat > /etc/systemd/system/emby-proxy-update.service <<UNIT
+[Unit]
+Description=Update emby-proxy (requested from panel)
+
+[Service]
+Type=oneshot
+Environment=EMBY_PROXY_DIR=$DIR
+ExecStart=/bin/bash $DIR/update.sh
+UNIT
+    cat > /etc/systemd/system/emby-proxy-update.path <<UNIT
+[Unit]
+Description=Watch emby-proxy update requests
+
+[Path]
+PathExists=$DIR/data/update/request
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+    systemctl daemon-reload
+    systemctl enable --now emby-proxy-update.path >/dev/null 2>&1 && date +%s > "$DIR/data/update/installed"
+fi
 
 # ---- nginx 自动应用：程序把配置写到 data/nginx/，宿主机定时检查、nginx -t 通过才 reload ----
 NGINX_AUTO=no
