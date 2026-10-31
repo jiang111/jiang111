@@ -78,6 +78,8 @@ type Config struct {
 	IPPref string `json:"ip_pref,omitempty"`
 	// 只读账号的密码（见 viewer.go）。只在本机，不同步、不导出
 	ViewerPasswords []string `json:"viewer_passwords,omitempty"`
+	// 通用反代地址（见 universal.go），同步给从节点
+	Universal *UniversalConfig `json:"universal,omitempty"`
 }
 
 func randHex(n int) string {
@@ -333,4 +335,28 @@ func addScheme(raw string) string {
 		return "http://" + raw
 	}
 	return "https://" + raw
+}
+
+// dupUpstream 检查有没有别的站点用了同一个上游（任意一条线路相同），有则返回提示（不阻止保存）。
+func dupUpstream(cfg *Config, s *Site) string {
+	mine, err := siteLines(*s)
+	if err != nil {
+		return ""
+	}
+	keys := map[string]bool{}
+	for _, ln := range mine {
+		keys[ln.key] = true
+	}
+	for _, o := range cfg.Sites {
+		if o.ID == s.ID {
+			continue
+		}
+		ls, _ := siteLines(*o)
+		for _, ln := range ls {
+			if keys[ln.key] {
+				return "站点「" + o.Name + "」也用了这个上游地址，确认不是重复添加"
+			}
+		}
+	}
+	return ""
 }

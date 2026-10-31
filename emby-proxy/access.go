@@ -145,8 +145,8 @@ type aclRT struct {
 }
 
 func newACL(c *AccessConfig) *aclRT {
-	if c == nil {
-		return &aclRT{cfg: AccessConfig{Mode: "off"}}
+	if c == nil { // 没设置过：不限制访问，但默认开启自动封禁（撞库保护不需要用户懂就该有）
+		return &aclRT{cfg: AccessConfig{Mode: "off", AutoBan: true, BanHits: 10, BanMinutes: 1440}}
 	}
 	a := &aclRT{cfg: *c, nets: parseNets(c.IPs), trusted: parseNets(c.Trusted), countries: map[string]bool{}}
 	for _, cc := range c.Countries {

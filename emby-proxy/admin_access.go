@@ -19,7 +19,7 @@ type accessView struct {
 func (a *Admin) accessState(w http.ResponseWriter, r *http.Request) {
 	m := a.m
 	m.mu.RLock()
-	c := AccessConfig{Mode: "off", BanHits: 10, BanMinutes: 1440}
+	c := AccessConfig{Mode: "off", AutoBan: true, BanHits: 10, BanMinutes: 1440}
 	if m.cfg.Access != nil {
 		c = *m.cfg.Access
 	}

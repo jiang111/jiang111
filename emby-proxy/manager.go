@@ -62,6 +62,7 @@ type Manager struct {
 
 	daily *dailyStore // 每日统计
 	upd   updater     // 在线更新
+	uni   uniCache    // 通用反代地址的临时站点
 
 	lines lineHub     // 多线路：各线路的探测状态和正在用的线路
 	imgs  *imageCache // 海报 / 图片缓存
@@ -196,16 +197,7 @@ func NewManager(path string, cfg *Config) *Manager {
 	m.imgs = newImageCache(imageCacheBytes())
 	m.daily = newDailyStore()
 	m.daily.load(m.dailyPath())
-	m.lines.notify = func(text string) {
-		go func() {
-			cfg := m.keepaliveConfig()
-			if cfg.TelegramToken != "" && cfg.TelegramChat != "" {
-				if err := telegramSend(cfg.TelegramToken, cfg.TelegramChat, text); err != nil {
-					log.Printf("Telegram 通知失败：%v", err)
-				}
-			}
-		}()
-	}
+	m.lines.notify = m.notify
 	return m
 }
 
@@ -374,6 +366,9 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	m.mu.RUnlock()
+	if rt == nil && m.serveUniversal(w, r, esc) {
+		return
+	}
 	if rt == nil {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusNotFound)

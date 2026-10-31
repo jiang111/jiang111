@@ -139,6 +139,7 @@ func (a *Admin) viewerState(w http.ResponseWriter) {
 	if cluster.Role == "master" {
 		snap = a.cluster.statsSnapshot()
 	}
+	today := a.mergedDaily(1)[dayOf(time.Now())]
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	views := []siteView{}
@@ -166,6 +167,10 @@ func (a *Admin) viewerState(w http.ResponseWriter) {
 			lv[i].URL, lv[i].Err = "", ""
 		}
 		v.Lines = lv
+		if t, ok := today[s.ID]; ok {
+			t.Hours, t.IPs = [24]int64{}, 0
+			v.Today = &t
+		}
 		views = append(views, v)
 	}
 	writeJSON(w, 200, map[string]any{

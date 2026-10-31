@@ -61,3 +61,15 @@ func TestDailyThroughProxy(t *testing.T) {
 		t.Fatal("playItem")
 	}
 }
+
+func TestDailyHours(t *testing.T) {
+	d := newDailyStore()
+	now := time.Date(2026, 10, 31, 21, 5, 0, 0, time.Local)
+	d.now = func() time.Time { return now }
+	d.play("s1", "1.1.1.1", "1")
+	d.play("s1", "2.2.2.2", "1")
+	got := d.export(1)["2026-10-31"]["s1"]
+	if got.Hours[21] != 2 || got.Last != now.Unix() {
+		t.Fatalf("hours: %+v", got)
+	}
+}

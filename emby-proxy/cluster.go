@@ -44,22 +44,23 @@ type ClusterConfig struct {
 
 // syncPayload 是主节点下发的内容。
 type syncPayload struct {
-	Sites         []*Site       `json:"sites"`
-	EntryURL      string        `json:"entry_url,omitempty"`
-	PublicHost    string        `json:"public_host,omitempty"`
-	PortBind      string        `json:"port_bind,omitempty"`
-	NginxCert     string        `json:"nginx_cert,omitempty"` // 主节点手动指定的证书路径（各节点需自备同路径文件）
-	NginxKey      string        `json:"nginx_key,omitempty"`
-	NginxIPv6     bool          `json:"nginx_ipv6,omitempty"`
-	ClusterSecret string        `json:"cluster_secret"`
-	Sticky        bool          `json:"sticky,omitempty"`
-	DirectStream  bool          `json:"direct_stream,omitempty"`
-	DNS           *DNSFailover  `json:"dns,omitempty"`
-	Members       []Member      `json:"members,omitempty"`
-	CertPEM       []byte        `json:"cert_pem,omitempty"` // 主节点上传的证书（各节点写到自己的数据目录）
-	KeyPEM        []byte        `json:"key_pem,omitempty"`
-	Access        *AccessConfig `json:"access,omitempty"`
-	IPPref        string        `json:"ip_pref,omitempty"`
+	Sites         []*Site          `json:"sites"`
+	EntryURL      string           `json:"entry_url,omitempty"`
+	PublicHost    string           `json:"public_host,omitempty"`
+	PortBind      string           `json:"port_bind,omitempty"`
+	NginxCert     string           `json:"nginx_cert,omitempty"` // 主节点手动指定的证书路径（各节点需自备同路径文件）
+	NginxKey      string           `json:"nginx_key,omitempty"`
+	NginxIPv6     bool             `json:"nginx_ipv6,omitempty"`
+	ClusterSecret string           `json:"cluster_secret"`
+	Sticky        bool             `json:"sticky,omitempty"`
+	DirectStream  bool             `json:"direct_stream,omitempty"`
+	DNS           *DNSFailover     `json:"dns,omitempty"`
+	Members       []Member         `json:"members,omitempty"`
+	CertPEM       []byte           `json:"cert_pem,omitempty"` // 主节点上传的证书（各节点写到自己的数据目录）
+	KeyPEM        []byte           `json:"key_pem,omitempty"`
+	Access        *AccessConfig    `json:"access,omitempty"`
+	IPPref        string           `json:"ip_pref,omitempty"`
+	Universal     *UniversalConfig `json:"universal,omitempty"`
 }
 
 type nodeInfo struct {
@@ -126,7 +127,7 @@ func (c *Cluster) payload() ([]byte, string, error) {
 		Sites: m.cfg.Sites, EntryURL: m.cfg.EntryURL, PublicHost: m.cfg.PublicHost, PortBind: m.cfg.PortBind,
 		ClusterSecret: m.cfg.ClusterSecret, NginxIPv6: m.cfg.NginxIPv6,
 		Sticky: m.cfg.Cluster.Sticky, DirectStream: m.cfg.Cluster.DirectStream, DNS: m.cfg.DNS, Members: members,
-		Access: m.cfg.Access, IPPref: m.cfg.IPPref,
+		Access: m.cfg.Access, IPPref: m.cfg.IPPref, Universal: m.cfg.Universal,
 	}
 	// 用的是上传的证书就把文件发下去；手动路径则只发路径
 	hostCert := filepath.Join(m.hostSSLDir(), "fullchain.pem")
@@ -351,7 +352,10 @@ func (c *Cluster) apply(p *syncPayload) error {
 	m.cfg.Cluster.DirectStream = p.DirectStream
 	m.cfg.DNS = p.DNS
 	m.cfg.Members = p.Members
-	m.cfg.Access, m.cfg.IPPref = p.Access, p.IPPref
+	m.cfg.Access, m.cfg.IPPref, m.cfg.Universal = p.Access, p.IPPref, p.Universal
+	m.uni.mu.Lock()
+	m.uni.sites = nil
+	m.uni.mu.Unlock()
 	m.cfg.Accounts, m.cfg.ExportKey, m.cfg.ViewerPasswords = nil, "", nil // 站点账号、导出密码只在主节点（例如主节点改成从节点时清掉）
 	if len(p.CertPEM) > 0 {
 		m.cfg.NginxCert, m.cfg.NginxKey = filepath.Join(m.hostSSLDir(), "fullchain.pem"), filepath.Join(m.hostSSLDir(), "privkey.pem")

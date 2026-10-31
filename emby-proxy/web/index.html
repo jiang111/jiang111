@@ -285,6 +285,8 @@ tr.fresh td{animation:fresh 1.8s ease-out}
 .icongrid button.on{outline:2px solid var(--teal)}
 .chart{width:100%;height:auto;display:block}.chart .ln{fill:none;stroke:var(--teal);stroke-width:2.2}.chart .ar{fill:url(#gStat);opacity:.35}
 .chart text{font-size:10px;fill:var(--muted)}.chart .gd{stroke:var(--chip);stroke-width:1}.chart circle{fill:var(--teal)}
+.heat{display:grid;grid-template-columns:44px repeat(24,1fr);gap:3px;font-size:10px;color:var(--muted);align-items:center}
+.heat i{aspect-ratio:1;border-radius:3px;background:var(--teal);display:block}.heat .z{background:var(--chip)}
 .bars{display:flex;flex-direction:column;gap:8px}.bars .b{display:grid;grid-template-columns:120px 1fr 70px;gap:10px;align-items:center;font-size:13px}
 .bars .b span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.bars i{display:block;height:10px;border-radius:5px;background:linear-gradient(90deg,var(--teal),var(--green));min-width:2px}
 .bars .b span:last-child{text-align:right;color:var(--muted)}
@@ -389,53 +391,53 @@ pre.out{white-space:pre-wrap;word-break:break-all;background:var(--chip);border-
   <form class="modal" id="form" autocomplete="off">
     <div class="grab"></div>
     <h2 id="ftitle">添加站点</h2>
-    <div class="f"><label>名称</label><input type="text" name="name" placeholder="例如：香港公益服" required></div>
+    <div class="f"><label>名称</label><div class="row"><span id="iconPrev"></span><input type="text" name="name" placeholder="随便起，如：香港服" required><button type="button" class="btn" id="btnIcons">图标</button></div>
+      <div id="iconPick" style="display:none"><input type="text" id="iconQ" placeholder="搜索图标，或直接粘贴图片地址" style="margin-top:8px"><div class="icongrid" id="iconGrid"></div></div>
+      <input type="hidden" name="icon"></div>
     <div class="f">
-      <label>上游 Emby 地址</label>
-      <div class="row"><input type="text" name="upstream" placeholder="https://emby.example.com 或 http://1.2.3.4:8096" required><button type="button" class="btn" id="btnTest">测试</button></div>
+      <label>Emby 地址</label>
+      <div class="row"><input type="text" name="upstream" placeholder="https://emby.example.com 或 1.2.3.4:8096" required><button type="button" class="btn" id="btnTest">测试</button></div>
       <div class="test" id="testRes"></div>
-      <small>填你在客户端里原本填写的服务器地址（含端口）。如果服务器有路径（如 https://a.com/xxx）也一起填。</small>
+      <small>就是你原来在播放器里填的服务器地址。</small>
     </div>
-    <div class="f"><label>备用线路（可选）</label><textarea name="backups" placeholder="每行一个，同一台 Emby 的其它地址，如&#10;https://cdn2.example.com&#10;http://1.2.3.4:8096"></textarea>
-      <small>服务器提供了多条线路时填写。每台服务器每 30 秒测一次各线路延迟，自动用最快的；线路挂了（连不上、502/504）当场换线重试，客户端无感。</small></div>
-    <div class="f"><label>访问密钥（可选）</label><div class="row"><input type="text" name="access_key" placeholder="留空不启用，如 a8Kq2xZ"><button type="button" class="btn" id="btnGenKey">生成</button></div>
-      <small>填了之后客户端地址要在后面加 <code>/密钥</code>（卡片上显示的地址已带上），不带的请求一律 404，扫描器和猜到端口的人什么也看不到；多次猜错会计入自动封禁。</small></div>
+    <div class="f"><label>备用地址（可选）</label><textarea name="backups" placeholder="服务器给了多条线路就都填上，每行一个"></textarea>
+      <small>自动用最快的一条，某条坏了自动换，播放不中断。</small></div>
     <div class="f">
-      <label>接入方式</label>
+      <label>客户端怎么连</label>
       <div class="seg">
         <label><input type="radio" name="mode" value="port">独立端口</label>
-        <label><input type="radio" name="mode" value="path">路径前缀</label>
+        <label><input type="radio" name="mode" value="path">路径</label>
         <label><input type="radio" name="mode" value="host">独立域名</label>
       </div>
-      <div class="f" data-mode="port" style="margin-top:8px"><input type="number" name="port" min="1" max="65535" placeholder="例如 18001"><small>兼容性最好（所有客户端都支持）。直接对外：防火墙放行该端口。前面有 nginx 做 HTTPS：在「高级选项 → 客户端访问地址」填 <code>https://域名:对外端口</code>，到「设置」里生成 nginx 配置。</small></div>
-      <div class="f" data-mode="path" style="margin-top:8px"><div class="row"><span class="chip">入口/</span><input type="text" name="path" placeholder="例如 hk"></div><small>多个站点共用一个入口端口/域名，客户端地址填 <code>入口地址/hk</code>。Infuse、SenPlayer、Forward、VidHub、Emby 官方等支持带路径的地址。</small></div>
-      <div class="f" data-mode="host" style="margin-top:8px"><input type="text" name="host" placeholder="例如 hk.emby.mydomain.com"><small>把该域名解析到本机并反代到入口端口（需保留 Host 头）。</small></div>
+      <div class="f" data-mode="port" style="margin-top:8px"><input type="number" name="port" min="1" max="65535" placeholder="例如 18001"><small>推荐，所有播放器都支持。用 nginx 做 HTTPS 时，在下面「高级选项 → 客户端访问地址」填 <code>https://域名:对外端口</code>。</small></div>
+      <div class="f" data-mode="path" style="margin-top:8px"><div class="row"><span class="chip" style="white-space:nowrap">入口/</span><input type="text" name="path" placeholder="例如 hk"></div><small>多个站点共用一个端口，播放器填 <code>入口地址/hk</code>。</small></div>
+      <div class="f" data-mode="host" style="margin-top:8px"><input type="text" name="host" placeholder="例如 hk.emby.mydomain.com"><small>这个域名要解析到本机。</small></div>
     </div>
     <div class="f">
-      <label>推流</label>
+      <label>视频怎么走</label>
       <div class="seg">
-        <label><input type="radio" name="stream_mode" value="proxy">经本机中转</label>
-        <label><input type="radio" name="stream_mode" value="direct">客户端直连推流</label>
+        <label><input type="radio" name="stream_mode" value="proxy">经过本机（推荐）</label>
+        <label><input type="radio" name="stream_mode" value="direct">播放器直连</label>
       </div>
-      <small>上游如果做了推流分离（播放时 302 跳到别的推流域名）：「中转」会由本机直接跟随播放跳转（客户端拿到的是 206，兼容 Exo 等播放器的 Range/拖动），推流也经本机转发（改善线路，但消耗本机流量）；「直连」只代理 API，视频流让客户端直接连推流服务器（省流量）。</small>
+      <small>经过本机：线路更好、拖动更稳，但用本机流量。播放器直连：只代理浏览，视频直接从服务器拉，省流量。</small>
     </div>
     <details>
-      <summary>高级选项</summary>
-      <div class="f" style="margin-top:10px"><label>推流域名白名单</label><textarea name="stream_hosts" placeholder="每行一个，如 https://stream.example.com 或 *.example.com"></textarea><small>播放时自动学习，一般不用手动填。只有列表里的域名才允许经本机中转。</small></div>
-      <div class="f"><label>客户端访问地址（可选）</label><input type="text" name="public_url" placeholder="留空自动识别，如 https://emby.mydomain.com/hk"><small>前面套了 CDN/反代且没传 X-Forwarded-* 头时才需要填写。</small></div>
-      <div class="f"><label>覆盖 User-Agent（可选）</label><input type="text" name="user_agent" placeholder="留空则透传客户端自己的 UA"></div>
-      <div class="f"><label>自定义请求头（可选）</label><textarea name="headers" placeholder="每行一个，如&#10;MagpieCDN: {public_base}"></textarea><small>值里可用占位符：<code>{public_base}</code> 客户端访问地址（含路径前缀）、<code>{public_origin}</code> 不含路径、<code>{client_ip}</code> 客户端 IP。</small></div>
-      <div class="f"><label>额外转发规则（可选）</label><textarea name="routes" placeholder="每行一个：路径 => 目标，如&#10;/magpiecdn => https://{arg.load}.example.com"></textarea><small>服务器自带推流路径时使用：匹配该路径的请求（路径和参数原样）转发到目标。<code>{arg.名称}</code> 取请求参数，只允许字母数字和 -。</small></div>
-      <div class="f"><label>图标（可选）</label><div class="row"><input type="text" name="icon" placeholder="图片地址，或点「图标库」挑一个"><button type="button" class="btn" id="btnIcons">图标库</button></div>
-        <div id="iconPick" style="display:none"><input type="text" id="iconQ" placeholder="搜索图标名" style="margin-top:8px"><div class="icongrid" id="iconGrid"></div></div></div>
-      <div class="f"><label>连接上游优先用</label><select name="ip_pref"><option value="">跟随全局设置</option><option value="v4">IPv4 优先</option><option value="v6">IPv6 优先</option></select>
-        <small>上游只封了某个地址族、或某个地址族线路更好时用。只换连接地址族，https 证书校验照常；优先的连不上会自动改用另一种。</small></div>
-      <label class="chk"><input type="checkbox" name="force_origin"><span>总是带 Origin / Referer（上游有防盗链、不带就 403 时勾选）</span></label>
-      <label class="chk"><input type="checkbox" name="ep_credentials"><span>推流域名也带 Emby 登录凭据（默认只带给上游同一域名；别的域名的推流服务器要求带 Token 时才勾选）</span></label>
-      <div class="f"><label>不分配到这些节点（可选）</label><input type="text" name="exclude_nodes" placeholder="节点名，多个用逗号分隔，如 gv-jp"><small>上游封了某台服务器的 IP（如禁日本 IP）时填写：本站的用户改由其它节点访问上游，落到这台的请求会转给其它节点。</small></div>
-      <label class="chk"><input type="checkbox" name="forward_ip"><span>把客户端真实 IP 传给上游（X-Forwarded-For / X-Real-IP）。默认不传，上游只看到本机 IP。</span></label>
-      <label class="chk"><input type="checkbox" name="ignore_expired"><span>上游证书过期仍然连接（仍校验域名和签发机构，比「不校验证书」安全）</span></label>
-      <label class="chk"><input type="checkbox" name="insecure_tls"><span>完全不校验上游 HTTPS 证书（自签证书等）</span></label>
+      <summary>高级选项（一般不用改）</summary>
+      <div class="f" style="margin-top:10px"><label>访问密钥</label><div class="row"><input type="text" name="access_key" placeholder="留空不启用"><button type="button" class="btn" id="btnGenKey">生成</button></div>
+        <small>防扫描、防白嫖：地址后面要加 <code>/密钥</code> 才能用（卡片上的地址会自动带上）。</small></div>
+      <div class="f"><label>客户端访问地址</label><input type="text" name="public_url" placeholder="如 https://emby.mydomain.com:8001"><small>前面有 nginx / CDN 时填写，多台服务器时必填。</small></div>
+      <div class="f"><label>连接服务器用</label><select name="ip_pref"><option value="">自动</option><option value="v4">优先 IPv4</option><option value="v6">优先 IPv6</option></select>
+        <small>服务器连不上或很慢时试试切换。</small></div>
+      <label class="chk"><input type="checkbox" name="force_origin"><span>总是带来源信息（服务器有防盗链、经常 403 时勾选）</span></label>
+      <label class="chk"><input type="checkbox" name="forward_ip"><span>把观看者的真实 IP 告诉服务器（默认不告诉，服务器只看到本机 IP）</span></label>
+      <label class="chk"><input type="checkbox" name="ignore_expired"><span>服务器证书过期了也继续连</span></label>
+      <label class="chk"><input type="checkbox" name="insecure_tls"><span>完全不检查服务器证书（自签证书时用）</span></label>
+      <label class="chk"><input type="checkbox" name="ep_credentials"><span>视频服务器域名不同时也带登录信息（播放提示未授权时勾选）</span></label>
+      <div class="f" style="margin-top:10px"><label>不分配到这些节点</label><input type="text" name="exclude_nodes" placeholder="节点名，逗号分隔，如 gv-jp"><small>多台服务器时，服务器封了某台的 IP 就填它，那台的用户改走别的节点。</small></div>
+      <div class="f"><label>视频域名白名单</label><textarea name="stream_hosts" placeholder="每行一个，如 https://stream.example.com 或 *.example.com"></textarea><small>播放时自动学习，一般不用填。</small></div>
+      <div class="f"><label>覆盖 User-Agent</label><input type="text" name="user_agent" placeholder="留空 = 用播放器自己的"></div>
+      <div class="f"><label>自定义请求头</label><textarea name="headers" placeholder="每行一个，如&#10;MagpieCDN: {public_base}"></textarea><small>可用 <code>{public_base}</code>（客户端地址）、<code>{public_origin}</code>、<code>{client_ip}</code>。</small></div>
+      <div class="f"><label>额外转发规则</label><textarea name="routes" placeholder="每行一个：路径 => 目标，如&#10;/magpiecdn => https://{arg.load}.example.com"></textarea><small>服务器要求把某个路径转到别处时用，<code>{arg.名称}</code> 取请求参数。</small></div>
       <div class="f"><label>备注</label><input type="text" name="remark"></div>
     </details>
     <label class="chk"><input type="checkbox" name="enabled"><span>启用</span></label>
@@ -734,7 +736,7 @@ function render() {
   moveThumb();
   $('#uptime').textContent = `v${S.version} · 已运行 ${fmtUptime(S.uptime)}`;
   $('#ptitle').textContent = {sites: '站点', stats: '统计', logs: '访问日志', access: '访问控制', keepalive: '自动保号', settings: '设置', help: '说明'}[tab];
-  $('#psub').textContent = {stats: '每天的播放次数、访问人数和流量。', access: '白名单 / 黑名单、国家封锁、自动封禁和访问密钥记录。', logs: '每一次请求的去向、状态和耗时。', keepalive: '定期登录、模拟播放，让账号保持活跃。',
+  $('#psub').textContent = {stats: '每天看了多少、几点看得多、哪个站点最热。', access: '决定谁能用，自动挡掉乱试密码和扫描的人。', logs: '每一次请求的去向、状态和耗时。', keepalive: '定期登录、模拟播放，让账号保持活跃。',
     settings: '客户端地址、证书、多服务器与备份。', help: '三种接入方式，以及反代替你做了什么。'}[tab] || '';
   if (entering) $('#pacts').innerHTML = '';
   if (tab === 'sites') renderSites(entering);
@@ -778,11 +780,16 @@ function renderSites(entering) {
   </div>
   ${isNode() ? `<div class="notice">这台服务器是<b>从节点</b>，站点和设置由主节点 <code>${esc(S.cluster.master_url)}</code> 同步，只能查看。本页只显示本机数据，全部节点的汇总看主节点。${syncLine()}</div>`
     : ''}`;
-  morph($('#pacts'), isRO() ? '' : '<button class="btn" id="btnExport">导出账号</button><button class="btn pri" id="btnAdd">＋ 添加站点</button>');
+  const search = sites.length > 4 ? `<input type="search" id="siteQ" data-keep placeholder="搜索站点" value="${esc(siteQ)}" style="max-width:200px">` : '';
+  morph($('#pacts'), search + (isRO() ? '' : '<button class="btn" id="btnExport">导出账号</button><button class="btn pri" id="btnAdd">＋ 添加站点</button>'));
+  if ($('#siteQ')) $('#siteQ').oninput = e => { siteQ = e.target.value; renderSites(); };
+  const q = siteQ.trim().toLowerCase();
+  const shown = !q || sites.length <= 4 ? sites : sites.filter(s => [s.name, s.path, s.host, s.remark, s.upstream, String(s.port || '')].some(v => (v || '').toLowerCase().includes(q)));
   if (!sites.length) {
     html += `<div class="empty"><h3>还没有站点</h3><p>填入上游 Emby 地址，就能生成一个反代地址。</p>${isRO() ? '' : '<button class="btn pri" data-add>＋ 添加站点</button>'}</div>`;
   } else {
-    html += '<div class="grid">' + sites.map(s => {
+    if (!shown.length) html += '<div class="empty"><p>没有匹配的站点</p></div>';
+    html += '<div class="grid">' + shown.map(s => {
       const addr = clientAddr(s);
       const modeTxt = {port: '端口 ' + s.port, path: '路径 /' + s.path, host: '域名'}[s.mode];
       const hosts = s.stream_hosts || [];
@@ -801,7 +808,7 @@ function renderSites(entering) {
         <div class="nums"><div><b>${num(s.id + '.s', st(s).streams)}</b>播放中</div><div class="ipw" tabindex="0"><b>${num(s.id + '.a', st(s).active)}</b>连接<i class="more"></i>${ipPop(st(s).ips || [])}</div><div><b>${num(s.id + '.b', st(s).bytes, 'b')}</b>流量</div><div><b>${num(s.id + '.r', st(s).requests)}</b>请求</div></div>
         ${s.node_stats && s.node_stats.length > 1 ? `<div class="kv" title="各节点：播放中 / 连接">${s.node_stats.map(n => `${esc(n.name)} 播放${n.stats.streams} 连接${n.stats.active}`).join(' · ')}</div>` : ''}
         ${spark(st(s).series || new Array(60).fill(0))}
-        <div class="kv">最近访问 ${fmtAgo(st(s).last_access)}${st(s).relay_bytes ? ` · 节点间转发 ${fmtBytes(st(s).relay_bytes)}` : ''}${st(s).errors ? ` · <span class="bad">${st(s).errors} 次上游错误</span>` : ''}</div>
+        <div class="kv">${s.today && s.today.plays ? `今天播放 ${s.today.plays} 次 · 最后播放 ${fmtAgo(s.today.last)}` : '今天还没有播放'} · 最近访问 ${fmtAgo(st(s).last_access)}${st(s).relay_bytes ? ` · 节点间转发 ${fmtBytes(st(s).relay_bytes)}` : ''}${st(s).errors ? ` · <span class="bad">${st(s).errors} 次上游错误</span>` : ''}</div>
         ${isViewer() ? '' : `<div class="acts"><button class="btn sm" data-act="test">测试上游</button><button class="btn sm" data-act="probe">测速</button>${isNode() ? '' : '<button class="btn sm" data-act="edit">编辑</button>'}
           <button class="btn sm" data-act="logs">日志</button><button class="btn sm" data-act="clear">清零统计</button><div class="sp"></div>${isNode() ? '' : '<button class="btn sm dan" data-act="del">删除</button>'}</div>`}
         <div class="test" data-res>${testRes[s.id] || ''}</div>
@@ -867,7 +874,7 @@ function imgCacheHTML() {
   return `<div class="panel"><h3>海报缓存</h3>
     <div class="help">${c.enabled ? `已缓存 ${c.entries} 张图（${fmtBytes(c.bytes)} / ${fmtBytes(c.max)}），命中率 ${rate}%（${c.hits} / ${total}），为上游省下 ${fmtBytes(c.saved)}。`
       : '已关闭（环境变量 <code>IMAGE_CACHE_MB=0</code>）。'}<br>
-      带 tag 的海报、封面、头像等图片缓存在本机内存里，翻海报墙更快，也少打上游；多台服务器时命中缓存的图片不必再转给负责节点。重启清空，大小用环境变量 <code>IMAGE_CACHE_MB</code> 调整（默认 64）。</div>
+      海报、封面存在本机内存里，翻海报墙更快，也少打扰服务器。自动管理，不用设置。</div>
     ${c.enabled ? '<div class="foot"><button type="button" class="btn" id="btnImgClear">清空缓存</button></div>' : ''}</div>`;
 }
 function bindImgCache() {
@@ -988,7 +995,7 @@ function openForm(s) {
   for (const k of ['name', 'upstream', 'port', 'path', 'host', 'public_url', 'user_agent', 'remark']) f[k].value = v[k] ?? '';
   f.backups.value = (v.backups || []).join('\n');
   f.access_key.value = v.access_key || ''; f.icon.value = v.icon || ''; f.ip_pref.value = v.ip_pref || '';
-  f.force_origin.checked = !!v.force_origin; f.ep_credentials.checked = !!v.ep_credentials; $('#iconPick').style.display = 'none';
+  f.force_origin.checked = !!v.force_origin; f.ep_credentials.checked = !!v.ep_credentials; $('#iconPick').style.display = 'none'; iconPrev();
   f.stream_hosts.value = (v.stream_hosts || []).join('\n');
   f.headers.value = Object.entries(v.headers || {}).map(([k, x]) => `${k}: ${x}`).join('\n');
   f.routes.value = (v.routes || []).map(r => `${r.path} => ${r.target}`).join('\n');
@@ -997,7 +1004,7 @@ function openForm(s) {
   f.querySelector(`input[name=mode][value=${v.mode}]`).checked = true;
   f.querySelector(`input[name=stream_mode][value=${v.stream_mode || 'proxy'}]`).checked = true;
   if (!v.port && v.mode !== 'port') f.port.value = nextPort();
-  f.querySelector('details').open = !!(v.public_url || v.user_agent || v.forward_ip || v.insecure_tls || v.ignore_expired || (v.headers && Object.keys(v.headers).length) || (v.routes && v.routes.length) || (v.exclude_nodes && v.exclude_nodes.length) || v.icon || v.ip_pref || v.force_origin || v.ep_credentials);
+  f.querySelector('details').open = !!(v.public_url || v.user_agent || v.forward_ip || v.insecure_tls || v.ignore_expired || (v.headers && Object.keys(v.headers).length) || (v.routes && v.routes.length) || (v.exclude_nodes && v.exclude_nodes.length) || v.access_key || v.ip_pref || v.force_origin || v.ep_credentials);
   syncMode();
   openMask('#mask');
   setTimeout(() => f.name.focus(), 50);
@@ -1046,12 +1053,19 @@ $('#btnGenKey').onclick = () => {
   const c = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789', a = crypto.getRandomValues(new Uint8Array(10));
   $('#form').access_key.value = [...a].map(x => c[x % c.length]).join('');
 };
-let ICONS = null;
+let ICONS = null, siteQ = '';
+function iconPrev() {
+  const u = $('#form').icon.value;
+  $('#iconPrev').innerHTML = u ? `<img class="sicon" src="${esc(u)}" alt="" referrerpolicy="no-referrer">` : '';
+  $('#btnIcons').textContent = u ? '换图标' : '图标';
+}
 function drawIcons() {
-  const q = $('#iconQ').value.trim().toLowerCase(), cur = $('#form').icon.value;
+  const raw = $('#iconQ').value.trim();
+  if (/^https?:\/\//i.test(raw)) { $('#form').icon.value = raw; iconPrev(); $('#iconGrid').innerHTML = '<span class="kv">已使用这个图片地址</span>'; return; }
+  const q = raw.toLowerCase(), cur = $('#form').icon.value;
   const list = (ICONS || []).filter(i => !q || i.name.toLowerCase().includes(q)).slice(0, 300);
   $('#iconGrid').innerHTML = list.map(i => `<button type="button" data-u="${esc(i.url)}" class="${i.url === cur ? 'on' : ''}" title="${esc(i.name)}"><img src="${esc(i.url)}" loading="lazy" referrerpolicy="no-referrer" alt="">${esc(i.name)}</button>`).join('') || '<span class="kv">没有匹配的图标</span>';
-  $('#iconGrid').querySelectorAll('button').forEach(b => b.onclick = () => { const f = $('#form'); f.icon.value = f.icon.value === b.dataset.u ? '' : b.dataset.u; drawIcons(); });
+  $('#iconGrid').querySelectorAll('button').forEach(b => b.onclick = () => { const f = $('#form'); f.icon.value = f.icon.value === b.dataset.u ? '' : b.dataset.u; iconPrev(); drawIcons(); });
 }
 $('#btnIcons').onclick = async () => {
   const p = $('#iconPick'); p.style.display = p.style.display === 'none' ? '' : 'none';
@@ -1396,10 +1410,7 @@ function renderKeepalive() {
       ${num('retries', '每个账号最多试几次', 1, 10, '账号密码被拒绝（401/403）不重试')}${num('retry_hours', '失败后几小时再试', 1, 72)}</div></details>
     <details><summary>客户端身份（默认伪装 SenPlayer）</summary><div class="kgrid">
       ${txt('cl_name', 'Client', cl.name)}${txt('cl_version', 'Version', cl.version)}${txt('cl_device', 'Device', cl.device)}${txt('cl_ua', 'User-Agent', cl.user_agent)}</div></details>
-    <details><summary>Telegram 通知（每轮结束推送结果）</summary><div class="kgrid">
-      <div class="f"><label>Bot Token</label><input type="password" name="tg_token" autocomplete="new-password" placeholder="${c.telegram_token ? '已设置（' + esc(c.telegram_token) + '），留空不修改' : '不填则不推送'}">
-        ${c.telegram_token ? '<label class="chk" style="margin-top:6px"><input type="checkbox" name="tg_clear"><span>清除令牌</span></label>' : ''}</div>
-      <div class="f"><label>Chat ID</label><input type="text" name="tg_chat" value="${esc(c.telegram_chat || '')}"></div></div></details>
+    <div class="kv" style="margin-top:10px">每轮结束推送结果到手机：在「设置 → 通知」里填 Telegram 或 Bark。</div>
     <div class="foot"><button type="button" class="btn" id="btnKaRun">立即执行</button><button class="btn pri">保存</button></div></form>
     <div class="panel" id="kaStatus">${kaStatusHTML()}</div>`;
   $('#kaStatus').onchange = async e => {
@@ -1416,9 +1427,7 @@ function renderKeepalive() {
       watch_min: n('watch_min'), watch_max: n('watch_max'), report_interval: n('report_interval'), stream_kbps: n('stream_kbps'),
       retries: n('retries'), retry_hours: n('retry_hours'),
       client: {name: f.cl_name.value, version: f.cl_version.value, device: f.cl_device.value, user_agent: f.cl_ua.value},
-      telegram_chat: f.tg_chat.value};
-    if (f.tg_clear && f.tg_clear.checked) body.telegram_token = '';
-    else if (f.tg_token.value) body.telegram_token = f.tg_token.value;
+      telegram_chat: c.telegram_chat || ''};
     try { await api('PUT', '/api/keepalive', body); S = await api('GET', '/api/state'); renderKeepalive(); toast('已保存'); }
     catch (err) { toast(err.message); }
   };
@@ -1482,6 +1491,17 @@ function lineChart(days, vals) {
     ${pts.map((p, i) => `<circle cx="${p[0]}" cy="${p[1]}" r="3"><title>${days[i]}：${vals[i]} 次播放</title></circle>`).join('')}
     ${days.map((dd, i) => i % step === 0 || i === days.length - 1 ? `<text x="${x(i)}" y="${H - 8}" text-anchor="${i === days.length - 1 ? 'end' : i === 0 ? 'start' : 'middle'}">${dd.slice(5)}</text>` : '').join('')}</svg>`;
 }
+// 近 7 天 × 24 小时的开始播放次数，颜色越深越多
+function heatMap(d) {
+  const days = d.days.slice(-7), max = Math.max(1, ...days.flatMap(x => hoursOf(d, x)));
+  return `<div class="heat"><span></span>${[...Array(24)].map((_, h) => `<span style="text-align:center">${h % 3 ? '' : h}</span>`).join('')}
+    ${days.map(x => `<span>${x.slice(5)}</span>` + hoursOf(d, x).map((v, h) => `<i class="${v ? '' : 'z'}" style="${v ? `opacity:${(.18 + .82 * v / max).toFixed(2)}` : ''}" title="${x} ${h}:00 开始播放 ${v} 次"></i>`).join('')).join('')}</div>`;
+}
+function hoursOf(d, day) {
+  const out = new Array(24).fill(0);
+  Object.values(d.data[day] || {}).forEach(v => (v.hours || []).forEach((n, h) => out[h] += n));
+  return out;
+}
 function barList(rows, fmt) {
   const max = Math.max(1, ...rows.map(r => r.v));
   return rows.length ? `<div class="bars">${rows.map(r => `<div class="b"><span title="${esc(r.name)}">${esc(r.name)}</span><span><i style="width:${(r.v / max * 100).toFixed(1)}%"></i></span><span>${fmt(r.v)}</span></div>`).join('')}</div>` : '<div class="kv">还没有数据</div>';
@@ -1503,6 +1523,7 @@ async function renderStats() {
       <div class="tot"><div class="eb">${statDays} 天播放</div><b>${tot('plays')}</b><div class="cap">同一 IP 同一部 30 分钟内只算一次</div></div>
       <div class="tot"><div class="eb">${statDays} 天流量</div><b>${fmtBytes(tot('bytes'))}</b><div class="cap">日均 ${fmtBytes(tot('bytes') / statDays)}</div></div></div>
     <div class="panel" style="max-width:none"><h3>每日播放</h3>${lineChart(d.days, plays)}</div>
+    <div class="panel" style="max-width:none"><h3>什么时候看得多（近 7 天）</h3>${heatMap(d)}</div>
     <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(320px,1fr))">
       <div class="panel" style="max-width:none;margin:0"><h3>今天各站点播放</h3>${barList(todayRows, v => v + ' 次')}</div>
       <div class="panel" style="max-width:none;margin:0"><h3>${statDays} 天各站点流量</h3>${barList(per('bytes'), fmtBytes)}</div></div>
@@ -1516,30 +1537,35 @@ async function renderAccess() {
   try { a = await api('GET', '/api/access'); } catch (e) { $('#main').innerHTML = `<div class="err">${esc(e.message)}</div>`; return; }
   const c = a.config, ro = isNode(), g = a.geo;
   const ago = t => new Date(t * 1000).toLocaleString('zh-CN', {hour12: false});
-  const geoLine = g.ranges ? `已载入 ${g.ranges} 段（${new Date(g.updated * 1000).toLocaleDateString('zh-CN')} 更新，每 7 天自动更新）`
-    : g.loading ? '正在下载国家数据…' : c.countries && c.countries.length ? '<span class="bad">还没有国家数据</span>' + (g.err ? '：' + esc(g.err) : '，保存后自动下载') : '填了国家才会下载国家数据';
+  const geoLine = '两位国家码，按 IP 归属判断。' + (g.ranges ? `<span class="ok">国家数据已就绪</span>（${new Date(g.updated * 1000).toLocaleDateString('zh-CN')}，每周自动更新）`
+    : g.loading ? '正在下载国家数据…' : c.countries && c.countries.length ? '<span class="bad">国家数据还没下载好</span>' + (g.err ? '：' + esc(g.err) : '') : '');
   $('#main').innerHTML = `${ro ? '<div class="notice">访问控制在主节点设置，同步到本机；下面的封禁和访问密钥记录是本机的。</div>' : ''}
-  <form class="panel" id="af"><h3>访问控制</h3>
-    <div class="help" style="margin-bottom:12px">对所有站点的客户端请求生效（面板不受影响）。你的 IP：<code>${esc(a.my_ip)}</code>${a.my_cc ? ' · ' + esc(a.my_cc) : ''}</div>
-    <div class="f"><label>模式</label><div class="seg"><label><input type="radio" name="mode" value="off">关闭</label><label><input type="radio" name="mode" value="allow">白名单（只放行列表里的）</label><label><input type="radio" name="mode" value="deny">黑名单（拦截列表里的）</label></div></div>
-    <div class="f"><label>IP / 网段</label><textarea name="ips" placeholder="每行一个，如&#10;1.2.3.4&#10;5.6.7.0/24&#10;2001:db8::/32">${esc((c.ips || []).join('\n'))}</textarea></div>
-    <div class="f"><label>国家 / 地区</label><input type="text" name="countries" value="${esc((c.countries || []).join(', '))}" placeholder="两位国家码，逗号分隔，如 CN, TW, HK"><small>按 IP 归属判断（各大洲 RIR 公开数据，不信任客户端自己带的国家头）。${geoLine}</small></div>
-    <div class="f"><label>信任 IP（永远放行、永不封禁）</label><textarea name="trusted" placeholder="每行一个">${esc((c.trusted || []).join('\n'))}</textarea>
-      <small>开白名单时会自动把你当前的 IP 加进来。各节点之间、本机自己的请求（保号）不受限制。</small>${ro ? '' : '<button type="button" class="btn sm" id="addMe" style="margin-top:6px">加入我的 IP</button>'}</div>
-    <div class="f"><label>被拦时跳转到（可选）</label><input type="text" name="block_url" value="${esc(c.block_url || '')}" placeholder="留空显示「你的 IP 已被禁止访问」"></div>
-    <label class="chk"><input type="checkbox" name="auto_ban" ${c.auto_ban ? 'checked' : ''}><span>自动封禁：10 分钟内登录失败或访问密钥错误达到次数的 IP 封禁一段时间（撞库会让上游封掉反代服务器的 IP，连累所有人）</span></label>
-    <div class="kgrid"><div class="f"><label>失败几次封禁</label><input type="number" name="ban_hits" min="2" max="1000" value="${c.ban_hits || 10}"></div>
-      <div class="f"><label>封禁多少分钟</label><input type="number" name="ban_minutes" min="1" max="525600" value="${c.ban_minutes || 1440}"></div></div>
+  <form class="panel" id="af"><h3>谁能用你的反代</h3>
+    <div class="help" style="margin-bottom:12px">只管播放器，不影响这个面板。你现在的 IP：<code>${esc(a.my_ip)}</code>${a.my_cc ? ' · ' + esc(a.my_cc) : ''}</div>
+    <div class="f"><div class="seg"><label><input type="radio" name="mode" value="off">所有人</label><label><input type="radio" name="mode" value="allow">只允许下面的</label><label><input type="radio" name="mode" value="deny">禁止下面的</label></div></div>
+    <div data-list>
+    <div class="f"><label>国家 / 地区</label><input type="text" name="countries" value="${esc((c.countries || []).join(', '))}" placeholder="如 CN, TW, HK"><small>${geoLine}</small></div>
+    <div class="f"><label>IP（可选）</label><textarea name="ips" placeholder="每行一个，可以是 1.2.3.4 或 1.2.3.0/24">${esc((c.ips || []).join('\n'))}</textarea></div>
+    </div>
+    <div class="f"><label>我的设备（永远放行）</label><textarea name="trusted" placeholder="每行一个 IP">${esc((c.trusted || []).join('\n'))}</textarea>
+      ${ro ? '' : '<button type="button" class="btn sm" id="addMe" style="margin-top:6px">加入我现在的 IP</button>'}</div>
+    <label class="chk"><input type="checkbox" name="auto_ban" ${c.auto_ban ? 'checked' : ''}><span><b>自动封禁乱试的 IP（推荐）</b>：短时间内多次登录失败或访问密钥错误就封掉，防止有人撞库连累你的服务器被封</span></label>
+    <details><summary>更多</summary><div class="kgrid">
+      <div class="f"><label>失败几次封</label><input type="number" name="ban_hits" min="2" max="1000" value="${c.ban_hits || 10}"></div>
+      <div class="f"><label>封多少分钟</label><input type="number" name="ban_minutes" min="1" max="525600" value="${c.ban_minutes || 1440}"></div></div>
+      <div class="f"><label>被拦时跳转到</label><input type="text" name="block_url" value="${esc(c.block_url || '')}" placeholder="留空 = 显示「你的 IP 已被禁止访问」"></div></details>
     ${ro ? '' : '<div class="foot"><button class="btn pri">保存</button></div>'}</form>
-  <div class="panel"><h3>封禁中（${a.bans.length}）</h3>${a.bans.length ? `<div class="tw"><table><thead><tr><th>IP</th><th>原因</th><th>解封时间</th><th></th></tr></thead><tbody>
+  <div class="panel"><h3>已封禁（${a.bans.length}）</h3>${a.bans.length ? `<div class="tw"><table><thead><tr><th>IP</th><th>原因</th><th>解封时间</th><th></th></tr></thead><tbody>
     ${a.bans.map(b => `<tr><td>${esc(b.ip)}${b.cc ? ` <span class="chip">${esc(b.cc)}</span>` : ''}</td><td>${esc(b.reason)}</td><td>${ago(b.until)}</td><td><button class="btn sm" data-unban="${esc(b.ip)}">解封</button></td></tr>`).join('')}</tbody></table></div>` : '<div class="kv">没有被封禁的 IP</div>'}</div>
-  <div class="panel"><h3>访问密钥错误记录（${a.catches.length}）</h3>
-    <div class="help" style="margin-bottom:8px">开启了访问密钥的站点，不带密钥的请求（多半是扫描器）记在这里，最多 500 条，只在内存里。</div>
+  <div class="panel"><h3>被挡住的扫描（${a.catches.length}）</h3>
+    <div class="help" style="margin-bottom:8px">设置了访问密钥的站点，不带密钥的访问记在这里（多半是扫描器）。</div>
     ${a.catches.length ? `<div class="tw"><table><thead><tr><th>最近</th><th>站点</th><th>IP</th><th>次数</th><th>路径</th><th>客户端</th></tr></thead><tbody>
     ${a.catches.map(x => `<tr><td>${ago(x.t)}</td><td>${esc(x.site)}</td><td>${esc(x.ip)}${x.cc ? ` <span class="chip">${esc(x.cc)}</span>` : ''}</td><td>${x.times}</td><td class="p">${esc(x.path)}</td><td title="${esc(x.ua)}">${esc(x.ua.slice(0, 28))}</td></tr>`).join('')}</tbody></table></div>
     <div class="foot"><button class="btn" id="clrCatch">清空记录</button></div>` : '<div class="kv">暂无记录</div>'}</div>`;
   const f = $('#af');
   f.querySelector(`input[name=mode][value=${c.mode || 'off'}]`).checked = true;
+  const syncList = () => { f.querySelector('[data-list]').style.display = f.querySelector('input[name=mode]:checked').value === 'off' ? 'none' : ''; };
+  f.querySelectorAll('input[name=mode]').forEach(r => r.onchange = syncList); syncList();
   if (ro) f.querySelectorAll('input,textarea').forEach(x => x.disabled = true);
   if ($('#addMe')) $('#addMe').onclick = () => { if (!f.trusted.value.split('\n').includes(a.my_ip)) f.trusted.value = (f.trusted.value.trim() ? f.trusted.value.trim() + '\n' : '') + a.my_ip; };
   f.onsubmit = async e => {
@@ -1558,17 +1584,46 @@ async function renderAccess() {
 
 // ---- 设置页：只读账号、IP 优先、在线更新 ----
 function extraSettingsHTML() {
-  return `<form class="panel" id="vf"><h3>只读账号</h3>
-    <div class="help" style="margin-bottom:10px">用只读密码登录面板，只能看站点地址、在线状态、线路延迟、流量和播放统计；看不到上游地址、Emby 账号、访问 IP 和任何设置，也不能修改。适合给朋友、合租的人。只在本机，改动后已登录的只读账号立即退出。</div>
+  const ka = S.keepalive && S.keepalive.config || {}, uni = S.universal || {};
+  const entry = (S.settings.entry_url || `http://${location.hostname}:${portOf(S.settings.listen)}`).replace(/\/$/, '');
+  return `${isNode() ? '' : `<form class="panel" id="nof"><h3>通知</h3>
+    <div class="help" style="margin-bottom:10px">线路故障 / 切换、自动封禁、保号结果会推送到手机。填一个就行。</div>
+    <div class="f"><label>Bark（iPhone）</label><input type="text" name="bark" placeholder="${ka.bark ? '已设置（' + esc(ka.bark) + '），留空不修改' : 'Bark App 里复制的地址，如 https://api.day.app/xxxx'}"></div>
+    <div class="kgrid"><div class="f"><label>Telegram 机器人 Token</label><input type="password" name="tg_token" autocomplete="new-password" placeholder="${ka.telegram_token ? '已设置（' + esc(ka.telegram_token) + '），留空不修改' : '找 @BotFather 创建机器人获取'}"></div>
+      <div class="f"><label>Telegram Chat ID</label><input type="text" name="tg_chat" value="${esc(ka.telegram_chat || '')}" placeholder="找 @userinfobot 获取"></div></div>
+    ${ka.bark || ka.telegram_token ? '<label class="chk"><input type="checkbox" name="clear"><span>清除已设置的 Bark 和 Telegram</span></label>' : ''}
+    <div class="foot"><button type="button" class="btn" id="btnNoTest">发一条测试</button><button class="btn pri">保存</button></div></form>
+  <form class="panel" id="unf"><h3>通用反代地址</h3>
+    <div class="help" style="margin-bottom:10px">打开后不用添加站点，播放器直接填 <code>${esc(entry)}/${esc(uni.key || '密钥')}/https://emby地址:端口</code> 就能用。临时试一个服、或给朋友用很方便；必须带密钥，别人用不了。</div>
+    <label class="chk"><input type="checkbox" name="on" ${uni.enabled ? 'checked' : ''}><span>开启</span></label>
+    <div class="f"><label>密钥</label><input type="text" name="key" value="${esc(uni.key || '')}" placeholder="留空自动生成"></div>
+    <div class="foot"><button class="btn pri">保存</button></div></form>`}
+  <form class="panel" id="vf"><h3>只读账号</h3>
+    <div class="help" style="margin-bottom:10px">给朋友 / 合租的人一个只读密码：能看地址、状态和统计，看不到服务器地址和任何设置，也改不了。</div>
     <div class="f"><label>只读密码（每行一个，至少 6 位）</label><textarea name="pws">${esc((S.viewers || []).join('\n'))}</textarea></div>
     <div class="foot"><button class="btn pri">保存</button></div></form>
-  ${isNode() ? '' : `<form class="panel" id="ipf"><h3>连接上游优先用</h3>
-    <div class="seg"><label><input type="radio" name="p" value="">自动</label><label><input type="radio" name="p" value="v4">IPv4 优先</label><label><input type="radio" name="p" value="v6">IPv6 优先</label></div>
-    <small class="kv" style="display:block;white-space:normal;margin-top:6px">所有站点的默认值（站点可单独设置），同步给从节点。优先的地址族 4 秒连不上会自动改用另一种。</small>
+  ${isNode() ? '' : `<form class="panel" id="ipf"><h3>连接服务器用</h3>
+    <div class="seg"><label><input type="radio" name="p" value="">自动（推荐）</label><label><input type="radio" name="p" value="v4">优先 IPv4</label><label><input type="radio" name="p" value="v6">优先 IPv6</label></div>
+    <small class="kv" style="display:block;white-space:normal;margin-top:6px">服务器连不上或很慢时试试切换。站点里也能单独设置。</small>
     <div class="foot"><button class="btn pri">保存</button></div></form>`}
   <div class="panel" id="updBox"><h3>版本与更新</h3><div class="kv">检查中…</div></div>`;
 }
 async function bindExtraSettings() {
+  if ($('#nof')) {
+    const f = $('#nof');
+    f.onsubmit = async e => {
+      e.preventDefault();
+      const body = {telegram_chat: f.tg_chat.value.trim()};
+      if (f.clear && f.clear.checked) { body.bark = ''; body.telegram_token = ''; body.telegram_chat = ''; }
+      else { if (f.bark.value.trim()) body.bark = f.bark.value.trim(); if (f.tg_token.value.trim()) body.telegram_token = f.tg_token.value.trim(); }
+      try { await api('PUT', '/api/notify', body); await load(); toast('已保存'); } catch (err) { toast(err.message); }
+    };
+    $('#btnNoTest').onclick = async () => { try { await api('POST', '/api/notify/test'); toast('已发送，看看手机'); } catch (err) { toast(err.message); } };
+  }
+  if ($('#unf')) $('#unf').onsubmit = async e => {
+    e.preventDefault();
+    try { await api('PUT', '/api/universal', {enabled: e.target.on.checked, key: e.target.key.value.trim()}); await load(); toast('已保存'); } catch (err) { toast(err.message); }
+  };
   $('#vf').onsubmit = async e => {
     e.preventDefault();
     try { await api('PUT', '/api/viewers', {passwords: e.target.pws.value.split('\n').map(x => x.trim()).filter(Boolean)}); await load(); toast('已保存'); } catch (err) { toast(err.message); }

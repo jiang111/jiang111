@@ -26,15 +26,19 @@ const (
 )
 
 type DayStat struct {
-	Plays int64 `json:"plays"`
-	IPs   int   `json:"ips"`
-	Bytes int64 `json:"bytes"`
+	Plays int64     `json:"plays"`
+	IPs   int       `json:"ips"`
+	Bytes int64     `json:"bytes"`
+	Hours [24]int64 `json:"hours"`          // 每小时开始播放的次数（热力图）
+	Last  int64     `json:"last,omitempty"` // 最后一次开始播放的时间
 }
 
 type dayAcc struct {
 	Plays int64           `json:"plays"`
 	Bytes int64           `json:"bytes"`
 	IPs   map[string]bool `json:"ips"`
+	Hours [24]int64       `json:"hours"`
+	Last  int64           `json:"last,omitempty"`
 }
 
 type dailyStore struct {
@@ -93,7 +97,10 @@ func (d *dailyStore) play(site, ip, item string) {
 			}
 		}
 	}
-	d.acc(dayOf(now), site).Plays++
+	a := d.acc(dayOf(now), site)
+	a.Plays++
+	a.Hours[now.Hour()]++
+	a.Last = now.Unix()
 }
 
 // visit 记一个访问 IP。
@@ -143,7 +150,7 @@ func (d *dailyStore) export(n int) map[string]map[string]DayStat {
 			if out[day] == nil {
 				out[day] = map[string]DayStat{}
 			}
-			out[day][site] = DayStat{Plays: a.Plays, IPs: len(a.IPs), Bytes: a.Bytes}
+			out[day][site] = DayStat{Plays: a.Plays, IPs: len(a.IPs), Bytes: a.Bytes, Hours: a.Hours, Last: a.Last}
 		}
 	}
 	return out
@@ -206,6 +213,47 @@ func playItem(p string) string {
 	return id
 }
 
+// mergedDaily 返回最近 n 天的每日统计；主节点加上各从节点上报的。调用方不能持有 m.mu。
+func (a *Admin) mergedDaily(n int) map[string]map[string]DayStat {
+	m := a.m
+	data := m.daily.export(n)
+	if !m.isMaster() {
+		return data
+	}
+	keep := map[string]bool{}
+	now := time.Now()
+	for i := 0; i < n; i++ {
+		keep[dayOf(now.AddDate(0, 0, -i))] = true
+	}
+	a.cluster.mu.Lock()
+	defer a.cluster.mu.Unlock()
+	for _, rep := range a.cluster.reports {
+		if time.Since(time.Unix(rep.Time, 0)) > 24*time.Hour {
+			continue
+		}
+		for day, sites := range rep.Daily {
+			if !keep[day] {
+				continue
+			}
+			for site, v := range sites {
+				if data[day] == nil {
+					data[day] = map[string]DayStat{}
+				}
+				cur := data[day][site]
+				cur.Plays += v.Plays
+				cur.IPs += v.IPs
+				cur.Bytes += v.Bytes
+				for h := range cur.Hours {
+					cur.Hours[h] += v.Hours[h]
+				}
+				cur.Last = max(cur.Last, v.Last)
+				data[day][site] = cur
+			}
+		}
+	}
+	return data
+}
+
 // ---- 面板 ----
 
 type statsSite struct {
@@ -220,28 +268,7 @@ func (a *Admin) statsAPI(w http.ResponseWriter, r *http.Request) {
 		n = 7
 	}
 	m := a.m
-	data := m.daily.export(n)
-	if m.isMaster() {
-		a.cluster.mu.Lock()
-		for _, rep := range a.cluster.reports {
-			if time.Since(time.Unix(rep.Time, 0)) > 24*time.Hour {
-				continue
-			}
-			for day, sites := range rep.Daily {
-				for site, v := range sites {
-					if data[day] == nil {
-						data[day] = map[string]DayStat{}
-					}
-					cur := data[day][site]
-					cur.Plays += v.Plays
-					cur.IPs += v.IPs
-					cur.Bytes += v.Bytes
-					data[day][site] = cur
-				}
-			}
-		}
-		a.cluster.mu.Unlock()
-	}
+	data := a.mergedDaily(n)
 	viewer := roleOf(r) == "viewer"
 	m.mu.RLock()
 	sites := []statsSite{}

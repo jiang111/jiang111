@@ -56,6 +56,9 @@ func (a *Admin) Handler() http.Handler {
 	mux.HandleFunc("POST /api/sites/{id}/clear-stats", a.auth(a.clearStats))
 	mux.HandleFunc("POST /api/test", a.auth(a.test))
 	mux.HandleFunc("GET /icons.json", serveIcons)
+	mux.HandleFunc("PUT /api/universal", a.auth(a.nodeReadOnly(a.saveUniversal)))
+	mux.HandleFunc("PUT /api/notify", a.auth(a.nodeReadOnly(a.saveNotify)))
+	mux.HandleFunc("POST /api/notify/test", a.auth(a.nodeReadOnly(a.testNotify)))
 	mux.HandleFunc("GET /api/update", a.auth(a.updateInfo))
 	mux.HandleFunc("POST /api/update", a.auth(a.startUpdate))
 	mux.HandleFunc("GET /api/stats", a.authView(a.statsAPI))
@@ -271,6 +274,7 @@ type siteView struct {
 	Account      *accountView `json:"account,omitempty"` // 站点账号（登录后才能看到）
 	Lines        []lineView   `json:"lines,omitempty"`   // 各线路的延迟和状态（本机探测）
 	LineEvents   []lineEvent  `json:"line_events,omitempty"`
+	Today        *DayStat     `json:"today,omitempty"` // 今天的播放次数、最后播放时间（主节点为各节点之和）
 }
 
 func (a *Admin) state(w http.ResponseWriter, r *http.Request) {
@@ -295,6 +299,7 @@ func (a *Admin) state(w http.ResponseWriter, r *http.Request) {
 		exportKey = m.cfg.ExportKey
 		m.mu.RUnlock()
 	}
+	today := a.mergedDaily(1)[dayOf(time.Now())]
 	var key []byte
 	var keyErr error
 	m.mu.RLock()
@@ -317,6 +322,10 @@ func (a *Admin) state(w http.ResponseWriter, r *http.Request) {
 			v.ClusterStats, v.NodeStats = &cs, ns
 		}
 		v.Lines, v.LineEvents = m.lineViews(s.ID)
+		if t, ok := today[s.ID]; ok {
+			t.Hours = [24]int64{}
+			v.Today = &t
+		}
 		if e := m.siteErr[s.ID]; e != "" {
 			v.Status, v.Error = "error", e
 		} else if m.sites[s.ID] != nil {
@@ -340,6 +349,7 @@ func (a *Admin) state(w http.ResponseWriter, r *http.Request) {
 		"role":        "admin",
 		"viewers":     append([]string{}, m.cfg.ViewerPasswords...),
 		"ip_pref":     m.cfg.IPPref,
+		"universal":   m.cfg.Universal,
 		"uptime":      int64(time.Since(m.started).Seconds()),
 		"version":     appVersion(),
 	}
@@ -426,6 +436,7 @@ func (a *Admin) saveSite(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
+	warn := dupUpstream(m.cfg, &s)
 	if idx >= 0 {
 		s.StreamHosts = mergeHosts(s.StreamHosts, req.StreamHostsBase, m.cfg.Sites[idx].StreamHosts)
 		m.cfg.Sites[idx] = &s
@@ -435,6 +446,12 @@ func (a *Admin) saveSite(w http.ResponseWriter, r *http.Request) {
 	m.reload()
 	siteErr := m.siteErr[s.ID]
 	m.mu.Unlock()
+	if warn != "" {
+		if siteErr != "" {
+			siteErr += "；"
+		}
+		siteErr += warn
+	}
 	if err := m.save(); err != nil {
 		writeErr(w, 500, "保存失败: "+err.Error())
 		return
