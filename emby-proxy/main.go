@@ -45,6 +45,12 @@ func main() {
 	go m.lineLoop()
 	m.loadGeoCache()
 	go m.geoLoop()
+	go func() { // Telegram 助手：按配置和角色启停（关闭时什么也不运行）
+		for {
+			m.tg.sync()
+			time.Sleep(time.Minute)
+		}
+	}()
 	admin := &Admin{m: m, cluster: cluster, failures: map[string][]time.Time{}}
 	go serve("面板", cfg.AdminListen, admin.Handler())
 	go serve("入口(路径/域名模式)", cfg.Listen, m)
