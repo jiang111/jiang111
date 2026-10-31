@@ -18,10 +18,11 @@ import (
 
 // Site 是一个反代站点：把一台上游 Emby 服务器通过 端口 / 路径 / 域名 暴露给客户端。
 type Site struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	Enabled  bool   `json:"enabled"`
-	Upstream string `json:"upstream"` // 上游地址，如 https://emby.example.com 或 http://1.2.3.4:8096
+	ID       string   `json:"id"`
+	Name     string   `json:"name"`
+	Enabled  bool     `json:"enabled"`
+	Upstream string   `json:"upstream"`          // 上游地址，如 https://emby.example.com 或 http://1.2.3.4:8096
+	Backups  []string `json:"backups,omitempty"` // 备用线路：同一台 Emby 的其它入口，自动测速选路、故障切换（见 lines.go）
 
 	Mode string `json:"mode"`           // port | path | host
 	Port int    `json:"port,omitempty"` // mode=port：独立监听端口
@@ -167,6 +168,13 @@ func normalizeSite(s *Site) {
 	s.Name = strings.TrimSpace(s.Name)
 	s.Upstream = strings.TrimSpace(s.Upstream)
 	s.Upstream = addScheme(s.Upstream)
+	var backups []string
+	for _, b := range s.Backups {
+		if b = addScheme(strings.TrimSpace(b)); b != "" && b != s.Upstream && !slices.Contains(backups, b) {
+			backups = append(backups, b)
+		}
+	}
+	s.Backups = backups
 	s.Mode = strings.ToLower(strings.TrimSpace(s.Mode))
 	if s.Mode == "" {
 		s.Mode = "port"
@@ -218,6 +226,14 @@ func validateSite(cfg *Config, s *Site) error {
 	}
 	if _, err := parseUpstream(s.Upstream); err != nil {
 		return err
+	}
+	if len(s.Backups) > 8 {
+		return errors.New("备用线路最多 8 条")
+	}
+	for _, b := range s.Backups {
+		if _, err := parseUpstream(b); err != nil {
+			return fmt.Errorf("备用线路 %s：%v", b, err)
+		}
 	}
 	routes, err := validateRoutes(s.Routes)
 	if err != nil {

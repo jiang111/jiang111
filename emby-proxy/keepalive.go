@@ -250,7 +250,7 @@ func (k *keepalive) targets() ([]kaTarget, map[string]string) {
 		if s.Enabled && s.PublicURL != "" {
 			t.Base, t.Transport = s.PublicURL, m.trs[tlsVerify]
 		} else {
-			t.Base, t.Transport = s.Upstream, m.transport(s.InsecureTLS, s.IgnoreExpired)
+			t.Base, t.Transport = m.activeUpstreamLocked(s), m.transport(s.InsecureTLS, s.IgnoreExpired)
 		}
 		out = append(out, t)
 	}

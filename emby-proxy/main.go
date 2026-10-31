@@ -42,6 +42,7 @@ func main() {
 	go cluster.balanceLoop()
 	go cluster.healthLoop()
 	go m.ka.loop()
+	go m.lineLoop()
 	admin := &Admin{m: m, cluster: cluster, failures: map[string][]time.Time{}}
 	go serve("面板", cfg.AdminListen, admin.Handler())
 	go serve("入口(路径/域名模式)", cfg.Listen, m)

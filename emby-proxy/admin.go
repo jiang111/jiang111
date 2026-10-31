@@ -54,6 +54,10 @@ func (a *Admin) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/sites/{id}/account", a.auth(a.nodeReadOnly(a.deleteAccount)))
 	mux.HandleFunc("POST /api/sites/{id}/clear-stats", a.auth(a.clearStats))
 	mux.HandleFunc("POST /api/test", a.auth(a.test))
+	mux.HandleFunc("POST /api/image-cache/clear", a.auth(func(w http.ResponseWriter, r *http.Request) {
+		a.m.imgs.clear()
+		writeJSON(w, 200, map[string]any{"ok": true})
+	}))
 	mux.HandleFunc("PUT /api/settings", a.auth(a.settings))
 	mux.HandleFunc("POST /api/cert", a.auth(a.nodeReadOnly(a.uploadCert)))
 	mux.HandleFunc("GET /api/export", a.auth(a.exportConfig))
@@ -243,6 +247,8 @@ type siteView struct {
 	ClusterStats *StatsView   `json:"cluster_stats,omitempty"`
 	NodeStats    []nodeStats  `json:"node_stats,omitempty"`
 	Account      *accountView `json:"account,omitempty"` // 站点账号（登录后才能看到）
+	Lines        []lineView   `json:"lines,omitempty"`   // 各线路的延迟和状态（本机探测）
+	LineEvents   []lineEvent  `json:"line_events,omitempty"`
 }
 
 func (a *Admin) state(w http.ResponseWriter, r *http.Request) {
@@ -284,6 +290,7 @@ func (a *Admin) state(w http.ResponseWriter, r *http.Request) {
 			cs, ns := snap.site(s.ID, cluster.SelfName, v.Stats, cluster.AdvertiseAddr != "")
 			v.ClusterStats, v.NodeStats = &cs, ns
 		}
+		v.Lines, v.LineEvents = m.lineViews(s.ID)
 		if e := m.siteErr[s.ID]; e != "" {
 			v.Status, v.Error = "error", e
 		} else if m.sites[s.ID] != nil {
@@ -298,13 +305,14 @@ func (a *Admin) state(w http.ResponseWriter, r *http.Request) {
 			"port_bind": m.cfg.PortBind, "nginx_cert": m.cfg.NginxCert, "nginx_key": m.cfg.NginxKey, "nginx_ipv6": m.cfg.NginxIPv6,
 			"cert": m.certInfo(),
 		},
-		"sites":      views,
-		"nginx":      ngx,
-		"cluster":    cluster,
-		"keepalive":  ka,        // 自动保号（从节点为 null）
-		"export_key": exportKey, // 一键导出的导出密码（从节点为空）
-		"uptime":     int64(time.Since(m.started).Seconds()),
-		"version":    version,
+		"sites":       views,
+		"nginx":       ngx,
+		"cluster":     cluster,
+		"keepalive":   ka,        // 自动保号（从节点为 null）
+		"export_key":  exportKey, // 一键导出的导出密码（从节点为空）
+		"image_cache": m.imgs.view(),
+		"uptime":      int64(time.Since(m.started).Seconds()),
+		"version":     version,
 	}
 	if snap != nil {
 		out["cluster_stats_nodes"] = snap.nodes // 上报过统计的从节点及最后上报时间

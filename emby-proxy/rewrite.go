@@ -87,8 +87,7 @@ func (rc *reqCtx) rewriteBody(resp *http.Response, ct string) error {
 	if kind != "m3u8" && isSystemInfo(rc.matchPath) {
 		out = rc.fixSystemInfo(out)
 	}
-	needle := []byte(rc.s.upHost)
-	if allowExt || bytes.Contains(out, needle) || bytes.Contains(bytes.ToLower(out), needle) {
+	if allowExt || rc.mentionsUpstream(out) {
 		out = absURLRe.ReplaceAllFunc(out, func(m []byte) []byte {
 			return []byte(rc.rewriteAbs(string(m), allowExt))
 		})
@@ -140,4 +139,22 @@ func (rc *reqCtx) fixSystemInfo(data []byte) []byte {
 		return data
 	}
 	return out
+}
+
+// mentionsUpstream 判断内容里有没有出现上游任意一条线路的主机名（没有就不用逐个改写 URL）。
+func (rc *reqCtx) mentionsUpstream(b []byte) bool {
+	var lower []byte
+	for _, ln := range rc.s.lines {
+		needle := []byte(ln.host)
+		if bytes.Contains(b, needle) {
+			return true
+		}
+		if lower == nil {
+			lower = bytes.ToLower(b)
+		}
+		if bytes.Contains(lower, needle) {
+			return true
+		}
+	}
+	return false
 }

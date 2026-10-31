@@ -384,6 +384,8 @@ pre.out{white-space:pre-wrap;word-break:break-all;background:var(--chip);border-
       <div class="test" id="testRes"></div>
       <small>填你在客户端里原本填写的服务器地址（含端口）。如果服务器有路径（如 https://a.com/xxx）也一起填。</small>
     </div>
+    <div class="f"><label>备用线路（可选）</label><textarea name="backups" placeholder="每行一个，同一台 Emby 的其它地址，如&#10;https://cdn2.example.com&#10;http://1.2.3.4:8096"></textarea>
+      <small>服务器提供了多条线路时填写。每台服务器每 30 秒测一次各线路延迟，自动用最快的；线路挂了（连不上、502/504）当场换线重试，客户端无感。</small></div>
     <div class="f">
       <label>接入方式</label>
       <div class="seg">
@@ -767,7 +769,7 @@ function renderSites(entering) {
           ${hosts.length ? `<span class="chip" title="${esc(hosts.join('\n'))}">推流域名 ${hosts.length}</span>` : ''}
           ${s.forward_ip ? '<span class="chip">传真实IP</span>' : ''}${(s.exclude_nodes || []).length ? `<span class="chip w">不分配 ${esc(s.exclude_nodes.join(', '))}</span>` : ''}${s.insecure_tls ? '<span class="chip w">不校验证书</span>' : s.ignore_expired ? '<span class="chip w">忽略证书过期</span>' : ''}</div>
         <div class="addr"><code title="${esc(addr)}">${esc(addr)}</code><button class="btn sm" data-act="copy" data-v="${esc(addr)}">复制</button></div>
-        <div class="kv">上游 <b>${esc(s.upstream)}</b></div>
+        ${linesHTML(s)}
         ${s.remark ? `<div class="kv">${esc(s.remark)}</div>` : ''}
         ${acctHTML(s)}
         ${s.error ? `<div class="err">${esc(s.error)}</div>` : ''}
@@ -792,6 +794,36 @@ function renderSites(entering) {
     if (e.key === 'Enter') el.closest('.card').querySelector('[data-act=acctsave]').click();
     else if (e.key === 'Escape') { acctEdit = null; renderSites(); }
   });
+}
+
+// 卡片上的上游线路：延迟、正在用哪条、不可用的原因，以及最近一次切换
+function linesHTML(s) {
+  const ls = s.lines || [];
+  const lat = l => l.down ? `<span class="bad" title="${esc(l.err || '')}">不可用</span>` : l.ms ? `<span class="${l.ms > 300 ? 'bad' : 'ok'}">${l.ms}ms</span>` : '<span class="kv">测速中</span>';
+  if (ls.length <= 1) {
+    const l = ls[0];
+    return `<div class="kv" title="${esc(l && l.err || '')}">上游 <b>${esc(s.upstream)}</b>${l ? ' · ' + lat(l) : ''}</div>`;
+  }
+  const ev = (s.line_events || []).slice(-1)[0];
+  return ls.map(l => `<div class="kv">${l.active ? '▶' : '　'} ${esc(l.name)} <b title="${esc(l.url)}">${esc(l.url)}</b> · ${lat(l)}</div>`).join('') +
+    (ev ? `<div class="kv" title="${esc((s.line_events || []).map(e => new Date(e.time * 1000).toLocaleString() + ' ' + e.text).join('\n'))}">${fmtAgo(ev.time)} ${esc(ev.text)}</div>` : '');
+}
+
+// 设置页：海报缓存
+function imgCacheHTML() {
+  const c = S.image_cache;
+  if (!c) return '';
+  const total = c.hits + c.misses, rate = total ? Math.round(c.hits * 100 / total) : 0;
+  return `<div class="panel"><h3>海报缓存</h3>
+    <div class="help">${c.enabled ? `已缓存 ${c.entries} 张图（${fmtBytes(c.bytes)} / ${fmtBytes(c.max)}），命中率 ${rate}%（${c.hits} / ${total}），为上游省下 ${fmtBytes(c.saved)}。`
+      : '已关闭（环境变量 <code>IMAGE_CACHE_MB=0</code>）。'}<br>
+      带 tag 的海报、封面、头像等图片缓存在本机内存里，翻海报墙更快，也少打上游；多台服务器时命中缓存的图片不必再转给负责节点。重启清空，大小用环境变量 <code>IMAGE_CACHE_MB</code> 调整（默认 64）。</div>
+    ${c.enabled ? '<div class="foot"><button type="button" class="btn" id="btnImgClear">清空缓存</button></div>' : ''}</div>`;
+}
+function bindImgCache() {
+  if ($('#btnImgClear')) $('#btnImgClear').onclick = async () => {
+    try { await api('POST', '/api/image-cache/clear'); await load(); renderSettings(); toast('已清空'); } catch (err) { toast(err.message); }
+  };
 }
 
 // 卡片上的 Emby 账号和保号开关（账号只在主节点 / 单机）
@@ -859,7 +891,7 @@ async function siteAction(el, e) {
   } else if (act === 'edit') openForm(s);
   else if (act === 'logs') { logSite = id; tab = 'logs'; render(); }
   else if (act === 'toggle') {
-    const body = {...s, enabled: el.checked, stream_hosts_base: s.stream_hosts || []}; delete body.stats; delete body.status; delete body.error; delete body.account;
+    const body = {...s, enabled: el.checked, stream_hosts_base: s.stream_hosts || []}; delete body.stats; delete body.status; delete body.error; delete body.account; delete body.lines; delete body.line_events; delete body.cluster_stats; delete body.node_stats;
     try { const r = await api('PUT', '/api/sites/' + id, body); if (r.error) toast(r.error); await load(); }
     catch (err) { toast(err.message); el.checked = !el.checked; }
   } else if (act === 'del') {
@@ -900,6 +932,7 @@ function openForm(s) {
   $('#ferr').textContent = ''; $('#testRes').innerHTML = '';
   const v = s || {mode: 'port', port: nextPort(), stream_mode: 'proxy', enabled: true};
   for (const k of ['name', 'upstream', 'port', 'path', 'host', 'public_url', 'user_agent', 'remark']) f[k].value = v[k] ?? '';
+  f.backups.value = (v.backups || []).join('\n');
   f.stream_hosts.value = (v.stream_hosts || []).join('\n');
   f.headers.value = Object.entries(v.headers || {}).map(([k, x]) => `${k}: ${x}`).join('\n');
   f.routes.value = (v.routes || []).map(r => `${r.path} => ${r.target}`).join('\n');
@@ -960,7 +993,7 @@ $('#form').onsubmit = async e => {
     const i = line.indexOf(':'); if (i > 0) headers[line.slice(0, i).trim()] = line.slice(i + 1).trim();
   }
   const body = {
-    name: f.name.value, upstream: f.upstream.value, mode: f.querySelector('input[name=mode]:checked').value,
+    name: f.name.value, upstream: f.upstream.value, backups: f.backups.value.split('\n').map(x => x.trim()).filter(Boolean), mode: f.querySelector('input[name=mode]:checked').value,
     port: parseInt(f.port.value) || 0, path: f.path.value, host: f.host.value, public_url: f.public_url.value,
     stream_mode: f.querySelector('input[name=stream_mode]:checked').value,
     stream_hosts: f.stream_hosts.value.split('\n').map(x => x.trim()).filter(Boolean),
@@ -1158,8 +1191,8 @@ function renderSettings() {
     <form class="panel" id="pf"><h3>修改本机面板密码</h3>
     <div class="f"><label>原密码</label><input type="password" name="old" autocomplete="current-password"></div>
     <div class="f"><label>新密码</label><input type="password" name="new" autocomplete="new-password" minlength="6"></div>
-    <div class="foot"><button class="btn pri">修改</button></div></form>`;
-    bindCluster(); bindPassword();
+    <div class="foot"><button class="btn pri">修改</button></div></form>` + imgCacheHTML();
+    bindCluster(); bindPassword(); bindImgCache();
     return;
   }
   $('#main').innerHTML = `<form class="panel" id="sf"><h3>客户端地址显示</h3>
@@ -1196,6 +1229,7 @@ function renderSettings() {
       <div class="row" style="margin-bottom:6px"><span class="kv">${S.nginx && S.nginx.installed ? '已自动应用，无需手动操作；以下仅供查看' : '保存为 /etc/nginx/conf.d/emby-proxy.conf，然后执行 <code>nginx -t && nginx -s reload</code>'}</span><div class="sp"></div><button type="button" class="btn sm" id="btnNginxCopy">复制</button></div>
       <textarea id="nginxText" readonly style="min-height:360px;font-size:12px"></textarea></div></form>
     ${renderCluster()}
+    ${imgCacheHTML()}
     <div class="panel"><h3>导入 / 导出配置</h3>
       <div class="help" style="margin-bottom:10px">导出全部站点和设置（不含面板密码），可用于备份或迁移到另一台服务器。也可以导入服务器上的 <code>config.json</code>。<br><span class="bad">导出文件包含各服务器的上游地址，请勿公开分享。</span></div>
       <div class="row" style="flex-wrap:wrap;gap:10px">
@@ -1212,6 +1246,7 @@ function renderSettings() {
     try { await api('PUT', '/api/settings', {entry_url: e.target.entry_url.value, public_host: e.target.public_host.value}); await load(); toast('已保存'); }
     catch (err) { toast(err.message); }
   };
+  bindImgCache();
   $('#nf').port_bind.value = st.port_bind || '';
   $('#nf').onsubmit = async e => {
     e.preventDefault();

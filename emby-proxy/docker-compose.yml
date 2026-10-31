@@ -10,6 +10,8 @@ services:
       - TZ=Asia/Taipei
       # 宿主机上的数据目录，生成 nginx 配置时用于证书路径（要和下面 volumes 左边一致）
       - HOST_DATA_DIR=/opt/emby-proxy/data
+      # 海报缓存大小（MB，内存），0 = 关闭
+      - IMAGE_CACHE_MB=64
     volumes:
       - /opt/emby-proxy/data:/data
     logging:

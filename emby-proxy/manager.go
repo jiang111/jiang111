@@ -50,6 +50,9 @@ type Manager struct {
 	acctKey []byte // 站点账号的加密密钥（data/account.key）
 
 	ka *keepalive // 自动保号
+
+	lines lineHub     // 多线路：各线路的探测状态和正在用的线路
+	imgs  *imageCache // 海报 / 图片缓存
 }
 
 // TLS 校验方式
@@ -154,6 +157,17 @@ func NewManager(path string, cfg *Config) *Manager {
 	m.loadStats()
 	m.loadTraffic()
 	m.ka = newKeepalive(m)
+	m.imgs = newImageCache(imageCacheBytes())
+	m.lines.notify = func(text string) {
+		go func() {
+			cfg := m.keepaliveConfig()
+			if cfg.TelegramToken != "" && cfg.TelegramChat != "" {
+				if err := telegramSend(cfg.TelegramToken, cfg.TelegramChat, text); err != nil {
+					log.Printf("Telegram 通知失败：%v", err)
+				}
+			}
+		}()
+	}
 	return m
 }
 
