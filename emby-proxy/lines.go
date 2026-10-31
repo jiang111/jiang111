@@ -252,7 +252,13 @@ func (t *lineTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		return t.base.RoundTrip(req)
 	}
 	t.used = true
-	retry := len(t.s.lines) > 1 && (req.Body == nil || req.Body == http.NoBody) && req.Header.Get("Upgrade") == ""
+	replay := (req.Body == nil || req.Body == http.NoBody) && req.Header.Get("Upgrade") == ""
+	retry := len(t.s.lines) > 1 && replay
+	rest := t.rc.rest
+	if t.s.embyLearned.Load() && !hasEmbyPrefix(rest) {
+		rest = "/emby" + rest
+		req = lineReq(req, ln, rest)
+	}
 	tried := map[*upLine]bool{}
 	for {
 		tried[ln] = true
@@ -269,6 +275,9 @@ func (t *lineTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		}
 		if msg == "" {
 			t.s.m.lines.reportOK(t.s.cfg.ID, ln)
+			if resp.StatusCode == http.StatusNotFound && replay && t.s.tryEmby(req.Method, rest) {
+				return t.embyRetry(req, ln, rest, resp), nil
+			}
 			return resp, nil
 		}
 		t.s.m.lines.reportFail(t.s.cfg.ID, ln, msg)
@@ -282,21 +291,61 @@ func (t *lineTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		if resp != nil {
 			resp.Body.Close()
 		}
-		out := req.Clone(req.Context())
-		out.URL.Scheme, out.URL.Host, out.Host = next.u.Scheme, next.u.Host, next.u.Host
-		out.URL.RawPath = next.base + t.rc.rest
-		out.URL.Path, _ = url.PathUnescape(out.URL.RawPath)
-		origin := next.u.Scheme + "://" + next.u.Host
-		if out.Header.Get("Origin") != "" {
-			out.Header.Set("Origin", origin)
-		}
-		if out.Header.Get("Referer") != "" {
-			out.Header.Set("Referer", origin+"/")
-		}
-		req, ln = out, next
+		req, ln = lineReq(req, next, rest), next
 		t.rc.line = next
 		t.rc.target = next.u
 	}
+}
+
+// lineReq 把请求改发到另一条线路（或同一条线路的另一个路径）。
+func lineReq(req *http.Request, ln *upLine, rest string) *http.Request {
+	out := req.Clone(req.Context())
+	out.URL.Scheme, out.URL.Host, out.Host = ln.u.Scheme, ln.u.Host, ln.u.Host
+	out.URL.RawPath = ln.base + rest
+	out.URL.Path, _ = url.PathUnescape(out.URL.RawPath)
+	origin := ln.u.Scheme + "://" + ln.u.Host
+	if out.Header.Get("Origin") != "" {
+		out.Header.Set("Origin", origin)
+	}
+	if out.Header.Get("Referer") != "" {
+		out.Header.Set("Referer", origin+"/")
+	}
+	return out
+}
+
+// ---- 自动补 /emby 前缀 ----
+// 有的上游只认 /emby/xxx（客户端却按 /xxx 请求，或上游地址里的路径填错了）。
+// 不带 /emby 的请求返回 404 时补上 /emby 再试一次；补上后成功就记住，之后的请求直接补；
+// 连续 20 次补了也没用就不再尝试（避免对真正不存在的地址多发一倍请求）。
+
+func hasEmbyPrefix(rest string) bool {
+	l := strings.ToLower(rest)
+	return l == "/emby" || strings.HasPrefix(l, "/emby/")
+}
+
+func (s *SiteRT) tryEmby(method, rest string) bool {
+	if method != http.MethodGet && method != http.MethodHead {
+		return false
+	}
+	l := strings.ToLower(rest)
+	return !hasEmbyPrefix(rest) && !strings.Contains(l, "/images/") && !s.embyLearned.Load() && s.embyMiss.Load() < 20
+}
+
+func (t *lineTransport) embyRetry(req *http.Request, ln *upLine, rest string, orig *http.Response) *http.Response {
+	r2, err := t.base.RoundTrip(lineReq(req, ln, "/emby"+rest))
+	if err == nil && r2.StatusCode < 400 {
+		orig.Body.Close()
+		if !t.s.embyLearned.Swap(true) {
+			log.Printf("站点 %s：上游需要 /emby 前缀，之后自动补上", t.s.cfg.Name)
+		}
+		t.s.embyMiss.Store(0)
+		return r2
+	}
+	if r2 != nil {
+		r2.Body.Close()
+	}
+	t.s.embyMiss.Add(1)
+	return orig
 }
 
 // ---- 主动探测 ----
@@ -304,7 +353,7 @@ func (t *lineTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 // probeLine 请求线路的 /System/Info/Public，返回响应头到达的耗时。
 func (m *Manager) probeLine(s Site, ln *upLine) (time.Duration, error) {
 	client := &http.Client{
-		Transport:     m.transport(s.InsecureTLS, s.IgnoreExpired),
+		Transport:     m.transportPref(s.InsecureTLS, s.IgnoreExpired, m.sitePref(&s)),
 		Timeout:       lineTimeout,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}

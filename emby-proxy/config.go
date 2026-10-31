@@ -40,7 +40,12 @@ type Site struct {
 	UserAgent     string            `json:"user_agent,omitempty"`
 	Headers       map[string]string `json:"headers,omitempty"` // 值支持 {public_base} {public_origin} {client_ip}
 	Routes        []Route           `json:"routes,omitempty"`
-	ExcludeNodes  []string          `json:"exclude_nodes,omitempty"` // 不分配到这些节点（如上游封了它的 IP），其用户改由其它节点访问本站
+	ExcludeNodes  []string          `json:"exclude_nodes,omitempty"`  // 不分配到这些节点（如上游封了它的 IP），其用户改由其它节点访问本站
+	AccessKey     string            `json:"access_key,omitempty"`     // 访问密钥：客户端地址后面要加 /密钥，否则 404（挡扫描器）
+	Icon          string            `json:"icon,omitempty"`           // 图标地址（面板和导出页显示）
+	IPPref        string            `json:"ip_pref,omitempty"`        // 连上游优先用 v4 / v6，空 = 跟随全局设置
+	ForceOrigin   bool              `json:"force_origin,omitempty"`   // 总是带 Origin / Referer（上游防盗链 403 时用）
+	EPCredentials bool              `json:"ep_credentials,omitempty"` // 推流域名（与上游不同域名）也带 Emby 登录凭据
 	Remark        string            `json:"remark,omitempty"`
 }
 
@@ -67,6 +72,12 @@ type Config struct {
 	Keepalive *KeepaliveConfig `json:"keepalive,omitempty"`
 	// 一键导出账号的导出密码（见 export.go），空 = 未开启。只在本机，不同步、不导出
 	ExportKey string `json:"export_key,omitempty"`
+	// 访问控制（见 access.go），同步给从节点
+	Access *AccessConfig `json:"access,omitempty"`
+	// 连上游优先用 IPv4 / IPv6（auto | v4 | v6），同步给从节点；站点可单独设置
+	IPPref string `json:"ip_pref,omitempty"`
+	// 只读账号的密码（见 viewer.go）。只在本机，不同步、不导出
+	ViewerPasswords []string `json:"viewer_passwords,omitempty"`
 }
 
 func randHex(n int) string {
@@ -189,6 +200,8 @@ func normalizeSite(s *Site) {
 		s.Host = h
 	}
 	s.PublicURL = strings.TrimRight(strings.TrimSpace(s.PublicURL), "/")
+	s.AccessKey = strings.Trim(strings.TrimSpace(s.AccessKey), "/")
+	s.Icon = strings.TrimSpace(s.Icon)
 	if s.StreamMode != "direct" {
 		s.StreamMode = "proxy"
 	}
@@ -226,6 +239,19 @@ func validateSite(cfg *Config, s *Site) error {
 	}
 	if _, err := parseUpstream(s.Upstream); err != nil {
 		return err
+	}
+	if s.AccessKey != "" && !accessKeyRe.MatchString(s.AccessKey) {
+		return errors.New("访问密钥只能是 4-64 位字母、数字、_ 或 -")
+	}
+	if s.Icon != "" {
+		if u, err := url.Parse(s.Icon); err != nil || (u.Scheme != "http" && u.Scheme != "https") || len(s.Icon) > 500 {
+			return errors.New("图标地址应为 http(s):// 开头的图片地址")
+		}
+	}
+	switch s.IPPref {
+	case "", "v4", "v6":
+	default:
+		return errors.New("IP 优先只能是 v4 / v6 或留空")
 	}
 	if len(s.Backups) > 8 {
 		return errors.New("备用线路最多 8 条")

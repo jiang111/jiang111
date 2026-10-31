@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -34,6 +35,8 @@ type Manager struct {
 
 	logs    *LogRing
 	trs     [3]*http.Transport // 按 tlsVerify / tlsIgnoreExpired / tlsInsecure
+	prefMu  sync.Mutex
+	prefTrs map[string]*http.Transport // IPv4 / IPv6 优先的 transport
 	saveMu  sync.Mutex
 	bg      sync.WaitGroup // 后台保存（发现推流域名时）
 	cluster *Cluster
@@ -50,6 +53,15 @@ type Manager struct {
 	acctKey []byte // 站点账号的加密密钥（data/account.key）
 
 	ka *keepalive // 自动保号
+
+	acl     atomic.Pointer[aclRT] // 访问控制（reload 时重建）
+	bans    banList               // 自动封禁
+	catches catchLog              // 访问密钥不对的请求
+	geo     atomic.Pointer[geoDB] // IP 归属国家
+	geoSt   geoState
+
+	daily *dailyStore // 每日统计
+	upd   updater     // 在线更新
 
 	lines lineHub     // 多线路：各线路的探测状态和正在用的线路
 	imgs  *imageCache // 海报 / 图片缓存
@@ -103,11 +115,35 @@ func verifyIgnoringExpiry(cs tls.ConnectionState, host string) error {
 	return err
 }
 
-func newTransport(mode int) *http.Transport {
+func newTransport(mode int) *http.Transport { return newTransportPref(mode, "") }
+
+// prefDial 优先用 IPv4（pref=v4）或 IPv6（v6）连接，4 秒内连不上再按系统默认（双栈）连。
+// 和只对 http 生效的「解析成 IP 再连」不同，这里只换地址族，https 的 SNI 和证书校验不受影响。
+func prefDial(d *net.Dialer, pref string) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	if pref != "v4" && pref != "v6" {
+		return d.DialContext
+	}
+	fam := "tcp4"
+	if pref == "v6" {
+		fam = "tcp6"
+	}
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		c1, cancel := context.WithTimeout(ctx, 4*time.Second)
+		c, err := d.DialContext(c1, fam, addr)
+		cancel()
+		if err == nil || ctx.Err() != nil {
+			return c, err
+		}
+		return d.DialContext(ctx, network, addr)
+	}
+}
+
+func newTransportPref(mode int, pref string) *http.Transport {
 	d := &net.Dialer{Timeout: 15 * time.Second, KeepAlive: 30 * time.Second}
+	dial := prefDial(d, pref)
 	tr := &http.Transport{
 		Proxy:                 http.ProxyFromEnvironment,
-		DialContext:           d.DialContext,
+		DialContext:           dial,
 		ForceAttemptHTTP2:     true,
 		MaxIdleConns:          512,
 		MaxIdleConnsPerHost:   64,
@@ -125,7 +161,7 @@ func newTransport(mode int) *http.Transport {
 			if err != nil {
 				return nil, err
 			}
-			raw, err := d.DialContext(ctx, network, addr)
+			raw, err := dial(ctx, network, addr)
 			if err != nil {
 				return nil, err
 			}
@@ -158,6 +194,8 @@ func NewManager(path string, cfg *Config) *Manager {
 	m.loadTraffic()
 	m.ka = newKeepalive(m)
 	m.imgs = newImageCache(imageCacheBytes())
+	m.daily = newDailyStore()
+	m.daily.load(m.dailyPath())
 	m.lines.notify = func(text string) {
 		go func() {
 			cfg := m.keepaliveConfig()
@@ -169,6 +207,41 @@ func NewManager(path string, cfg *Config) *Manager {
 		}()
 	}
 	return m
+}
+
+// transportPref 是带 IPv4 / IPv6 优先的 transport；pref 为空（自动）时同 transport。
+func (m *Manager) transportPref(insecure, ignoreExpired bool, pref string) http.RoundTripper {
+	if pref != "v4" && pref != "v6" {
+		return m.transport(insecure, ignoreExpired)
+	}
+	mode := tlsVerify
+	if insecure {
+		mode = tlsInsecure
+	} else if ignoreExpired {
+		mode = tlsIgnoreExpired
+	}
+	key := strconv.Itoa(mode) + pref
+	m.prefMu.Lock()
+	defer m.prefMu.Unlock()
+	if m.prefTrs == nil {
+		m.prefTrs = map[string]*http.Transport{}
+	}
+	tr := m.prefTrs[key]
+	if tr == nil {
+		tr = newTransportPref(mode, pref)
+		m.prefTrs[key] = tr
+	}
+	return tr
+}
+
+// sitePref 返回站点实际使用的 IP 优先（站点没设置时跟随全局）。调用方不能持有 m.mu。
+func (m *Manager) sitePref(s *Site) string {
+	if s.IPPref != "" {
+		return s.IPPref
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.cfg.IPPref
 }
 
 func (m *Manager) transport(insecure, ignoreExpired bool) http.RoundTripper {
@@ -188,6 +261,7 @@ func (m *Manager) reload() {
 	byHost := map[string]*SiteRT{}
 	byPort := map[int]*SiteRT{}
 	siteErr := map[string]string{}
+	m.acl.Store(newACL(m.cfg.Access))
 	for _, sc := range m.cfg.Sites {
 		st := m.stats[sc.ID]
 		if st == nil {

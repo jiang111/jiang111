@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -33,6 +34,10 @@ type SiteRT struct {
 	stats    *Stats
 	epKey    []byte    // 推流地址签名密钥（集群共享）
 	lines    []*upLine // 主线路 + 备用线路（见 lines.go），lines[0] 即 upstream
+	pref     string    // 连上游优先 v4 / v6（站点设置，没有则用全局）
+
+	embyLearned atomic.Bool  // 上游要加 /emby 前缀才认（自动学到）
+	embyMiss    atomic.Int32 // 补 /emby 重试连续没用的次数，够多就不再试
 
 	hostsMu    sync.Mutex
 	hosts      map[string]bool // 学习到的推流源（scheme://host:port），允许经 /__ep/ 代理
@@ -109,6 +114,10 @@ func newSiteRT(m *Manager, s Site, st *Stats) (*SiteRT, error) {
 		return nil, err
 	}
 	rt := &SiteRT{m: m, cfg: s, upstream: u, stats: st, lines: lines, hosts: map[string]bool{}, routeHosts: map[string]bool{}}
+	rt.pref = s.IPPref
+	if rt.pref == "" && m != nil && m.cfg != nil {
+		rt.pref = m.cfg.IPPref // reload 时调用方持有 m.mu
+	}
 	rt.upHost, rt.upPort = splitHP(u.Host, u.Scheme)
 	rt.upBase = u.EscapedPath()
 	for _, h := range s.StreamHosts {
@@ -118,7 +127,7 @@ func newSiteRT(m *Manager, s Site, st *Stats) (*SiteRT, error) {
 }
 
 func (s *SiteRT) roundTripper(rc *reqCtx) http.RoundTripper {
-	var base http.RoundTripper = &lineTransport{base: s.m.transport(s.cfg.InsecureTLS, s.cfg.IgnoreExpired), s: s, rc: rc}
+	var base http.RoundTripper = &lineTransport{base: s.m.transportPref(s.cfg.InsecureTLS, s.cfg.IgnoreExpired, s.pref), s: s, rc: rc}
 	if s.cfg.StreamMode == "proxy" {
 		return &followTransport{base: base, s: s, rc: rc}
 	}
@@ -221,6 +230,7 @@ type reqCtx struct {
 	publicBase string // 客户端看到的地址，如 https://proxy.com/hk
 	target     *url.URL
 	ep         bool
+	route      bool    // 命中了额外转发规则（目标是站点配置里写明的）
 	line       *upLine // 这个请求用的上游线路（换线重试后更新）
 	rest       string  // 去掉路径前缀后的请求路径（已转义），换线重试时拼到新线路的 base 后面
 	matchPath  string  // 小写、已解码、去掉前缀和 base 的路径，用于判断接口
@@ -257,7 +267,7 @@ func firstHeader(r *http.Request, k string) string {
 
 func (s *SiteRT) publicBase(r *http.Request, prefix string) string {
 	if s.cfg.PublicURL != "" {
-		return s.cfg.PublicURL
+		return clientBase(&s.cfg)
 	}
 	scheme := strings.ToLower(firstHeader(r, "X-Forwarded-Proto"))
 	if scheme != "http" && scheme != "https" {
@@ -352,7 +362,7 @@ func (s *SiteRT) epSegment(u *url.URL) string {
 
 var stripReqHeaders = []string{
 	"X-Real-Ip", "Forwarded", "Via", "Cf-Connecting-Ip", "True-Client-Ip", "X-Client-Ip",
-	"Cdn-Loop", "Cf-Ipcountry", "Cf-Ray", "Cf-Visitor", "Cf-Worker", "X-Forwarded-Port", "X-Forwarded-Prefix", hopHeader,
+	"Cdn-Loop", "Cf-Ipcountry", "Cf-Ray", "Cf-Visitor", "Cf-Worker", "X-Forwarded-Port", "X-Forwarded-Prefix", hopHeader, selfHeader,
 }
 
 func (s *SiteRT) serve(w http.ResponseWriter, r *http.Request, prefix string) {
@@ -374,6 +384,7 @@ func (s *SiteRT) serve(w http.ResponseWriter, r *http.Request, prefix string) {
 			Time: start.Unix(), Site: s.cfg.ID, SiteName: s.cfg.Name, IP: ip, Method: r.Method,
 			Path: maskURI(r.URL.RequestURI()), Status: status, Bytes: cw.n,
 			Ms: time.Since(start).Milliseconds(), UA: shortUA(r.UserAgent()), Err: errMsg, Node: node,
+			CC: s.m.geoLookupStr(ip),
 		})
 	}
 
@@ -383,6 +394,23 @@ func (s *SiteRT) serve(w http.ResponseWriter, r *http.Request, prefix string) {
 	hopped := false
 	if hip, from, ok := s.m.verifyHop(r.Header.Get(hopHeader), s.cfg.ID); ok {
 		ip, node, hopped = hip, "← "+from, true
+	} else if reason, ok := s.m.checkAccess(r, ip); !ok {
+		// 访问控制：转来的请求已由收到它的节点检查过
+		cw := &countWriter{ResponseWriter: w, st: st, tr: &s.m.traffic}
+		cw.status = s.m.denyPage(cw, ip, reason)
+		node = "拦截：" + reason
+		logReq(cw, "")
+		return
+	}
+	{
+		cw := &countWriter{ResponseWriter: w, st: st, tr: &s.m.traffic}
+		p, ok := s.keyGate(cw, r, prefix, ip)
+		if !ok {
+			node = "访问密钥不对"
+			logReq(cw, "")
+			return
+		}
+		prefix = p
 	}
 	// 图片缓存命中：本机直接返回，不访问上游，也不用转给负责节点
 	imgKey := s.imageCacheKey(r, prefix)
@@ -426,6 +454,7 @@ func (s *SiteRT) serve(w http.ResponseWriter, r *http.Request, prefix string) {
 	}
 
 	st.begin(ip)
+	s.m.daily.visit(s.cfg.ID, ip)
 	cw := &countWriter{ResponseWriter: w, st: st, tr: &s.m.traffic}
 	rc := &reqCtx{s: s, prefix: prefix, cw: cw, ip: ip, imgKey: imgKey}
 	defer func() {
@@ -466,7 +495,7 @@ func (s *SiteRT) serve(w http.ResponseWriter, r *http.Request, prefix string) {
 		}
 		// 路由目标当作推流域名处理：路径原样转发，响应里指向它的地址改写回 /__ep/
 		s.learnRouteHost(t)
-		target, outPath, rc.ep = t, rest, true
+		target, outPath, rc.ep, rc.route = t, rest, true, true
 	}
 	rc.target = target
 	unescOut, err := url.PathUnescape(outPath)
@@ -477,6 +506,11 @@ func (s *SiteRT) serve(w http.ResponseWriter, r *http.Request, prefix string) {
 	}
 	unescRest, _ := url.PathUnescape(rest)
 	rc.matchPath = strings.ToLower(unescRest)
+	if isPlaybackInfo(rc.matchPath) && !rc.ep {
+		if item := playItem(rc.matchPath); item != "" {
+			s.m.daily.play(s.cfg.ID, ip, item)
+		}
+	}
 	if stop, ok := playReportPath(r.Method, rc.matchPath); ok {
 		rc.report, rc.reportStop = ip+"|"+playReportItem(r), stop
 	}
@@ -500,11 +534,17 @@ func (s *SiteRT) serve(w http.ResponseWriter, r *http.Request, prefix string) {
 				h.Set("X-Forwarded-For", ip)
 				h.Set("X-Real-Ip", ip)
 			}
-			if h.Get("Origin") != "" {
+			if h.Get("Origin") != "" || s.cfg.ForceOrigin {
 				h.Set("Origin", targetOrigin)
 			}
-			if h.Get("Referer") != "" {
+			if h.Get("Referer") != "" || s.cfg.ForceOrigin {
 				h.Set("Referer", targetOrigin+"/")
+			}
+			// 自动学到的推流域名和上游不是同一个域名时，不把 Emby 登录凭据带过去（链接里自带的参数照常保留）
+			if rc.ep && !rc.route && !s.cfg.EPCredentials && !s.sameDomain(splitHost(target)) {
+				for _, k := range credentialHeaders {
+					h.Del(k)
+				}
 			}
 			// 只允许 gzip（需要改写的响应要能解压），客户端不支持或 Range 请求时不压缩。
 			// 显式设置后 Transport 不会自动解压，其它类型（如网页版 JS）保持压缩原样转给客户端。
@@ -578,6 +618,9 @@ func (rc *reqCtx) modifyResponse(resp *http.Response) error {
 		if v := h.Get(k); v != "" {
 			h.Set(k, rc.rewriteLocation(v))
 		}
+	}
+	if resp.StatusCode == http.StatusUnauthorized && resp.Request.Method == http.MethodPost && isLoginPath(rc.matchPath) {
+		rc.s.m.noteFailure(rc.ip, "多次登录失败")
 	}
 	if rc.report != "" && resp.StatusCode < 300 {
 		rc.s.stats.reportPlay(rc.report, rc.reportStop)
@@ -837,4 +880,9 @@ func shortUA(ua string) string {
 		return ua[:80]
 	}
 	return ua
+}
+
+func splitHost(u *url.URL) string {
+	h, _ := splitHP(u.Host, u.Scheme)
+	return h
 }

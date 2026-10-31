@@ -45,8 +45,9 @@ func (a *Admin) Handler() http.Handler {
 		http.SetCookie(w, &http.Cookie{Name: cookieName, Value: "", Path: "/", MaxAge: -1})
 		writeJSON(w, 200, map[string]any{"ok": true})
 	})
-	mux.HandleFunc("GET /api/state", a.auth(a.state))
+	mux.HandleFunc("GET /api/state", a.authView(a.state))
 	mux.HandleFunc("GET /api/logs", a.auth(a.logsAPI))
+	mux.HandleFunc("PUT /api/viewers", a.auth(a.saveViewers))
 	mux.HandleFunc("POST /api/sites", a.auth(a.nodeReadOnly(a.saveSite)))
 	mux.HandleFunc("PUT /api/sites/{id}", a.auth(a.nodeReadOnly(a.saveSite)))
 	mux.HandleFunc("DELETE /api/sites/{id}", a.auth(a.nodeReadOnly(a.deleteSite)))
@@ -54,6 +55,17 @@ func (a *Admin) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/sites/{id}/account", a.auth(a.nodeReadOnly(a.deleteAccount)))
 	mux.HandleFunc("POST /api/sites/{id}/clear-stats", a.auth(a.clearStats))
 	mux.HandleFunc("POST /api/test", a.auth(a.test))
+	mux.HandleFunc("GET /icons.json", serveIcons)
+	mux.HandleFunc("GET /api/update", a.auth(a.updateInfo))
+	mux.HandleFunc("POST /api/update", a.auth(a.startUpdate))
+	mux.HandleFunc("GET /api/stats", a.authView(a.statsAPI))
+	mux.HandleFunc("PUT /api/sites/order", a.auth(a.nodeReadOnly(a.reorderSites)))
+	mux.HandleFunc("POST /api/lines/probe", a.auth(a.probeAll))
+	mux.HandleFunc("PUT /api/ip-pref", a.auth(a.nodeReadOnly(a.saveIPPref)))
+	mux.HandleFunc("GET /api/access", a.auth(a.accessState))
+	mux.HandleFunc("PUT /api/access", a.auth(a.nodeReadOnly(a.saveAccess)))
+	mux.HandleFunc("POST /api/access/unban", a.auth(a.unban))
+	mux.HandleFunc("DELETE /api/access/catches", a.auth(a.clearCatches))
 	mux.HandleFunc("POST /api/image-cache/clear", a.auth(func(w http.ResponseWriter, r *http.Request) {
 		a.m.imgs.clear()
 		writeJSON(w, 200, map[string]any{"ok": true})
@@ -158,10 +170,14 @@ func (a *Admin) auth(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		c, err := r.Cookie(cookieName)
 		if err != nil || !a.valid(c.Value) {
+			if err == nil && a.role(c.Value) == "viewer" {
+				writeErr(w, http.StatusForbidden, errViewer.Error())
+				return
+			}
 			writeErr(w, http.StatusUnauthorized, "未登录")
 			return
 		}
-		h(w, r)
+		h(w, r.WithContext(context.WithValue(r.Context(), roleKey, "admin")))
 	}
 }
 
@@ -223,19 +239,25 @@ func (a *Admin) login(w http.ResponseWriter, r *http.Request) {
 	a.m.mu.RLock()
 	pw := a.m.cfg.AdminPassword
 	a.m.mu.RUnlock()
-	if subtle.ConstantTimeCompare([]byte(body.Password), []byte(pw)) != 1 {
+	exp := time.Now().Add(7 * 24 * time.Hour).Unix()
+	tok, role := "", "admin"
+	switch {
+	case subtle.ConstantTimeCompare([]byte(body.Password), []byte(pw)) == 1:
+		tok = a.sign(exp)
+	case a.matchViewer(body.Password):
+		tok, role = a.signViewer(exp), "viewer"
+	default:
 		time.Sleep(500 * time.Millisecond)
 		writeErr(w, http.StatusUnauthorized, "密码错误")
 		return
 	}
 	a.releaseLogin(ip)
-	exp := time.Now().Add(7 * 24 * time.Hour).Unix()
 	http.SetCookie(w, &http.Cookie{
-		Name: cookieName, Value: a.sign(exp), Path: "/", HttpOnly: true,
+		Name: cookieName, Value: tok, Path: "/", HttpOnly: true,
 		SameSite: http.SameSiteStrictMode, MaxAge: 7 * 24 * 3600,
 		Secure: r.TLS != nil || strings.EqualFold(firstHeader(r, "X-Forwarded-Proto"), "https"),
 	})
-	writeJSON(w, 200, map[string]any{"ok": true})
+	writeJSON(w, 200, map[string]any{"ok": true, "role": role})
 }
 
 type siteView struct {
@@ -252,6 +274,10 @@ type siteView struct {
 }
 
 func (a *Admin) state(w http.ResponseWriter, r *http.Request) {
+	if roleOf(r) == "viewer" {
+		a.viewerState(w)
+		return
+	}
 	m := a.m
 	// 这两项内部会自己加锁，必须在持有读锁之前算好（读锁嵌套在有写者等待时会死锁）
 	cluster := a.cluster.view()
@@ -311,8 +337,11 @@ func (a *Admin) state(w http.ResponseWriter, r *http.Request) {
 		"keepalive":   ka,        // 自动保号（从节点为 null）
 		"export_key":  exportKey, // 一键导出的导出密码（从节点为空）
 		"image_cache": m.imgs.view(),
+		"role":        "admin",
+		"viewers":     append([]string{}, m.cfg.ViewerPasswords...),
+		"ip_pref":     m.cfg.IPPref,
 		"uptime":      int64(time.Since(m.started).Seconds()),
-		"version":     version,
+		"version":     appVersion(),
 	}
 	if snap != nil {
 		out["cluster_stats_nodes"] = snap.nodes // 上报过统计的从节点及最后上报时间
@@ -426,6 +455,7 @@ func (a *Admin) deleteSite(w http.ResponseWriter, r *http.Request) {
 	m.cfg.Sites = sites
 	m.pruneSiteData()
 	delete(m.stats, id)
+	m.daily.dropSite(id)
 	m.reload()
 	m.mu.Unlock()
 	a.cluster.dropSite(id)

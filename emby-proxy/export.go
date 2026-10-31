@@ -144,7 +144,7 @@ func (a *Admin) exportData(w http.ResponseWriter, r *http.Request) {
 			skipped = append(skipped, s.Name+"（"+err.Error()+"）")
 			continue
 		}
-		addr := strings.TrimRight(s.PublicURL, "/")
+		addr := clientBase(s)
 		if addr == "" {
 			skipped = append(skipped, s.Name+"（没有客户端访问地址）")
 			continue

@@ -43,6 +43,8 @@ func main() {
 	go cluster.healthLoop()
 	go m.ka.loop()
 	go m.lineLoop()
+	m.loadGeoCache()
+	go m.geoLoop()
 	admin := &Admin{m: m, cluster: cluster, failures: map[string][]time.Time{}}
 	go serve("面板", cfg.AdminListen, admin.Handler())
 	go serve("入口(路径/域名模式)", cfg.Listen, m)
@@ -51,6 +53,7 @@ func main() {
 	go func() {
 		for range time.Tick(time.Minute) {
 			m.saveStats()
+			m.dailyTick()
 			m.writeNginxConf() // 证书被外部续期（如 acme.sh 写入数据目录）后，配置里的指纹变化会触发 nginx reload
 		}
 	}()
@@ -59,6 +62,7 @@ func main() {
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	<-sig
 	m.saveStats()
+	m.dailyTick()
 	m.saveTraffic()
 	log.Println("已退出")
 }
