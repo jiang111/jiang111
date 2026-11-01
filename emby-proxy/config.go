@@ -80,8 +80,6 @@ type Config struct {
 	ViewerPasswords []string `json:"viewer_passwords,omitempty"`
 	// 通用反代地址（见 universal.go），同步给从节点
 	Universal *UniversalConfig `json:"universal,omitempty"`
-	// Telegram 助手（见 tg.go），只在本机，不同步、不导出
-	TG *TGConfig `json:"tg,omitempty"`
 }
 
 func randHex(n int) string {

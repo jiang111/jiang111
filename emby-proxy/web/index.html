@@ -447,7 +447,6 @@ pre.out{white-space:pre-wrap;word-break:break-all;background:var(--chip);border-
 </div>
 
 <div class="mask" id="expMask"><div class="modal" id="expBox" style="max-width:560px"></div></div>
-<div class="mask" id="tgMask"><form class="modal" id="tgBox" style="max-width:560px" autocomplete="off"></form></div>
 
 <script>
 const $ = (s, el = document) => el.querySelector(s);
@@ -699,7 +698,7 @@ function setTheme(next, x, y) {
 function shell() {
   if ($('#main')) return;
   const tabs = isViewer() ? [['sites', '站点'], ['stats', '统计']]
-    : [['sites', '站点'], ['stats', '统计'], ['logs', '访问日志'], ['access', '访问控制'], ['keepalive', '保号'], ['tg', 'TG 助手'], ['settings', '设置'], ['help', '说明']];
+    : [['sites', '站点'], ['stats', '统计'], ['logs', '访问日志'], ['access', '访问控制'], ['keepalive', '保号'], ['settings', '设置'], ['help', '说明']];
   $('#app').innerHTML = `<header><div class="bar"><div class="logo"><i></i>Emby 反代</div>
     <nav><i class="thumb"></i>${tabs.map(([t, l]) => `<button data-t="${t}" data-l="${l}">${l}</button>`).join('')}</nav>
     <div class="sp"></div><span class="kv" id="uptime"></span><button class="btn sm" id="btnTheme" title="外观：自动跟随系统 / 浅色 / 深色"></button><button class="btn sm" id="btnLogout">退出</button></div></header>
@@ -734,19 +733,16 @@ function render() {
   const entering = shownTab !== tab; shownTab = tab;
   document.querySelectorAll('nav button').forEach(b => b.classList.toggle('on', b.dataset.t === tab));
   if ($('nav button[data-t=keepalive]')) $('nav button[data-t=keepalive]').style.display = isNode() ? 'none' : '';
-  if ($('nav button[data-t=tg]')) $('nav button[data-t=tg]').style.display = isNode() ? 'none' : '';
-  if (isNode() && tab === 'tg') tab = 'sites';
   moveThumb();
   $('#uptime').textContent = `v${S.version} · 已运行 ${fmtUptime(S.uptime)}`;
-  $('#ptitle').textContent = {sites: '站点', tg: 'Telegram 助手', stats: '统计', logs: '访问日志', access: '访问控制', keepalive: '自动保号', settings: '设置', help: '说明'}[tab];
-  $('#psub').textContent = {tg: '用你的 Telegram 账号自动签到、定时发言、关键词自动回复和抢红包。', stats: '每天看了多少、几点看得多、哪个站点最热。', access: '决定谁能用，自动挡掉乱试密码和扫描的人。', logs: '每一次请求的去向、状态和耗时。', keepalive: '定期登录、模拟播放，让账号保持活跃。',
+  $('#ptitle').textContent = {sites: '站点', stats: '统计', logs: '访问日志', access: '访问控制', keepalive: '自动保号', settings: '设置', help: '说明'}[tab];
+  $('#psub').textContent = {stats: '每天看了多少、几点看得多、哪个站点最热。', access: '决定谁能用，自动挡掉乱试密码和扫描的人。', logs: '每一次请求的去向、状态和耗时。', keepalive: '定期登录、模拟播放，让账号保持活跃。',
     settings: '客户端地址、证书、多服务器与备份。', help: '三种接入方式，以及反代替你做了什么。'}[tab] || '';
   if (entering) $('#pacts').innerHTML = '';
   if (tab === 'sites') renderSites(entering);
   else if (tab === 'logs') renderLogs();
   else if (tab === 'stats') renderStats();
   else if (tab === 'access') renderAccess();
-  else if (tab === 'tg') renderTG();
   else if (tab === 'settings') renderSettings();
   else if (tab === 'keepalive') renderKeepalive();
   else renderHelp();
@@ -1046,9 +1042,8 @@ function syncMode() {
 document.querySelectorAll('#form input[name=mode]').forEach(r => r.onchange = syncMode);
 $('#btnCancel').onclick = closeForm;
 $('#mask').addEventListener('mousedown', e => { if (e.target.id === 'mask') closeForm(); });
-document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeForm(); closeMask('#expMask'); closeMask('#tgMask'); } });
-sheetDrag('#mask', closeForm); sheetDrag('#expMask', () => closeMask('#expMask')); sheetDrag('#tgMask', () => closeMask('#tgMask'));
-$('#tgMask').addEventListener('mousedown', e => { if (e.target.id === 'tgMask') closeMask('#tgMask'); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeForm(); closeMask('#expMask'); } });
+sheetDrag('#mask', closeForm); sheetDrag('#expMask', () => closeMask('#expMask'));
 $('#btnTest').onclick = async () => {
   const f = $('#form');
   $('#testRes').innerHTML = '测试中…';
@@ -1668,161 +1663,6 @@ function waitUpdate() {
     if (++n > 120) return clearInterval(t);
     try { const s2 = await api('GET', '/api/state'); if (s2.version !== old) { clearInterval(t); S = s2; render(); toast('已更新到 ' + s2.version); } else drawUpdate(false); } catch (e) {}
   }, 5000);
-}
-
-// ---- Telegram 助手 ----
-let TG = null, tgLoginID = '', tgNeed = '';
-const tgPresets = {
-  checkin: {kind: 'task', name: '机器人签到', text: '/checkin', button: '签到', success: '成功,已签到,签到过', time: '08:00-09:00'},
-  post: {kind: 'task', name: '群里发言保号', text: '早\n早上好\n大家早', time: '09:00-11:00', every_days: 3, delete_after: 60},
-  reply: {kind: 'rule', name: '自动回复', keywords: '', reply: ''},
-  redpack: {kind: 'rule', name: '抢红包', click: '🧧', cooldown: 10, notify: true},
-  register: {kind: 'rule', name: '抢注', keywords: '开注,开放注册', reply: '/register', cooldown: 60, notify: true},
-};
-async function renderTG() {
-  try { TG = await api('GET', '/api/tg'); } catch (e) { $('#main').innerHTML = `<div class="err">${esc(e.message)}</div>`; return; }
-  const on = TG.enabled, accs = TG.accounts;
-  const dot = st => ({online: '<span class="ok">● 在线</span>', connecting: '<span class="kv">● 连接中</span>', logged_out: '<span class="bad">● 已掉线，请重新登录</span>', off: '<span class="kv">● 未开启</span>'}[st.state] || `<span class="bad" title="${esc(st.err || '')}">● 离线</span>`);
-  const accName = id => (accs.find(a => a.id === id) || {}).name || '（账号已删除）';
-  const when = t => `${t.every_days > 1 ? '每 ' + t.every_days + ' 天' : '每天'} ${esc(t.time)}`;
-  const last = st => st.last_at ? `${st.last_ok ? '✅' : '❌'} ${fmtAgo(st.last_at)}：${esc(st.last_msg || '')}` : '还没执行过';
-  $('#main').innerHTML = `<div class="panel"><div class="row" style="align-items:center"><h3 style="margin:0">Telegram 助手</h3><div class="sp"></div>
-      <label class="toggle" title="开启 / 关闭"><input type="checkbox" id="tgOn" ${on ? 'checked' : ''}><span></span></label></div>
-    <div class="help" style="margin-top:10px">关闭时完全不运行，不影响反代。用的是你自己的 Telegram 账号（不是机器人），请合理使用，频繁发消息可能被 Telegram 限制。</div>
-    <details style="margin-top:8px"><summary>高级：API ID</summary>
-      <div class="help" style="margin:8px 0">留空用内置的公开参数，开箱即用。想更稳妥，可以去 <a href="https://my.telegram.org" target="_blank" rel="noopener noreferrer">my.telegram.org</a> 免费申请自己的。</div>
-      <div class="kgrid"><div class="f"><label>API ID</label><input type="number" id="tgApiId" value="${TG.custom_api ? TG.api_id : ''}" placeholder="内置"></div>
-      <div class="f"><label>API Hash</label><input type="text" id="tgApiHash" placeholder="${TG.custom_api ? '已设置，重新填写才会修改' : '内置'}"></div></div>
-      <div class="foot"><button type="button" class="btn" id="tgApiSave">保存</button></div></details></div>
-  ${!on ? '' : `
-  <div class="panel"><h3>账号</h3>
-    ${accs.length ? `<div class="tw"><table><tbody>${accs.map(a => `<tr><td><b>${esc(a.name)}</b><br><span class="kv">${esc(a.phone)}</span></td><td>${dot(a)}</td>
-      <td style="text-align:right"><button class="btn sm dan" data-tgdel="${esc(a.id)}">删除</button></td></tr>`).join('')}</tbody></table></div>` : '<div class="kv">还没有账号，先登录一个</div>'}
-    <div class="row" style="margin-top:12px;flex-wrap:wrap" id="tgLoginRow">${tgLoginHTML()}</div>
-    <div class="kv" id="tgLoginMsg" style="margin-top:6px;white-space:normal"></div></div>
-  <div class="panel"><h3>定时发送</h3>
-    <div class="help" style="margin-bottom:10px">每天在设定的时间段里随机挑个时刻发一条消息。机器人签到、群里定时发言保号都用它。</div>
-    ${TG.tasks.length ? `<div class="tw"><table><tbody>${TG.tasks.map(t => `<tr><td><label class="toggle"><input type="checkbox" data-tgtoggle="task:${esc(t.id)}" ${t.enabled ? 'checked' : ''}><span></span></label></td>
-      <td><b>${esc(t.name)}</b><br><span class="kv">${esc(accName(t.account))} → ${esc(t.chat)} · ${when(t)}${t.next ? ' · 下次 ' + new Date(t.next * 1000).toLocaleString('zh-CN', {hour12: false, month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit'}) : ''}</span><br><span class="kv" style="white-space:normal">${last(t.state)}</span></td>
-      <td style="text-align:right;white-space:nowrap"><button class="btn sm" data-tgrun="${esc(t.id)}">${t.running ? '执行中…' : '立即执行'}</button> <button class="btn sm" data-tgedit="task:${esc(t.id)}">编辑</button></td></tr>`).join('')}</tbody></table></div>` : ''}
-    <div class="foot" style="justify-content:flex-start"><button class="btn" data-tgadd="checkin">＋ 机器人签到</button><button class="btn" data-tgadd="post">＋ 群里发言</button></div></div>
-  <div class="panel"><h3>关键词触发</h3>
-    <div class="help" style="margin-bottom:10px">盯着几个群或机器人，有人发了含关键词的消息就自动回复，或者点消息上的按钮。</div>
-    ${TG.rules.length ? `<div class="tw"><table><tbody>${TG.rules.map(r => `<tr><td><label class="toggle"><input type="checkbox" data-tgtoggle="rule:${esc(r.id)}" ${r.enabled ? 'checked' : ''}><span></span></label></td>
-      <td><b>${esc(r.name)}</b><br><span class="kv" style="white-space:normal">${esc(accName(r.account))} · 盯着 ${esc(r.chats.join(' '))} · ${r.keywords ? '含「' + esc(r.keywords) + '」' : '有按钮'} → ${[r.click ? '点「' + esc(r.click) + '」' : '', r.reply ? '回复「' + esc(r.reply.split('\n')[0]) + '」' : ''].filter(Boolean).join(' + ')}</span></td>
-      <td style="text-align:right"><button class="btn sm" data-tgedit="rule:${esc(r.id)}">编辑</button></td></tr>`).join('')}</tbody></table></div>` : ''}
-    <div class="foot" style="justify-content:flex-start"><button class="btn" data-tgadd="reply">＋ 自动回复</button><button class="btn" data-tgadd="redpack">＋ 抢红包</button><button class="btn" data-tgadd="register">＋ 抢注</button></div></div>
-  <div class="panel"><h3>日志</h3>
-    ${TG.logs.length ? `<div class="tw" style="max-height:360px"><table><tbody>${TG.logs.map(l => `<tr><td style="white-space:nowrap">${new Date(l.t * 1000).toLocaleString('zh-CN', {hour12: false})}</td><td>${l.ok ? '✅' : '❌'}</td><td style="white-space:normal">${esc(l.text)}</td></tr>`).join('')}</tbody></table></div>
-    <div class="foot"><button class="btn" id="tgClr">清空</button></div>` : '<div class="kv">暂无记录</div>'}</div>`}`;
-  $('#tgOn').onchange = async e => { try { await api('PUT', '/api/tg', {enabled: e.target.checked, api_id: TG.custom_api ? TG.api_id : 0, api_hash: ''}); renderTG(); } catch (err) { toast(err.message); e.target.checked = !e.target.checked; } };
-  $('#tgApiSave').onclick = async () => {
-    const id = parseInt($('#tgApiId').value) || 0, hash = $('#tgApiHash').value.trim();
-    if (id && !hash && !TG.custom_api) return toast('API Hash 也要填');
-    try { await api('PUT', '/api/tg', {enabled: TG.enabled, api_id: id, api_hash: id ? hash : ''}); toast('已保存'); renderTG(); } catch (err) { toast(err.message); }
-  };
-  if (!on) return;
-  bindTGLogin();
-  $('#main').querySelectorAll('[data-tgdel]').forEach(b => b.onclick = async () => {
-    if (!confirm('删除这个账号？它的定时发送和关键词触发会停止。（建议也在 Telegram「设置 → 设备」里移除这台设备）')) return;
-    try { await api('DELETE', '/api/tg/accounts/' + b.dataset.tgdel); renderTG(); } catch (err) { toast(err.message); }
-  });
-  $('#main').querySelectorAll('[data-tgadd]').forEach(b => b.onclick = () => {
-    if (!accs.length) return toast('先登录一个 Telegram 账号');
-    const p = {...tgPresets[b.dataset.tgadd], account: accs[0].id, enabled: true};
-    tgForm(p.kind, p, true);
-  });
-  $('#main').querySelectorAll('[data-tgedit]').forEach(b => b.onclick = () => {
-    const [kind, id] = b.dataset.tgedit.split(':');
-    tgForm(kind, (kind === 'task' ? TG.tasks : TG.rules).find(x => x.id === id), false);
-  });
-  $('#main').querySelectorAll('[data-tgtoggle]').forEach(el => el.onchange = async () => {
-    const [kind, id] = el.dataset.tgtoggle.split(':');
-    (kind === 'task' ? TG.tasks : TG.rules).find(x => x.id === id).enabled = el.checked;
-    try { await tgSave(kind); } catch (err) { toast(err.message); }
-    renderTG();
-  });
-  $('#main').querySelectorAll('[data-tgrun]').forEach(b => b.onclick = async () => {
-    b.textContent = '执行中…'; b.disabled = true;
-    try { const r = await api('POST', `/api/tg/tasks/${b.dataset.tgrun}/run`); toast((r.ok ? '✅ ' : '❌ ') + r.msg); } catch (err) { toast(err.message); }
-    renderTG();
-  });
-  if ($('#tgClr')) $('#tgClr').onclick = async () => { try { await api('DELETE', '/api/tg/logs'); renderTG(); } catch (err) { toast(err.message); } };
-}
-function tgLoginHTML() {
-  if (tgNeed === 'code') return `<input type="text" id="tgCode" placeholder="Telegram 发给你的验证码" inputmode="numeric" style="max-width:220px"><button class="btn pri" id="tgGo">登录</button><button class="btn" id="tgCancel">取消</button>`;
-  if (tgNeed === 'password') return `<input type="password" id="tgPw" placeholder="两步验证密码" style="max-width:220px"><button class="btn pri" id="tgGo">登录</button><button class="btn" id="tgCancel">取消</button>`;
-  return `<input type="text" inputmode="tel" id="tgPhone" placeholder="手机号，带国家码，如 +886912345678" style="max-width:300px"><button class="btn pri" id="tgGo">获取验证码</button>`;
-}
-function bindTGLogin() {
-  const msg = t => { $('#tgLoginMsg').innerHTML = t; };
-  if ($('#tgCancel')) $('#tgCancel').onclick = () => { tgNeed = ''; tgLoginID = ''; renderTG(); };
-  $('#tgGo').onclick = async () => {
-    const b = $('#tgGo'); b.disabled = true; b.textContent = '请稍候…';
-    const body = tgNeed === 'code' ? {id: tgLoginID, code: $('#tgCode').value} : tgNeed === 'password' ? {id: tgLoginID, password: $('#tgPw').value} : {phone: $('#tgPhone').value};
-    try {
-      const r = await api('POST', '/api/tg/login', body);
-      if (r.account) { tgNeed = ''; tgLoginID = ''; toast('已登录 ' + r.account.name); return renderTG(); }
-      tgLoginID = r.id || tgLoginID; tgNeed = r.need || '';
-      $('#tgLoginRow').innerHTML = tgLoginHTML(); bindTGLogin();
-      msg(r.error ? `<span class="bad">${esc(r.error)}</span>` : tgNeed === 'code' ? '验证码已发到你的 Telegram（不是短信），看一下 Telegram 里「Telegram」官方账号发来的消息。' : tgNeed === 'password' ? '这个账号开了两步验证，请输入两步验证密码。' : '');
-      const inp = $('#tgCode') || $('#tgPw'); if (inp) inp.focus();
-    } catch (err) { msg(`<span class="bad">${esc(err.message)}</span>`); b.disabled = false; b.textContent = tgNeed ? '登录' : '获取验证码'; }
-  };
-}
-async function tgSave(kind) {
-  const strip = x => { const o = {...x}; delete o.state; delete o.next; delete o.running; delete o.kind; return o; };
-  await api('PUT', '/api/tg/items?kind=' + (kind === 'task' ? 'tasks' : 'rules'), {tasks: TG.tasks.map(strip), rules: TG.rules.map(strip)});
-}
-function tgForm(kind, v, isNew) {
-  const accOpts = TG.accounts.map(a => `<option value="${esc(a.id)}" ${a.id === v.account ? 'selected' : ''}>${esc(a.name)}</option>`).join('');
-  const f = (name, label, input, tip) => `<div class="f"><label>${label}</label>${input}${tip ? `<small>${tip}</small>` : ''}</div>`;
-  const txt = (name, ph) => `<input type="text" name="${name}" value="${esc(v[name] ?? '')}" placeholder="${esc(ph || '')}">`;
-  const box = $('#tgBox');
-  box.innerHTML = `<div class="grab"></div><h2>${isNew ? '添加' : '编辑'}${kind === 'task' ? '定时发送' : '关键词触发'}</h2>
-    ${f('name', '名称', txt('name', '随便起'))}
-    ${TG.accounts.length > 1 ? f('account', '用哪个账号', `<select name="account">${accOpts}</select>`) : `<input type="hidden" name="account" value="${esc(v.account)}">`}
-    ${kind === 'task' ? `
-      ${f('chat', '发给谁', txt('chat', '@机器人或群的用户名，如 @xxx_bot'))}
-      ${f('text', '发什么', `<textarea name="text" placeholder="如 /checkin">${esc(v.text || '')}</textarea>`, '写多行时每次随机发其中一行，更像真人。')}
-      <div class="kgrid">${f('time', '什么时间', txt('time', '08:00-09:00'), '时间段里每天随机一个时刻，也可以只写 08:00')}
-      ${f('every_days', '每几天一次', `<input type="number" name="every_days" min="1" max="365" value="${v.every_days || 1}">`)}</div>
-      <details ${v.button || v.success || v.delete_after ? 'open' : ''}><summary>发完之后（可选）</summary>
-        ${f('button', '点对方回复里的按钮', txt('button', '按钮上的字，如 签到'), '机器人回复带按钮时用，填按钮上的部分文字就行。')}
-        ${f('success', '回复里有这些字才算成功', txt('success', '如 成功,已签到'), '逗号分隔，有一个就算。不填 = 发出去就算成功。')}
-        ${f('delete_after', '过几秒删除我发的消息', `<input type="number" name="delete_after" min="0" max="86400" value="${v.delete_after || 0}">`, '0 = 不删。群里保号发言常用，发完一会儿自动撤回。')}
-      </details>
-      <label class="chk"><input type="checkbox" name="notify_ok" ${v.notify_ok ? 'checked' : ''}><span>成功也推送通知（失败总会推送）</span></label>`
-    : `
-      ${f('chats', '盯着哪些群 / 机器人', `<textarea name="chats" placeholder="每行一个 @用户名">${esc((v.chats || []).join('\n'))}</textarea>`)}
-      ${f('keywords', '消息里有这些字时', txt('keywords', '逗号分隔，如 开注,开放注册'), v.click && !v.keywords ? '留空 = 只要消息上有下面的按钮就点（抢红包）。' : '逗号分隔，有一个就触发。')}
-      ${f('reply', '自动回复', `<textarea name="reply" placeholder="不回复就留空">${esc(v.reply || '')}</textarea>`, '写多行时随机回复其中一行。')}
-      ${f('click', '点消息上的按钮', txt('click', '按钮上的字，如 🧧；不点就留空'))}
-      ${f('cooldown', '同一个群里至少隔几秒再触发', `<input type="number" name="cooldown" min="1" max="86400" value="${v.cooldown || 30}">`)}
-      <label class="chk"><input type="checkbox" name="notify" ${v.notify ? 'checked' : ''}><span>触发时推送通知</span></label>`}
-    <label class="chk"><input type="checkbox" name="enabled" ${v.enabled !== false ? 'checked' : ''}><span>启用</span></label>
-    <div class="foot">${isNew ? '' : '<button type="button" class="btn dan" id="tgItemDel">删除</button>'}<div class="sp"></div><button type="button" class="btn" id="tgItemCancel">取消</button><button class="btn pri">保存</button></div>`;
-  openMask('#tgMask');
-  const list = () => kind === 'task' ? TG.tasks : TG.rules;
-  const save = async items => {
-    if (kind === 'task') TG.tasks = items; else TG.rules = items;
-    await tgSave(kind); closeMask('#tgMask'); renderTG(); toast('已保存');
-  };
-  $('#tgItemCancel').onclick = () => closeMask('#tgMask');
-  if ($('#tgItemDel')) $('#tgItemDel').onclick = async () => {
-    if (!confirm('删除「' + v.name + '」？')) return;
-    try { await save(list().filter(x => x.id !== v.id)); } catch (err) { toast(err.message); }
-  };
-  box.onsubmit = async e => {
-    e.preventDefault();
-    const g = box, item = {...v, name: g.name.value, account: g.account.value, enabled: g.enabled.checked};
-    if (kind === 'task') Object.assign(item, {chat: g.chat.value, text: g.text.value, time: g.time.value, every_days: +g.every_days.value || 1,
-      button: g.button.value, success: g.success.value, delete_after: +g.delete_after.value || 0, notify_ok: g.notify_ok.checked});
-    else Object.assign(item, {chats: g.chats.value.split('\n').map(x => x.trim()).filter(Boolean), keywords: g.keywords.value, reply: g.reply.value,
-      click: g.click.value, cooldown: +g.cooldown.value || 30, notify: g.notify.checked});
-    const items = isNew ? [...list(), item] : list().map(x => x.id === v.id ? item : x);
-    try { await save(items); } catch (err) { toast(err.message); }
-  };
 }
 
 async function load() {

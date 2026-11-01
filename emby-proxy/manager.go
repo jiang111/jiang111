@@ -63,7 +63,6 @@ type Manager struct {
 	daily *dailyStore // 每日统计
 	upd   updater     // 在线更新
 	uni   uniCache    // 通用反代地址的临时站点
-	tg    *tgModule   // Telegram 助手（可选模块）
 
 	lines lineHub     // 多线路：各线路的探测状态和正在用的线路
 	imgs  *imageCache // 海报 / 图片缓存
@@ -197,7 +196,6 @@ func NewManager(path string, cfg *Config) *Manager {
 	m.ka = newKeepalive(m)
 	m.imgs = newImageCache(imageCacheBytes())
 	m.daily = newDailyStore()
-	m.tg = newTGModule(m)
 	m.daily.load(m.dailyPath())
 	m.lines.notify = m.notify
 	return m
